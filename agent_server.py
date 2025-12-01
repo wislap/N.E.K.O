@@ -322,13 +322,40 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         return
     
     try:
+        # testUserPlugin: log before analysis when user_plugin_enabled is true
+        try:
+            if Modules.agent_flags.get("user_plugin_enabled", False):
+                logger.info("testUserPlugin: Starting analyze_and_execute with user_plugin_enabled = True")
+        except Exception:
+            pass
+
         # 一步完成：分析 + 执行
         result = await Modules.task_executor.analyze_and_execute(
             messages=messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags
         )
-        
+
+        # testUserPlugin: log after analysis decision if user_plugin_enabled is true
+        try:
+            if Modules.agent_flags.get("user_plugin_enabled", False):
+                logger.info("testUserPlugin: analyze_and_execute completed, checking result for user plugin involvement")
+                # If result indicates user_plugin execution or decision, log succinct info
+                if result is None:
+                    logger.info("testUserPlugin: analyze_and_execute returned None (no task detected)")
+                else:
+                    # Attempt to surface if user_plugin was chosen or considered
+                    try:
+                        exec_method = getattr(result, "execution_method", None)
+                        tool_name = getattr(result, "tool_name", None)
+                        plugin_name = getattr(result, "tool_name", None) or getattr(result, "tool_name", None)
+                        # Log basic decision info
+                        logger.info("testUserPlugin: execution_method=%s, success=%s, tool_name=%s", exec_method, getattr(result, "success", None), getattr(result, "tool_name", None))
+                    except Exception:
+                        logger.info("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
+        except Exception:
+            pass
+
         if result is None:
             # 没有检测到任务
             return
@@ -410,16 +437,6 @@ async def startup():
     except Exception:
         pass
 
-    # Inject a placeholder plugin_list_provider into task_executor.
-    # This keeps the user_plugin code path callable; real provider can be injected later.
-    try:
-        # provider should be a callable(force_refresh=False) -> list/dict of plugins
-        Modules.task_executor.plugin_list_provider = (lambda force_refresh=False: [])
-    except Exception:
-        logger.warning("[Agent] Failed to set plugin_list_provider placeholder")
-
-    # Attempt to set a real plugin_list_provider that queries the local user_plugin_server.
-    # This provider will perform a GET /plugins call to the user plugin server (default port 18090).
     try:
         import httpx
         async def _http_plugin_provider(force_refresh: bool = False):
@@ -434,7 +451,6 @@ async def startup():
                 logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
             return []
         # Wrap to a sync-callable for backward compatibility with run_in_executor usage in task_executor
-        Modules.task_executor.plugin_list_provider = (lambda force_refresh=False: asyncio.get_event_loop().run_until_complete(_http_plugin_provider(force_refresh)))
     except Exception as e:
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
@@ -603,12 +619,25 @@ async def set_agent_flags(payload: Dict[str, Any]):
     mf = (payload or {}).get("mcp_enabled")
     cf = (payload or {}).get("computer_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
+    prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
     if isinstance(mf, bool):
         Modules.agent_flags["mcp_enabled"] = mf
     if isinstance(cf, bool):
         Modules.agent_flags["computer_use_enabled"] = cf
     if isinstance(uf, bool):
         Modules.agent_flags["user_plugin_enabled"] = uf
+
+    # testUserPlugin: log when user_plugin_enabled toggles
+    try:
+        new_up = Modules.agent_flags.get("user_plugin_enabled", False)
+        if prev_up != new_up:
+            if new_up:
+                logger.info("testUserPlugin: user_plugin_enabled toggled ON via /agent/flags")
+            else:
+                logger.info("testUserPlugin: user_plugin_enabled toggled OFF via /agent/flags")
+    except Exception:
+        pass
+
     return {"success": True, "agent_flags": Modules.agent_flags}
 
 
@@ -620,6 +649,28 @@ async def analyze_and_plan(payload: Dict[str, Any]):
     messages = (payload or {}).get("messages", [])
     if not isinstance(messages, list):
         raise HTTPException(400, "messages must be a list of {role, text}")
+    # If user_plugin integration is enabled, forward optional message(s) to testPlugin endpoint (best-effort, non-blocking)
+    try:
+        if Modules.agent_flags.get("user_plugin_enabled", False):
+            async def _forward_to_user_plugin():
+                try:
+                    async with httpx.AsyncClient(timeout=0.5) as _client:
+                        # If payload contains a single optional "message" field in top-level payload, forward that.
+                        top_message = (payload or {}).get("message")
+                        if top_message is not None:
+                            body = {"message": top_message}
+                        else:
+                            # Otherwise forward the messages list for inspection by plugin
+                            body = {"messages": messages}
+                        await _client.post(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/testPlugin", json=body)
+                except Exception:
+                    # best-effort: ignore failures
+                    pass
+            # Fire-and-forget forwarding
+            asyncio.create_task(_forward_to_user_plugin())
+    except Exception:
+        pass
+
     # Fire-and-forget background processing and scheduling
     asyncio.create_task(_background_analyze_and_plan(messages, (payload or {}).get("lanlan_name")))
     return {"success": True, "status": "processed", "accepted_at": _now_iso()}

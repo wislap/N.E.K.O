@@ -10,7 +10,8 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+import httpx
+from config import MODELS_WITH_EXTRA_BODY, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
@@ -68,13 +69,36 @@ class DirectTaskExecutor:
         self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
         self._config_manager = get_config_manager()
-        # 插件管理点：暂不实现加载逻辑，调用时会传入 plugins 列表
-        # 保持可注入性：外部可在实例化后设置 self.plugin_list_provider
-        from typing import Callable
-        # plugin_list_provider: optional callable(force_refresh: bool=False) -> list|dict
-        self.plugin_list_provider: Optional[Callable[..., Any]] = None
+        self.plugin_list = []
         self.user_plugin_enabled_default = False
-     
+    
+    
+    async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
+        if (self.plugin_list == []) or force_refresh:
+            try:
+                url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins"
+                # increase timeout and avoid awaiting a non-awaitable .json()
+                timeout = httpx.Timeout(5.0, connect=2.0)
+                async with httpx.AsyncClient(timeout=timeout) as _client:
+                    resp = await _client.get(url)
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        # fallback to text parse
+                        try:
+                            data = json.loads(await resp.aread())
+                        except Exception:
+                            data = {}
+                    plugin_list = data.get("plugins", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                    # only update cache when we obtained a non-empty list
+                    if plugin_list:
+                        self.plugin_list = plugin_list  # 更新实例变量
+            except Exception as e:
+                logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
+        logger.info(self.plugin_list)
+        return self.plugin_list
+
+
     def _get_client(self):
         """动态获取 OpenAI 客户端"""
         core_config = self._config_manager.get_core_config()
@@ -322,27 +346,57 @@ OUTPUT FORMAT (strict JSON):
                 pid = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
                 desc = p.get("description", "") if isinstance(p, dict) else getattr(p, "description", "")
                 schema = p.get("input_schema", {}) if isinstance(p, dict) else getattr(p, "input_schema", {})
-                lines.append(f"- {pid}: {desc} | schema: {json.dumps(schema)}")
+                # Only include well-formed plugin entries
+                if not pid:
+                    continue
+                try:
+                    schema_str = json.dumps(schema)
+                except Exception:
+                    schema_str = "{}"
+                lines.append(f"- {pid}: {desc} | schema: {schema_str}")
         except Exception:
             pass
         
-        system_prompt = f"""You are a User Plugin selection agent. AVAILABLE PLUGINS:
-        INSTRUCTIONS:
-        1. Analyze the conversation and determine if any available plugin can handle the user's request.
-        2. If yes, return the plugin id and arguments matching the plugin's schema.
-        3. Output MUST be strict JSON.
+        plugins_desc = "\n".join(lines) if lines else "No plugins available."
+        # truncate to avoid overly large prompts
+        if len(plugins_desc) > 2000:
+            plugins_desc = plugins_desc[:2000] + "\n... (truncated)"
+        logger.debug(f"[UserPlugin] passing plugin descriptions (truncated): {plugins_desc[:1000]}")
         
-        OUTPUT FORMAT:
-        {{
-            "has_task": boolean,
-            "can_execute": boolean,
-            "task_description": "brief description",
-            "plugin_id": "plugin id or null",
-            "plugin_args": {{...}} or null,
-            "reason": "why"
-        }}
-        """
-        user_prompt = f"Conversation:\\n{conversation}"
+        # Provide a concrete JSON example to guide model outputs and reduce parsing errors
+        example_json = json.dumps({
+            "has_task": True,
+            "can_execute": True,
+            "task_description": "example: call testPlugin with a message",
+            "plugin_id": "testPlugin",
+            "plugin_args": {"message": "hello"}
+        }, ensure_ascii=False)
+        
+        # Strongly enforce JSON-only output to reduce parsing errors
+        system_prompt = f"""You are a User Plugin selection agent. AVAILABLE PLUGINS:
+{plugins_desc}
+
+INSTRUCTIONS:
+1. Analyze the conversation and determine if any available plugin can handle the user's request.
+2. If yes, return the plugin id and arguments matching the plugin's schema.
+3. OUTPUT MUST BE ONLY a single JSON object and NOTHING ELSE. Do NOT include any explanatory text, markdown, or code fences.
+
+EXAMPLE (must follow this structure exactly):
+{example_json}
+
+OUTPUT FORMAT:
+{{
+    "has_task": boolean,
+    "can_execute": boolean,
+    "task_description": "brief description",
+    "plugin_id": "plugin id or null",
+    "plugin_args": {{...}} or null,
+    "reason": "why"
+}}
+
+VERY IMPORTANT: Return the JSON object only, with no surrounding text.
+"""
+        user_prompt = f"Conversation:\\n{conversation}\\n\\nUser intent (one-line): {conversation.splitlines()[-1] if conversation.splitlines() else ''}"
         
         max_retries = 3
         retry_delays = [1, 2]
@@ -366,11 +420,34 @@ OUTPUT FORMAT (strict JSON):
                     request_params["extra_body"] = {"enable_thinking": False}
                 
                 response = await client.chat.completions.create(**request_params)
-                text = response.choices[0].message.content.strip()
+                # Capture raw response and log prompts/response at INFO so it's visible in runtime logs
+                try:
+                    raw_text = response.choices[0].message.content
+                except Exception:
+                    raw_text = None
+                # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
+                try:
+                    prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
+                except Exception:
+                    prompt_dump = "(failed to build prompt dump)"
+                logger.info(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
+                logger.info(f"[UserPlugin Assessment] raw LLM response: {repr(raw_text)[:2000]}")
+                
+                text = raw_text.strip() if isinstance(raw_text, str) else ""
                 
                 if text.startswith("```"):
                     text = text.replace("```json", "").replace("```", "").strip()
-                decision = json.loads(text)
+                
+                # If the response is empty or not valid JSON, log and return a safe decision
+                if not text:
+                    logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
+                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": "Empty LLM response"})
+                
+                try:
+                    decision = json.loads(text)
+                except Exception as e:
+                    logger.error(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": f"JSON parse error: {e}"})
                 
                 # return a simple object-like struct
                 return type("UP", (), {
@@ -409,9 +486,17 @@ OUTPUT FORMAT (strict JSON):
         
         mcp_enabled = agent_flags.get("mcp_enabled", False)
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
+        user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
+        
+        # testUserPlugin: log entry with flags and short message summary for debugging
+        try:
+            msgs_summary = self._format_messages(messages)[:400].replace("\n", " ")
+            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
+        except Exception:
+            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
         
         # 如果两个功能都没开启，直接返回
-        if not mcp_enabled and not computer_use_enabled:
+        if not mcp_enabled and not computer_use_enabled and not user_plugin_enabled:
             logger.debug("[TaskExecutor] Both MCP and ComputerUse disabled, skipping")
             return None
         
@@ -452,12 +537,8 @@ OUTPUT FORMAT (strict JSON):
         
         # user plugin 支路（由外部 provider 提供插件列表）
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", self.user_plugin_enabled_default)
-        plugins = None
-        if user_plugin_enabled and callable(self.plugin_list_provider):
-            try:
-                plugins = await asyncio.get_event_loop().run_in_executor(None, lambda: self.plugin_list_provider(False))
-            except Exception as e:
-                logger.warning(f"[TaskExecutor] Failed to get plugin list: {e}")
+        await self.plugin_list_provider()
+        plugins = self.plugin_list
         
         if user_plugin_enabled and plugins:
             assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
@@ -494,10 +575,27 @@ OUTPUT FORMAT (strict JSON):
         # 1. 如果 MCP 可以执行，使用 MCP
         if mcp_decision and mcp_decision.has_task and mcp_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using MCP: {mcp_decision.task_description}")
-            return await self._execute_mcp(
+            result_obj = await self._execute_mcp(
                 task_id=task_id,
                 decision=mcp_decision
             )
+            # Structured log of TaskResult (truncated)
+            try:
+                res_preview = str(result_obj.result) if result_obj.result is not None else ""
+                if len(res_preview) > 800:
+                    res_preview = res_preview[:800] + "...(truncated)"
+                logger.info("TaskExecutor-OUT: %s", json.dumps({
+                    "task_id": result_obj.task_id,
+                    "execution_method": result_obj.execution_method,
+                    "success": result_obj.success,
+                    "reason": result_obj.reason,
+                    "tool_name": result_obj.tool_name,
+                    "tool_args": result_obj.tool_args,
+                    "result_preview": res_preview
+                }, ensure_ascii=False))
+            except Exception:
+                logger.info("TaskExecutor-OUT: (failed to serialize TaskResult)")
+            return result_obj
 
         # 2. 如果 MCP 不行，但 ComputerUse 可以，返回 ComputerUse 任务
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
@@ -527,7 +625,7 @@ OUTPUT FORMAT (strict JSON):
                     error=str(e),
                     reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
                 )
-          
+                
         # 3. 两者都不行
         reason_parts = []
         if mcp_decision:
@@ -639,30 +737,58 @@ OUTPUT FORMAT (strict JSON):
                 reason=getattr(up_decision, "reason", "")
             )
         
-        # Fetch plugin metadata from user_plugin_server
-        try:
-            import httpx
-            url = f"http://localhost:18090/plugins"
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(url)
-                plugins = resp.json().get("plugins", []) if resp.status_code == 200 else []
-        except Exception as e:
-            logger.warning(f"[TaskExecutor] Failed to fetch plugins from user_plugin_server: {e}")
-            plugins = []
+
         
-        # Find plugin entry
+        # Ensure we have a plugins list to search (use cached self.plugin_list as fallback)
+        try:
+            plugins_list = self.plugin_list or []
+        except Exception:
+            plugins_list = []
+        # If cache is empty, attempt to refresh once
+        if not plugins_list:
+            try:
+                await self.plugin_list_provider(force_refresh=True)
+                plugins_list = self.plugin_list or []
+            except Exception:
+                plugins_list = []
+        
+        # Find plugin entry in the resolved plugins list
         plugin_entry = None
-        for p in plugins:
-            if p.get("id") == plugin_id:
-                plugin_entry = p
-                break
+        for p in plugins_list:
+            try:
+                if isinstance(p, dict) and p.get("id") == plugin_id:
+                    plugin_entry = p
+                    break
+            except Exception:
+                continue
         
         if plugin_entry is None:
-            raise RuntimeError(f"Plugin {plugin_id} not found")
+            # Return a TaskResult indicating plugin not found instead of raising
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=f"Plugin {plugin_id} not found",
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "") or "Plugin not found"
+            )
         
         endpoint = plugin_entry.get("endpoint")
         if not endpoint:
-            raise RuntimeError(f"Plugin {plugin_id} has no endpoint defined")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=f"Plugin {plugin_id} has no endpoint defined",
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "") or "No endpoint"
+            )
         
         logger.info(f"[TaskExecutor] Calling user plugin {plugin_id} at {endpoint} with args: {plugin_args}")
         
@@ -676,7 +802,7 @@ OUTPUT FORMAT (strict JSON):
                     except Exception:
                         data = {"raw_text": r.text}
                     logger.info(f"[TaskExecutor] ✅ Plugin {plugin_id} returned success")
-                    return TaskResult(
+                    task_result = TaskResult(
                         task_id=task_id,
                         has_task=True,
                         task_description=task_description,
@@ -687,10 +813,27 @@ OUTPUT FORMAT (strict JSON):
                         tool_args=plugin_args,
                         reason=getattr(up_decision, "reason", "")
                     )
+                    # Structured log for TaskResult (user_plugin)
+                    try:
+                        res_preview = str(task_result.result) if task_result.result is not None else ""
+                        if len(res_preview) > 800:
+                            res_preview = res_preview[:800] + "...(truncated)"
+                        logger.info("TaskExecutor-OUT: %s", json.dumps({
+                            "task_id": task_result.task_id,
+                            "execution_method": task_result.execution_method,
+                            "success": task_result.success,
+                            "reason": task_result.reason,
+                            "tool_name": task_result.tool_name,
+                            "tool_args": task_result.tool_args,
+                            "result_preview": res_preview
+                        }, ensure_ascii=False))
+                    except Exception:
+                        logger.info("TaskExecutor-OUT: (failed to serialize TaskResult for user_plugin)")
+                    return task_result
                 else:
                     text = r.text
                     logger.error(f"[TaskExecutor] ❌ Plugin {plugin_id} returned status {r.status_code}: {text}")
-                    return TaskResult(
+                    task_result = TaskResult(
                         task_id=task_id,
                         has_task=True,
                         task_description=task_description,
@@ -702,9 +845,25 @@ OUTPUT FORMAT (strict JSON):
                         tool_args=plugin_args,
                         reason=getattr(up_decision, "reason", "")
                     )
+                    try:
+                        res_preview = str(task_result.result) if task_result.result is not None else ""
+                        if len(res_preview) > 800:
+                            res_preview = res_preview[:800] + "...(truncated)"
+                        logger.info("TaskExecutor-OUT: %s", json.dumps({
+                            "task_id": task_result.task_id,
+                            "execution_method": task_result.execution_method,
+                            "success": task_result.success,
+                            "reason": task_result.reason,
+                            "tool_name": task_result.tool_name,
+                            "tool_args": task_result.tool_args,
+                            "result_preview": res_preview
+                        }, ensure_ascii=False))
+                    except Exception:
+                        logger.info("TaskExecutor-OUT: (failed to serialize TaskResult for user_plugin failure)")
+                    return task_result
         except Exception as e:
             logger.error(f"[TaskExecutor] Plugin call error: {e}")
-            return TaskResult(
+            task_result = TaskResult(
                 task_id=task_id,
                 has_task=True,
                 task_description=task_description,
@@ -715,6 +874,22 @@ OUTPUT FORMAT (strict JSON):
                 tool_args=plugin_args,
                 reason=getattr(up_decision, "reason", "")
             )
+            try:
+                res_preview = str(task_result.result) if task_result.result is not None else ""
+                if len(res_preview) > 800:
+                    res_preview = res_preview[:800] + "...(truncated)"
+                logger.info("TaskExecutor-OUT: %s", json.dumps({
+                    "task_id": task_result.task_id,
+                    "execution_method": task_result.execution_method,
+                    "success": task_result.success,
+                    "reason": task_result.reason,
+                    "tool_name": task_result.tool_name,
+                    "tool_args": task_result.tool_args,
+                    "result_preview": res_preview
+                }, ensure_ascii=False))
+            except Exception:
+                logger.info("TaskExecutor-OUT: (failed to serialize TaskResult for plugin exception)")
+            return task_result
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """刷新并返回 MCP 工具能力列表"""

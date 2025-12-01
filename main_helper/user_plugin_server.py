@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
+from config import USER_PLUGIN_SERVER_PORT
 app = FastAPI(title="N.E.K.O User Plugin Server")
 
 logger = logging.getLogger("user_plugin_server")
@@ -41,9 +41,19 @@ async def list_plugins():
     """
     Return the list of known plugins.
     Each plugin item contains at least: id, name, description, input_schema, endpoint (if any).
+    If registry is empty, expose a minimal test plugin so task_executor can run a simple end-to-end test.
     """
     try:
-        return {"plugins": list(_plugins.values()), "count": len(_plugins)}
+        # If no plugins registered, expose a simple test plugin for local testing (testUserPlugin)
+        # if not _plugins:
+        test_plugin = {
+                "id": "testPlugin",
+                "name": "Test Plugin",
+                "description": "testUserPlugin: minimal plugin used for local testing — will respond with an ERROR-level notice when called",
+                "endpoint": f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/testPlugin",
+                "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}}}
+        return [test_plugin]
+        #return {"plugins": list(_plugins.values()), "count": len(_plugins)}
     except Exception as e:
         logger.exception("Failed to list plugins")
         raise HTTPException(status_code=500, detail=str(e))
@@ -182,6 +192,42 @@ def _register_plugin(plugin: Dict[str, Any]) -> None:
 # so task_executor can either call GET /plugins remotely or import main_helper.user_plugin_server.get_plugins
 # if running in the same process.
 
+@app.post("/plugin/testPlugin")
+async def plugin_test_plugin(payload: Dict[str, Any], request: Request):
+    """
+    Minimal test plugin endpoint used for local testing (testUserPlugin).
+    When invoked it emits an ERROR-level log so it's obvious in console output,
+    and returns a clear JSON response for the caller.
+    """
+    try:
+        # Log invocation at INFO level and avoid sending an ERROR; we'll forward the received message instead
+        logger.info("testUserPlugin: testPlugin was invoked. client=%s", request.client.host if request.client else None)
+        # Enqueue an event for inspection
+        event = {
+            "type": "plugin_invoked",
+            "plugin_id": "testPlugin",
+            "payload": payload,
+            "client": request.client.host if request.client else None,
+            "received_at": _now_iso()
+        }
+        try:
+            _event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                _ = _event_queue.get_nowait()
+            except Exception:
+                pass
+            try:
+                _event_queue.put_nowait(event)
+            except Exception:
+                logger.warning("testUserPlugin: failed to enqueue plugin event")
+        # Prepare message to forward: prefer explicit "message" field, otherwise forward full payload
+        forwarded = payload.get("message") if isinstance(payload, dict) and "message" in payload else payload
+        return JSONResponse({"success": True, "forwarded_message": forwarded, "received": payload})
+    except Exception as e:
+        logger.exception("testUserPlugin: plugin handler error")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=18090)
+    uvicorn.run(app, host="0.0.0.0", port=USER_PLUGIN_SERVER_PORT)

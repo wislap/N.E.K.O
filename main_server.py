@@ -5039,14 +5039,17 @@ async def update_agent_flags(request: Request):
                 forward_payload['mcp_enabled'] = bool(flags['mcp_enabled'])
             if 'computer_use_enabled' in flags:
                 forward_payload['computer_use_enabled'] = bool(flags['computer_use_enabled'])
+            # Forward user_plugin_enabled as well so agent_server receives UI toggles
+            if 'user_plugin_enabled' in flags:
+                forward_payload['user_plugin_enabled'] = bool(flags['user_plugin_enabled'])
             if forward_payload:
                 async with httpx.AsyncClient(timeout=0.7) as client:
                     r = await client.post(f"http://localhost:{TOOL_SERVER_PORT}/agent/flags", json=forward_payload)
                     if not r.is_success:
                         raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
-            # On failure, reset flags in core to safe state
-            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'mcp_enabled': False})
+            # On failure, reset flags in core to safe state (include user_plugin flag)
+            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'mcp_enabled': False, 'user_plugin_enabled': False})
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True}
     except Exception as e:
@@ -5282,4 +5285,3 @@ if __name__ == "__main__":
         server.run()
     finally:
         logger.info("服务器已关闭")
-
