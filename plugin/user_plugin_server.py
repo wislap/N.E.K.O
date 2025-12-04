@@ -9,7 +9,7 @@ from config import USER_PLUGIN_SERVER_PORT
 from pathlib import Path
 import importlib
 import inspect
-from event_base import EventHandler 
+from plugin.event_base import EventHandler 
 # Python 3.11 有 tomllib；低版本可用 tomli 兼容
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -160,7 +160,7 @@ async def list_plugins():
 
     except Exception as e:
         logger.exception("Failed to list plugins")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # Utility to allow other parts of the application (same process) to query plugin list
@@ -216,7 +216,7 @@ def _load_plugins_from_toml() -> None:
             cls = getattr(mod, class_name)
 
             # 实例化插件；如果将来想传 ctx，可以改成 cls(ctx)
-            instance = cls()
+            instance = cls(None)
             instance._plugin_id = pid  # 注入 plugin_id 供实例内部使用
             _plugin_instances[pid] = instance
             plugin_meta = {
@@ -255,12 +255,14 @@ def _load_plugins_from_toml() -> None:
                     try:
                         if getattr(event_meta, "event_type", None) != "plugin_entry":
                             continue
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Failed to check event_type for %s.%s: %s", pid, name, e)
                         continue
                     # 兼容两种 key 约定： "pid.<id>" 和 "pid:plugin_entry:<id>"
                     try:
                         eid = getattr(event_meta, "id", name)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Failed to check event_type for %s.%s: %s", pid, name, e)
                         eid = name
                     key1 = f"{pid}.{eid}"
                     key2 = f"{pid}:plugin_entry:{eid}"
@@ -287,7 +289,8 @@ def _load_plugins_from_toml() -> None:
                                 handler_fn = getattr(instance, eid)
                                 _event_handlers[f"{pid}.{eid}"] = _EB_EventHandler(meta=type("M", (), {"event_type":"plugin_entry","id":eid,"input_schema":ent.get("input_schema",{}) if isinstance(ent, dict) else {}})(), handler=handler_fn)
                                 _event_handlers[f"{pid}:plugin_entry:{eid}"] = _EB_EventHandler(meta=type("M", (), {"event_type":"plugin_entry","id":eid,"input_schema":ent.get("input_schema",{}) if isinstance(ent, dict) else {}})(), handler=handler_fn)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug("Failed to check event_type for %s.%s: %s", pid, name, e)
                             continue
                 except Exception:
                     # ignore if plugin.toml doesn't list entries in expected format
@@ -427,11 +430,13 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
                 # Try keyword invocation first
                 try:
                     return await fn(**(call_args or {}))
-                except TypeError:
+                except TypeError as e:
+                    logger.debug("Keyword invocation failed for %s: %s, trying fallback", fn, e)
                     # Fallback: try single positional dict
                     try:
                         return await fn(call_args or {})
-                    except TypeError:
+                    except TypeError as e2:
+                        logger.debug("Positional invocation failed for %s: %s, trying no-arg", fn, e2)
                         # As a last resort, try no-arg call
                         return await fn()
 
@@ -481,7 +486,7 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
                 plugin_error = {"error": str(e)}
 
             resp: Dict[str, Any] = {
-                "success": True,
+                "success": plugin_error is None,
                 "plugin_id": plugin_id,
                 "executed_entry": entry_id,
                 "args": args,
@@ -534,7 +539,7 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
             plugin_error = {"error": str(e)}
 
         resp: Dict[str, Any] = {
-            "success": True,
+            "success": plugin_error is None,
             "plugin_id": plugin_id,
             "executed_entry": entry_id,
             "args": args,
@@ -555,4 +560,4 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=USER_PLUGIN_SERVER_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=USER_PLUGIN_SERVER_PORT)

@@ -3,10 +3,16 @@ import tkinter as tk
 from plugin.decorators import neko_plugin, plugin_entry, on_event
 from plugin.plugin_base import NekoPluginBase
 
-
+"""
+Plugin for test use.
+Considered to be discarded in the future.
+May contains unpredictable bugs and bug fix is not provided.
+"""
 @neko_plugin
 class TkWindowPlugin(NekoPluginBase):
-    def __init__(self):
+    def __init__(self,ctx):
+        super().__init__(ctx)
+        self._lock = threading.Lock()
         self._started = False
         self._thread = None
         self._root = None
@@ -32,9 +38,11 @@ class TkWindowPlugin(NekoPluginBase):
         root.after(100,poll_close_flag)
         root.mainloop()
         
-        self._started = False
-        self._root = None
-        self._should_close = False
+        with self._lock:
+            
+            self._started = False
+            self._root = None
+            self._should_close = False
 
     # 1) 一个 plugin_entry：对外可调用，“打开窗口”
     @plugin_entry(
@@ -50,10 +58,10 @@ class TkWindowPlugin(NekoPluginBase):
         },
     )
     def open_window(self, title: str | None = None, message: str | None = None, **_):
-        if self._started:
-            return {"started": False, "reason": "window already running"}
-        self.report_status({"started": True})
-        self._started = True
+        with self._lock:
+            if self._started:
+                return {"started": False, "reason": "window already running"}
+            self._started = True
         t = threading.Thread(
             target=self._run_tk,
             args=(title or "N.E.K.O Tk Plugin", message or "Hello from Tk plugin!"),
@@ -61,6 +69,8 @@ class TkWindowPlugin(NekoPluginBase):
         )
         t.start()
         self._thread = t
+        
+        self.report_status({"started": True})
         return {"started": True, "info": "Tk window thread started"}
 
     # 2) 另一个 plugin_entry：关闭窗口
@@ -70,10 +80,12 @@ class TkWindowPlugin(NekoPluginBase):
         description="Close Tk window if opened",
     )
     def close_window(self, **_):
-        if self._root is not None:
-            self._should_close = True
-            return {"closed": True}
-        return {"closed": False, "reason": "no window"}
+        with self._lock:
+            if self._root is not None:
+                self._should_close = True
+                return {"closed": True}
+            else:
+                return {"closed": False, "reason": "no window"}
 
     # 3) 一个 lifecycle 事件：插件加载后自动调用
     @on_event(

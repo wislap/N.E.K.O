@@ -49,3 +49,4 @@ class NekoPluginBase:
                 # 保险一点，避免忘记注入
                 raise RuntimeError("Plugin instance missing _plugin_id, cannot report status")
             update_plugin_status(pid, status)
+            
