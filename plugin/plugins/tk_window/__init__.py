@@ -8,18 +8,31 @@ class TkWindowPlugin(NekoPluginBase):
         self._started = False
         self._thread = None
         self._root = None
+        self._should_close = False
 
     def _run_tk(self, title: str, message: str):
         root = tk.Tk()
         self._root = root
+        self._should_close = False
+        
         root.title(title)
         label = tk.Label(root, text=message, padx=20, pady=20)
         label.pack()
         btn = tk.Button(root, text="Close", command=root.destroy)
         btn.pack()
+        
+         # 在 Tk 线程内部轮询关闭标志
+        def poll_close_flag():
+            if self._should_close:
+                root.destroy()
+            else:
+                root.after(100, poll_close_flag)  # 100ms 后再检查一次
+        root.after(100,poll_close_flag)
         root.mainloop()
+        
         self._started = False
         self._root = None
+        self._should_close = False
 
     # 1) 一个 plugin_entry：对外可调用，“打开窗口”
     @plugin_entry(
@@ -57,7 +70,7 @@ class TkWindowPlugin(NekoPluginBase):
     )
     def close_window(self, **_):
         if self._root is not None:
-            self._root.destroy()
+            self._should_close = True
             return {"closed": True}
         return {"closed": False, "reason": "no window"}
 

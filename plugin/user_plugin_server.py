@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover
 app = FastAPI(title="N.E.K.O User Plugin Server")
 
 logger = logging.getLogger("user_plugin_server")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 # In-memory plugin registry (initially empty). Plugins are dicts with keys:
 # { "id": str, "name": str, "description": str, "endpoint": str, "input_schema": dict }
