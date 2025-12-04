@@ -43,7 +43,12 @@ _plugin_entry_method_map: Dict[tuple, str] = {}
 # Where to look for plugin.toml files: ./plugins/<any>/plugin.toml
 PLUGIN_CONFIG_ROOT = Path(__file__).parent / "plugins"
 # Simple bounded in-memory event queue for inspection
-EVENT_QUEUE_MAX = 1000
+_event_queue = None
+
+@app.on_event("startup")
+async def _init_event_queue():
+    global _event_queue
+    _event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
 _event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
 
 def _now_iso() -> str:

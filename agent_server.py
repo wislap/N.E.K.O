@@ -546,7 +546,10 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
         raise HTTPException(503, "Task executor not ready")
     plugin_id = (payload or {}).get("plugin_id")
     entry_id = (payload or {}).get("entry_id")
-    args = (payload or {}).get("args", {}) or {}
+    raw_args = (payload or {}).get("args", {}) or {}
+    if not isinstance(raw_args, dict):
+        raise HTTPException(400, "args must be a JSON object")
+    args = raw_args
     lanlan_name = (payload or {}).get("lanlan_name")
     if not plugin_id or not isinstance(plugin_id, str):
         raise HTTPException(400, "plugin_id required")
