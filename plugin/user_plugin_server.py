@@ -1,16 +1,16 @@
+from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
-from typing import Optional
 import asyncio
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from config import USER_PLUGIN_SERVER_PORT
 from pathlib import Path
 import importlib
 import inspect
-from event_base import EventHandler 
+from plugin.event_base import EventHandler,EVENT_META_ATTR
 # Python 3.11 有 tomllib；低版本可用 tomli 兼容
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -20,7 +20,13 @@ except ImportError:  # pragma: no cover
 app = FastAPI(title="N.E.K.O User Plugin Server")
 
 logger = logging.getLogger("user_plugin_server")
-logging.basicConfig(level=logging.INFO)
+
+@dataclass
+class PluginContext:
+    app: FastAPI
+    plugin_id: str
+    logger: logging.Logger
+    config_path: Path
 
 # In-memory plugin registry (initially empty). Plugins are dicts with keys:
 # { "id": str, "name": str, "description": str, "endpoint": str, "input_schema": dict }
@@ -37,11 +43,16 @@ _plugin_entry_method_map: Dict[tuple, str] = {}
 # Where to look for plugin.toml files: ./plugins/<any>/plugin.toml
 PLUGIN_CONFIG_ROOT = Path(__file__).parent / "plugins"
 # Simple bounded in-memory event queue for inspection
-EVENT_QUEUE_MAX = 1000
+_event_queue = None
+
+@app.on_event("startup")
+async def _init_event_queue():
+    global _event_queue
+    _event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
 _event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 @app.get("/health")
 async def health():
@@ -104,7 +115,7 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
             }
     except Exception as e:
         logger.exception("Failed to get plugin status")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 @app.get("/plugins")
 async def list_plugins():
     """
@@ -149,7 +160,8 @@ async def list_plugins():
                     })
                 result.append(plugin_info)
 
-            logger.info(result)
+            logger.debug("Loaded plugins: %s", result)
+
             return {"plugins": result, "message": ""}
 
         else:
@@ -161,7 +173,7 @@ async def list_plugins():
 
     except Exception as e:
         logger.exception("Failed to list plugins")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # Utility to allow other parts of the application (same process) to query plugin list
@@ -215,10 +227,17 @@ def _load_plugins_from_toml() -> None:
             module_path, class_name = entry.split(":", 1)
             mod = importlib.import_module(module_path)
             cls = getattr(mod, class_name)
-
+            # 构造一个简单的上下文 ctx 传给插件
+            plugin_logger = logger.getChild(pid)
+            ctx = PluginContext(
+                app=app,          # FastAPI 实例，插件需要时可以用
+                plugin_id= pid,    # 当前插件 id
+                logger=plugin_logger,
+                config_path=toml_path,  # 这个也可以传进去，随意
+            )
             # 实例化插件；如果将来想传 ctx，可以改成 cls(ctx)
-            instance = cls()
-            setattr(instance, "_plugin_id", pid)     # ← 就加在这里
+            instance = cls(ctx)
+            instance._plugin_id = pid  # 注入 plugin_id 供实例内部使用
             _plugin_instances[pid] = instance
             plugin_meta = {
                 "id": pid,
@@ -239,7 +258,6 @@ def _load_plugins_from_toml() -> None:
             # 自动扫描实例的方法，查找 EventMeta 并将对应的 EventHandler 注册到 _event_handlers
             # 使用 event_base.py 中约定的 EVENT_META_ATTR（如果插件方法被装饰器标注了元信息）
             try:
-                from event_base import EVENT_META_ATTR, EventHandler as _EB_EventHandler
                 for name, member in inspect.getmembers(instance, predicate=callable):
                     # 忽略私有方法
                     if name.startswith("_"):
@@ -256,24 +274,26 @@ def _load_plugins_from_toml() -> None:
                     try:
                         if getattr(event_meta, "event_type", None) != "plugin_entry":
                             continue
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Failed to check event_type for %s.%s: %s", pid, name, e)
                         continue
                     # 兼容两种 key 约定： "pid.<id>" 和 "pid:plugin_entry:<id>"
                     try:
                         eid = getattr(event_meta, "id", name)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Failed to check event_type for %s.%s: %s", pid, name, e)
                         eid = name
                     key1 = f"{pid}.{eid}"
                     key2 = f"{pid}:plugin_entry:{eid}"
                     # 构造 EventHandler 并注册（最后注册的覆盖同名）
-                    _event_handlers[key1] = _EB_EventHandler(meta=event_meta, handler=member)
-                    _event_handlers[key2] = _EB_EventHandler(meta=event_meta, handler=member)
+                    _event_handlers[key1] = EventHandler(meta=event_meta, handler=member)
+                    _event_handlers[key2] = EventHandler(meta=event_meta, handler=member)
                     # 记录 (plugin_id, entry_id) -> python method 名，供触发时服务器端回退使用
                     try:
                         _plugin_entry_method_map[(pid, str(eid))] = name
                     except Exception:
-                        pass
- 
+                        logger.debug("Failed to map entry method for %s.%s", pid, eid, exc_info=True)
+
                 # 新增：基于 plugin.toml 中列出的 entries（如果有），尝试为实例中对应的方法自动注册 EventHandler
                 try:
                     entries = conf.get("entries") or pdata.get("entries") or []
@@ -283,23 +303,52 @@ def _load_plugins_from_toml() -> None:
                             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
                             if not eid:
                                 continue
+                            handler_fn = None
                             # prefer instance method matching eid
                             if hasattr(instance, eid):
                                 handler_fn = getattr(instance, eid)
-                                _event_handlers[f"{pid}.{eid}"] = _EB_EventHandler(meta=type("M", (), {"event_type":"plugin_entry","id":eid,"input_schema":ent.get("input_schema",{}) if isinstance(ent, dict) else {}})(), handler=handler_fn)
-                                _event_handlers[f"{pid}:plugin_entry:{eid}"] = _EB_EventHandler(meta=type("M", (), {"event_type":"plugin_entry","id":eid,"input_schema":ent.get("input_schema",{}) if isinstance(ent, dict) else {}})(), handler=handler_fn)
-                        except Exception:
-                            continue
+                            if handler_fn is None:
+                                logger.debug(
+                                    "No handler found for entry %s on plugin %s, skipping auto-registration from toml",
+                                    eid,
+                                    pid,
+                                )
+                                continue
+
+                            @dataclass
+                            class SimpleEntryMeta:
+                                event_type: str
+                                id: str
+                                name: str
+                                description: str
+                                input_schema: dict
+
+                            entry_meta = SimpleEntryMeta(
+                                event_type="plugin_entry",
+                                id=eid,
+                                name=ent.get("name", "") if isinstance(ent, dict) else "",
+                                description=ent.get("description", "") if isinstance(ent, dict) else "",
+                                input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
+                            )
+                            _event_handlers[f"{pid}.{eid}"] = EventHandler(meta=entry_meta, handler=handler_fn)
+                            _event_handlers[f"{pid}:plugin_entry:{eid}"] = EventHandler(meta=entry_meta, handler=handler_fn)
+                        except Exception as e:
+                                logger.debug("Failed to register entry %s for plugin %s: %s",eid,pid,e,exc_info=True)
+                                continue
                 except Exception:
-                    # ignore if plugin.toml doesn't list entries in expected format
-                    pass
+                    # 如果 plugin.toml 没有按预期格式列出 entries，则跳过
+                    logger.debug(
+                        "No valid entries found in plugin.toml for plugin %s, skipping auto-registration from toml",
+                        pid,
+                        exc_info=True
+                    )
  
             except Exception:
                 logger.exception("Failed to auto-register EventMeta handlers for plugin %s", pid)
  
             logger.info("Loaded plugin %s from %s (%s)", pid, toml_path, entry)
-        except Exception as e:
-            logger.exception("Failed to load plugin from %s: %s", toml_path, e)
+        except Exception:
+            logger.exception("Failed to load plugin from %s", toml_path)
 # NOTE: Registration endpoints are intentionally not exposed per request.
 # The server exposes plugin listing and event ingestion endpoints and a small in-process helper
 # so task_executor can either call GET /plugins remotely or import main_helper.user_plugin_server.get_plugins
@@ -391,14 +440,19 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
         except asyncio.QueueFull:
             # 丢掉最旧的一条，再塞新的
             try:
-                _ = _event_queue.get_nowait()
-            except Exception:
-                pass
+                _event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                logger.warning(
+                    "plugin_trigger: event queue reported full but was empty when trimming; dropping new event for plugin_id=%s",
+                    plugin_id,
+                )
+                return
             try:
                 _event_queue.put_nowait(event)
-            except Exception:
+            except asyncio.QueueFull:
                 logger.warning(
-                    "plugin_trigger: failed to enqueue event for plugin_id=%s", plugin_id
+                    "plugin_trigger: failed to enqueue event for plugin_id=%s after dropping oldest",
+                    plugin_id,
                 )
 
         # 小工具：根据函数签名决定用 args 还是 **args 调用，兼容 sync / async
@@ -415,10 +469,22 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
             """
             try:
                 sig = inspect.signature(fn)
-            except Exception:
+                
+            except (ValueError, TypeError) as e:
+                logger.warning("Cannot inspect signature for %s: %s", fn, e)
                 sig = None
 
             params = list(sig.parameters.values()) if sig is not None else []
+
+            # 根据签名决定调用方式
+            accepts_kwargs = False
+            accepts_single_arg = False
+            if sig is not None:
+                # 检查是否接受 **kwargs
+                accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+                # 检查是否接受单个位置参数
+                positional_params = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+                accepts_single_arg = len(positional_params) == 1
 
             # Helper to actually call and handle fallbacks
             async def _call_async():
@@ -426,27 +492,47 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
                 if len(params) == 0:
                     return await fn()
                 # Try keyword invocation first
-                try:
-                    return await fn(**(call_args or {}))
-                except TypeError:
+                if accepts_kwargs or len(params) > 0:
+                    try:
+                        return await fn(**(call_args or {}))
+                    except TypeError as e:
+                        # 真正的 TypeError，不是签名不匹配
+                        if "keyword" not in str(e) and "argument" not in str(e):
+                            raise
+                        logger.debug("Keyword invocation failed for %s: %s, trying fallback", fn, e)
+                # 尝试单个位置参数
+                if accepts_single_arg:
                     # Fallback: try single positional dict
                     try:
                         return await fn(call_args or {})
-                    except TypeError:
-                        # As a last resort, try no-arg call
-                        return await fn()
+                    except TypeError as e2:
+                        if "argument" not in str(e2):
+                            raise
+                        logger.debug("Positional invocation failed for %s: %s", fn, e2)
+                # 都不行就抛出错误
+                raise TypeError(f"Cannot find valid way to call {fn} with args {call_args}")
+ 
 
             def _call_sync():
                 if len(params) == 0:
                     return fn()
-                try:
-                    return fn(**(call_args or {}))
-                except TypeError:
+                if accepts_kwargs or len(params) > 0:
+                    try:
+                        return fn(**(call_args or {}))
+
+                    except TypeError as e:
+                        if "keyword" not in str(e) and "argument" not in str(e):
+                            raise
+                        logger.debug("Keyword invocation failed for %s: %s, trying fallback", fn, e)
+                if accepts_single_arg:
                     try:
                         return fn(call_args or {})
-                    except TypeError:
-                        return fn()
-
+                    except TypeError as e2:
+                        if "argument" not in str(e2):
+                            raise
+                        logger.debug("Positional invocation failed for %s: %s", fn, e2)
+                raise TypeError(f"Cannot find valid way to call {fn} with args {call_args}")
+                    
             if inspect.iscoroutinefunction(fn):
                 return await _call_async()
             else:
@@ -482,7 +568,7 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
                 plugin_error = {"error": str(e)}
 
             resp: Dict[str, Any] = {
-                "success": True,
+                "success": plugin_error is None,
                 "plugin_id": plugin_id,
                 "executed_entry": entry_id,
                 "args": args,
@@ -535,7 +621,7 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
             plugin_error = {"error": str(e)}
 
         resp: Dict[str, Any] = {
-            "success": True,
+            "success": plugin_error is None,
             "plugin_id": plugin_id,
             "executed_entry": entry_id,
             "args": args,
@@ -552,8 +638,10 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
         raise
     except Exception as e:
         logger.exception("plugin_trigger: unexpected error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=USER_PLUGIN_SERVER_PORT)
+    logging.basicConfig(level=logging.DEBUG)
+    host = "127.0.0.1"  # 默认只暴露本机喵
+    uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT)

@@ -10,25 +10,25 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
     // 移除当前模型
     if (this.currentModel) {
+        // 清除保存参数的定时器
+        if (this._savedParamsTimer) {
+            clearInterval(this._savedParamsTimer);
+            this._savedParamsTimer = null;
+        }
+        
         // 先清空常驻表情记录和初始参数
         this.teardownPersistentExpressions();
         this.initialParameters = {};
 
-        // 尝试还原之前覆盖的 updateParameters，避免旧引用在新模型上报错
+        // 还原 coreModel.update 覆盖
         try {
-            const mm = this.currentModel.internalModel && this.currentModel.internalModel.motionManager;
-            if (mm) {
-                if (this._mouthOverrideInstalled && typeof this._origUpdateParameters === 'function') {
-                    try { mm.updateParameters = this._origUpdateParameters; } catch (_) {}
-                }
-                if (mm && mm.expressionManager && this._mouthOverrideInstalled && typeof this._origExpressionUpdateParameters === 'function') {
-                    try { mm.expressionManager.updateParameters = this._origExpressionUpdateParameters; } catch (_) {}
-                }
+            const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
+            if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
+                coreModel.update = this._origCoreModelUpdate;
             }
         } catch (_) {}
         this._mouthOverrideInstalled = false;
-        this._origUpdateParameters = null;
-        this._origExpressionUpdateParameters = null;
+        this._origCoreModelUpdate = null;
         // 同时移除 mouthTicker（若曾启用过 ticker 模式）
         if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
             try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
@@ -84,7 +84,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     try {
-        const model = await Live2DModel.from(modelPath, { autoInteract: false });
+        const model = await Live2DModel.from(modelPath, { autoFocus: false });
         this.currentModel = model;
 
         // 解析模型目录名与根路径，供资源解析使用
@@ -131,6 +131,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         // 应用位置和缩放设置
         this.applyModelSettings(model, options);
+        
+        // 应用保存的模型参数（如果有）
+        if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
+            this.applyModelParameters(model, options.preferences.parameters);
+        }
 
         // 添加到舞台
         this.pixi_app.stage.addChild(model);
@@ -161,13 +166,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         // 设置原来的锁按钮
         this.setupHTMLLockIcon(model);
 
-        // 安装口型覆盖逻辑（屏蔽 motion 对嘴巴的控制）
-        try {
-            this.installMouthOverride();
-            console.log('已安装口型覆盖');
-        } catch (e) {
-            console.warn('安装口型覆盖失败:', e);
-        }
+        // 先不安装口型覆盖，等参数加载完成后再安装（见下方）
 
         // 加载 FileReferences 与 EmotionMapping
         if (options.loadEmotionMapping !== false) {
@@ -188,13 +187,115 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             }
         }
 
-        // 先从服务器同步映射（覆盖"常驻"），再设置常驻表情
+        // 设置常驻表情
         try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
-        // 设置常驻表情（根据 EmotionMapping.expressions.常驻 或 FileReferences 前缀推导）
         await this.setupPersistentExpressions();
 
         // 记录模型的初始参数（用于expression重置）
         this.recordInitialParameters();
+        
+        // 加载并应用模型目录中的parameters.json文件（优先级最高）
+        // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
+        if (this.modelName && model.internalModel && model.internalModel.coreModel) {
+            try {
+                const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(this.modelName)}`);
+                const data = await response.json();
+                if (data.success && data.parameters && Object.keys(data.parameters).length > 0) {
+                    // 保存参数到实例变量，供定时器定期应用
+                    this.savedModelParameters = data.parameters;
+                    this._shouldApplySavedParams = true;
+                    
+                    // 立即应用一次
+                    this.applyModelParameters(model, data.parameters);
+                } else {
+                    // 如果没有参数文件，清空保存的参数
+                    this.savedModelParameters = null;
+                    this._shouldApplySavedParams = false;
+                }
+            } catch (error) {
+                console.error('加载模型参数失败:', error);
+                this.savedModelParameters = null;
+                this._shouldApplySavedParams = false;
+            }
+        } else {
+            this.savedModelParameters = null;
+            this._shouldApplySavedParams = false;
+        }
+        
+        // 重新安装口型覆盖
+        try {
+            this.installMouthOverride();
+        } catch (e) {
+            console.error('安装口型覆盖失败:', e);
+        }
+        
+        // 如果有保存的参数，使用定时器定期应用，确保不被常驻表情覆盖
+        if (this.savedModelParameters && this._shouldApplySavedParams) {
+            // 清除之前的定时器（如果存在）
+            if (this._savedParamsTimer) {
+                clearInterval(this._savedParamsTimer);
+            }
+            
+            // 动画相关参数列表（这些参数不应该被覆盖，让模型保持动画）
+            const animationParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ', 
+                                    'ParamBreath', 'ParamEyeLOpen', 'ParamEyeROpen', 'ParamEyeBallX', 'ParamEyeBallY',
+                                    'ParamArm', 'ParamHand', 'ParamShoulder', 'ParamElbow', 'ParamWrist'];
+            const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+            const visibilityParams = ['ParamOpacity', 'ParamVisibility']; // 跳过可见性参数，防止模型被设置为不可见
+            
+            // 获取常驻表情的所有参数ID集合（用于保护去水印等常驻表情参数）
+            const persistentParamIds = this.getPersistentExpressionParamIds();
+            
+            // 每100ms应用一次保存的参数（但跳过常驻表情已设置的参数，保护去水印等功能）
+            this._savedParamsTimer = setInterval(() => {
+                if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                    return;
+                }
+                
+                const coreModel = this.currentModel.internalModel.coreModel;
+                let appliedCount = 0;
+                let skippedPersistentCount = 0;
+                
+                for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
+                    // 跳过口型参数（口型参数由口型同步控制）
+                    if (lipSyncParams.includes(paramId)) continue;
+                    // 跳过动画参数（让模型保持动画效果）
+                    if (animationParams.includes(paramId)) continue;
+                    // 跳过 param_${i} 格式的参数（这些可能是动画参数，不确定）
+                    if (paramId.startsWith('param_')) continue;
+                    // 跳过可见性参数，防止模型被设置为不可见
+                    if (visibilityParams.includes(paramId)) continue;
+                    // 跳过常驻表情已设置的参数（保护去水印等功能，同时允许用户设置其他参数）
+                    if (persistentParamIds.has(paramId)) {
+                        skippedPersistentCount++;
+                        continue;
+                    }
+                    
+                    try {
+                        // 只对明确的外观参数ID进行覆盖
+                        const idx = coreModel.getParameterIndex(paramId);
+                        if (idx >= 0 && typeof value === 'number' && Number.isFinite(value)) {
+                            coreModel.setParameterValueByIndex(idx, value);
+                            appliedCount++;
+                        }
+                    } catch (_) {}
+                }
+                
+                // 调试信息（仅在开发时输出）
+                // if (appliedCount > 0 || skippedPersistentCount > 0) {
+                //     console.log(`应用用户参数: ${appliedCount}个, 跳过常驻表情参数: ${skippedPersistentCount}个`);
+                // }
+            }, 100); // 每100ms应用一次
+        }
+        
+        // 如果之前应用了保存的参数（从用户偏好），在常驻表情设置后再次应用（防止被覆盖）
+        // 但模型目录的parameters.json优先级更高，所以这里只作为备用
+        if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
+            // 延迟一点确保常驻表情已经设置完成，并且模型目录参数已经加载
+            setTimeout(() => {
+                this.applyModelParameters(model, options.preferences.parameters);
+            }, 600); // 在模型目录参数之后应用
+        }
 
         // 调用回调函数
         if (this.onModelLoaded) {
@@ -210,7 +311,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             console.warn('模型加载失败，尝试回退到默认模型: mao_pro');
             try {
                 const defaultModelPath = '/static/mao_pro/mao_pro.model3.json';
-                const model = await Live2DModel.from(defaultModelPath, { autoInteract: false });
+                const model = await Live2DModel.from(defaultModelPath, { autoFocus: false });
                 this.currentModel = model;
 
                 // 解析模型目录名与根路径，供资源解析使用
@@ -303,9 +404,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                     }
                 }
 
-                // 先从服务器同步映射（覆盖"常驻"），再设置常驻表情
+                // 设置常驻表情
                 try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
-                // 设置常驻表情（根据 EmotionMapping.expressions.常驻 或 FileReferences 前缀推导）
                 await this.setupPersistentExpressions();
 
                 // 调用回调函数
@@ -329,80 +429,126 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
 
-// 安装覆盖：在 motion 参数更新后强制写入口型参数
+// 安装覆盖：同时覆盖 motionManager.update 和 coreModel.update，双重保险
+// motionManager.update 会重置参数，所以在其后覆盖；coreModel.update 前再覆盖一次确保生效
 Live2DManager.prototype.installMouthOverride = function() {
-    if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.motionManager) {
+    if (!this.currentModel || !this.currentModel.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
     }
 
-    const mm = this.currentModel.internalModel.motionManager;
-
-    // 如果之前装过在其他模型上，先尝试还原
-    try {
-        if (this._mouthOverrideInstalled) {
-            if (typeof this._origUpdateParameters === 'function') {
-                try { mm.updateParameters = this._origUpdateParameters; } catch (_) {}
-            }
-            if (mm.expressionManager && typeof this._origExpressionUpdateParameters === 'function') {
-                try { mm.expressionManager.updateParameters = this._origExpressionUpdateParameters; } catch (_) {}
-            }
-            this._mouthOverrideInstalled = false;
-            this._origUpdateParameters = null;
-            this._origExpressionUpdateParameters = null;
-        }
-    } catch (_) {}
-
-    if (typeof mm.updateParameters !== 'function') {
-        throw new Error('motionManager.updateParameters 不可用');
+    const internalModel = this.currentModel.internalModel;
+    const coreModel = internalModel.coreModel;
+    const motionManager = internalModel.motionManager;
+    
+    if (!coreModel) {
+        throw new Error('coreModel 不可用');
     }
 
-    // 绑定原函数并覆盖
-    const orig = mm.updateParameters.bind(mm);
-    mm.updateParameters = (coreModel, now) => {
-        const updated = orig(coreModel, now);
-        try {
-            const mouthIds = ['ParamMouthOpenY', 'ParamO'];
-            for (const id of mouthIds) {
-                try {
-                    if (coreModel.getParameterIndex(id) !== -1) {
-                        coreModel.setParameterValueById(id, this.mouthValue, 1);
-                    }
-                } catch (_) {}
-            }
-        } catch (_) {}
-        return updated;
-    };
-    this._origUpdateParameters = orig; // 保存可还原的实现（已绑定）
+    // 如果之前装过，先还原
+    if (this._mouthOverrideInstalled) {
+        if (typeof this._origMotionManagerUpdate === 'function' && motionManager) {
+            try { motionManager.update = this._origMotionManagerUpdate; } catch (_) {}
+        }
+        if (typeof this._origCoreModelUpdate === 'function') {
+            try { coreModel.update = this._origCoreModelUpdate; } catch (_) {}
+        }
+        this._origMotionManagerUpdate = null;
+        this._origCoreModelUpdate = null;
+    }
 
-    // 也覆盖 expressionManager.updateParameters，防止表情参数覆盖嘴巴
-    if (mm.expressionManager && typeof mm.expressionManager.updateParameters === 'function') {
-        const origExp = mm.expressionManager.updateParameters.bind(mm.expressionManager);
-        mm.expressionManager.updateParameters = (coreModel, now) => {
-            const updated = origExp(coreModel, now);
+    // 口型参数列表（这些参数不会被常驻表情覆盖）
+    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    
+    // 缓存参数索引，避免每帧查询
+    const mouthParamIndices = {};
+    for (const id of ['ParamMouthOpenY', 'ParamO']) {
+        try {
+            const idx = coreModel.getParameterIndex(id);
+            if (idx >= 0) mouthParamIndices[id] = idx;
+        } catch (_) {}
+    }
+    
+    // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
+    if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
+        const origMotionManagerUpdate = internalModel.motionManager.update.bind(internalModel.motionManager);
+        this._origMotionManagerUpdate = origMotionManagerUpdate;
+        
+        internalModel.motionManager.update = () => {
+            // 先调用原始的 motionManager.update
+            if (origMotionManagerUpdate) {
+                origMotionManagerUpdate();
+            }
+            // 然后在动作更新后立即覆盖参数
             try {
-                const mouthIds = ['ParamMouthOpenY', 'ParamO'];
-                for (const id of mouthIds) {
+                // 写入口型参数
+                for (const [id, idx] of Object.entries(mouthParamIndices)) {
                     try {
-                        if (coreModel.getParameterIndex(id) !== -1) {
-                            coreModel.setParameterValueById(id, this.mouthValue, 1);
-                        }
+                        coreModel.setParameterValueByIndex(idx, this.mouthValue);
                     } catch (_) {}
                 }
+                // 写入常驻表情参数
+                if (this.persistentExpressionParamsByName) {
+                    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+                    for (const name in this.persistentExpressionParamsByName) {
+                        const params = this.persistentExpressionParamsByName[name];
+                        if (Array.isArray(params)) {
+                            for (const p of params) {
+                                if (lipSyncParams.includes(p.Id)) continue;
+                                try {
+                                    coreModel.setParameterValueById(p.Id, p.Value);
+                                } catch (_) {}
+                            }
+                        }
+                    }
+                }
             } catch (_) {}
-            return updated;
         };
-        this._origExpressionUpdateParameters = origExp;
-    } else {
-        this._origExpressionUpdateParameters = null;
     }
-
-    // 若此前使用了 ticker 覆盖，确保移除
-    if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
-        try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
-        this._mouthTicker = null;
-    }
+    
+    // 覆盖 coreModel.update - 在调用原始 update 之前写入参数
+    // 先保存原始的 update 方法
+    const origCoreModelUpdate = coreModel.update ? coreModel.update.bind(coreModel) : null;
+    this._origCoreModelUpdate = origCoreModelUpdate;
+    
+    // 覆盖 coreModel.update，确保在调用原始方法前写入参数
+    coreModel.update = () => {
+        try {
+            // 1. 强制写入口型参数
+            for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                try {
+                    coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                } catch (_) {}
+            }
+            
+            // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
+            if (this.persistentExpressionParamsByName) {
+                const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+                for (const name in this.persistentExpressionParamsByName) {
+                    const params = this.persistentExpressionParamsByName[name];
+                    if (Array.isArray(params)) {
+                        for (const p of params) {
+                            if (lipSyncParams.includes(p.Id)) continue;
+                            try {
+                                coreModel.setParameterValueById(p.Id, p.Value);
+                            } catch (_) {}
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('口型覆盖参数写入失败:', e);
+        }
+        
+        // 调用原始的 update 方法（重要：必须调用，否则模型无法渲染）
+        if (origCoreModelUpdate) {
+            origCoreModelUpdate();
+        } else {
+            console.error('警告：原始 coreModel.update 方法不存在，模型可能无法正常渲染');
+        }
+    };
 
     this._mouthOverrideInstalled = true;
+    console.log('已安装双重参数覆盖（motionManager.update 后 + coreModel.update 前）');
 };
 
 // 设置嘴巴开合值（0~1）
@@ -430,7 +576,6 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
     const { preferences, isMobile = false } = options;
 
     if (isMobile) {
-        // 移动端设置
         const scale = Math.min(
             0.5,
             window.innerHeight * 1.3 / 4000,
@@ -441,27 +586,122 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
         model.y = this.pixi_app.renderer.height * 0.28;
         model.anchor.set(0.5, 0.1);
     } else {
-        // 桌面端设置
         if (preferences && preferences.scale && preferences.position) {
-            // 使用保存的偏好设置
-            model.scale.set(preferences.scale.x, preferences.scale.y);
-            model.x = preferences.position.x;
-            model.y = preferences.position.y;
+            const scaleX = Number(preferences.scale.x);
+            const scaleY = Number(preferences.scale.y);
+            const posX = Number(preferences.position.x);
+            const posY = Number(preferences.position.y);
+            
+            // 验证缩放值是否有效
+            if (Number.isFinite(scaleX) && Number.isFinite(scaleY) && 
+                scaleX > 0 && scaleY > 0 && scaleX < 10 && scaleY < 10) {
+                model.scale.set(scaleX, scaleY);
+            } else {
+                console.warn('保存的缩放设置无效，使用默认值');
+                const defaultScale = Math.min(
+                    0.5,
+                    (window.innerHeight * 0.75) / 7000,
+                    (window.innerWidth * 0.6) / 7000
+                );
+                model.scale.set(defaultScale);
+            }
+            
+            // 验证位置值是否有效
+            if (Number.isFinite(posX) && Number.isFinite(posY) &&
+                Math.abs(posX) < 100000 && Math.abs(posY) < 100000) {
+                model.x = posX;
+                model.y = posY;
+            } else {
+                console.warn('保存的位置设置无效，使用默认值');
+                model.x = this.pixi_app.renderer.width;
+                model.y = this.pixi_app.renderer.height;
+            }
         } else {
-            // 使用默认设置（改为靠屏幕右侧）
             const scale = Math.min(
                 0.5,
                 (window.innerHeight * 0.75) / 7000,
                 (window.innerWidth * 0.6) / 7000
             );
             model.scale.set(scale);
-            // 将默认 x 调整到屏幕靠右位置，使用 0.85 作为右侧偏移比例
-            // 向右下角进一步偏移，靠近屏幕右下
             model.x = this.pixi_app.renderer.width;
             model.y = this.pixi_app.renderer.height;
         }
-        // 增大 anchor.x 以便模型更靠近右侧边缘
         model.anchor.set(0.65, 0.75);
     }
+};
+
+// 应用模型参数
+Live2DManager.prototype.applyModelParameters = function(model, parameters) {
+    if (!model || !model.internalModel || !model.internalModel.coreModel || !parameters) {
+        return;
+    }
+    
+    const coreModel = model.internalModel.coreModel;
+    const persistentParamIds = this.getPersistentExpressionParamIds();
+    const visibilityParams = ['ParamOpacity', 'ParamVisibility']; // 跳过可见性参数，防止模型被设置为不可见
+
+    for (const paramId in parameters) {
+        if (parameters.hasOwnProperty(paramId)) {
+            try {
+                const value = parameters[paramId];
+                if (typeof value !== 'number' || !Number.isFinite(value)) {
+                    continue;
+                }
+                
+                // 跳过常驻表情已设置的参数（保护去水印等功能）
+                if (persistentParamIds.has(paramId)) {
+                    continue;
+                }
+                
+                // 跳过可见性参数，防止模型被设置为不可见
+                if (visibilityParams.includes(paramId)) {
+                    continue;
+                }
+                
+                let idx = -1;
+                if (paramId.startsWith('param_')) {
+                    const indexStr = paramId.replace('param_', '');
+                    const parsedIndex = parseInt(indexStr, 10);
+                    if (!isNaN(parsedIndex) && parsedIndex >= 0 && parsedIndex < coreModel.getParameterCount()) {
+                        idx = parsedIndex;
+                    }
+                } else {
+                    try {
+                        idx = coreModel.getParameterIndex(paramId);
+                    } catch (e) {
+                        // Ignore
+                    }
+                }
+                
+                if (idx >= 0) {
+                    coreModel.setParameterValueByIndex(idx, value);
+                }
+            } catch (e) {
+                // Ignore
+            }
+        }
+    }
+    
+    // 参数已应用
+};
+
+// 获取常驻表情的所有参数ID集合（用于保护去水印等常驻表情参数）
+Live2DManager.prototype.getPersistentExpressionParamIds = function() {
+    const paramIds = new Set();
+    
+    if (this.persistentExpressionParamsByName) {
+        for (const name in this.persistentExpressionParamsByName) {
+            const params = this.persistentExpressionParamsByName[name];
+            if (Array.isArray(params)) {
+                for (const p of params) {
+                    if (p && p.Id) {
+                        paramIds.add(p.Id);
+                    }
+                }
+            }
+        }
+    }
+    
+    return paramIds;
 };
 

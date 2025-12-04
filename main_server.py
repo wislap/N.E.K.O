@@ -75,6 +75,8 @@ from utils.workshop_utils import (
     extract_workshop_root_from_items
 )
 
+
+
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
 
@@ -97,7 +99,7 @@ def initialize_steamworks():
         # 显示Steamworks初始化过程的详细日志
         print("正在初始化Steamworks...")
         steamworks.initialize()
-        
+        steamworks.UserStats.RequestCurrentStats()
         # 初始化后再次获取应用ID以确认
         actual_app_id = steamworks.app_id
         print(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
@@ -440,8 +442,11 @@ async def save_preferences(request: Request):
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
         
+        # 获取参数（可选）
+        parameters = data.get('parameters')
+        
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale']):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -1313,6 +1318,13 @@ async def proactive_chat(request: Request):
 async def get_l2d_manager(request: Request):
     """渲染Live2D模型管理器页面"""
     return templates.TemplateResponse("templates/l2d_manager.html", {
+        "request": request
+    })
+
+@app.get("/live2d_parameter_editor", response_class=HTMLResponse)
+async def live2d_parameter_editor(request: Request):
+    """Live2D参数编辑器页面"""
+    return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
         "request": request
     })
 
@@ -3232,6 +3244,116 @@ async def get_model_files(model_name: str):
         logger.error(f"获取模型文件列表失败: {e}")
         return {"success": False, "error": str(e)}
 
+@app.get('/api/live2d/model_parameters/{model_name}')
+async def get_model_parameters(model_name: str):
+    """获取指定Live2D模型的参数信息（从.cdi3.json文件）"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return {"success": False, "error": f"模型 {model_name} 不存在"}
+        
+        # 查找.cdi3.json文件
+        cdi3_file = None
+        for file in os.listdir(model_dir):
+            if file.endswith('.cdi3.json'):
+                cdi3_file = os.path.join(model_dir, file)
+                break
+        
+        if not cdi3_file or not os.path.exists(cdi3_file):
+            return {"success": False, "error": "未找到.cdi3.json文件"}
+        
+        # 读取.cdi3.json文件
+        with open(cdi3_file, 'r', encoding='utf-8') as f:
+            cdi3_data = json.load(f)
+        
+        # 提取参数信息
+        parameters = []
+        if 'Parameters' in cdi3_data and isinstance(cdi3_data['Parameters'], list):
+            for param in cdi3_data['Parameters']:
+                if isinstance(param, dict) and 'Id' in param:
+                    parameters.append({
+                        'id': param.get('Id'),
+                        'groupId': param.get('GroupId', ''),
+                        'name': param.get('Name', param.get('Id'))
+                    })
+        
+        # 提取参数组信息
+        parameter_groups = {}
+        if 'ParameterGroups' in cdi3_data and isinstance(cdi3_data['ParameterGroups'], list):
+            for group in cdi3_data['ParameterGroups']:
+                if isinstance(group, dict) and 'Id' in group:
+                    parameter_groups[group.get('Id')] = {
+                        'id': group.get('Id'),
+                        'name': group.get('Name', group.get('Id'))
+                    }
+        
+        return {
+            "success": True,
+            "parameters": parameters,
+            "parameter_groups": parameter_groups
+        }
+    except Exception as e:
+        logger.error(f"获取模型参数信息失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post('/api/live2d/save_model_parameters/{model_name}')
+async def save_model_parameters(model_name: str, request: Request):
+    """保存模型参数到模型目录的parameters.json文件"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
+        
+        # 获取请求体中的参数
+        body = await request.json()
+        parameters = body.get('parameters', {})
+        
+        if not isinstance(parameters, dict):
+            return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
+        
+        # 保存到parameters.json文件
+        parameters_file = os.path.join(model_dir, 'parameters.json')
+        with open(parameters_file, 'w', encoding='utf-8') as f:
+            json.dump(parameters, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
+        return {"success": True, "message": "参数保存成功"}
+    except Exception as e:
+        logger.error(f"保存模型参数失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.get('/api/live2d/load_model_parameters/{model_name}')
+async def load_model_parameters(model_name: str):
+    """从模型目录的parameters.json文件加载参数"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return {"success": False, "error": f"模型 {model_name} 不存在"}
+        
+        # 读取parameters.json文件
+        parameters_file = os.path.join(model_dir, 'parameters.json')
+        
+        if not os.path.exists(parameters_file):
+            return {"success": True, "parameters": {}}  # 文件不存在时返回空参数
+        
+        with open(parameters_file, 'r', encoding='utf-8') as f:
+            parameters = json.load(f)
+        
+        if not isinstance(parameters, dict):
+            return {"success": True, "parameters": {}}
+        
+        logger.info(f"已加载模型参数从: {parameters_file}, 参数数量: {len(parameters)}")
+        return {"success": True, "parameters": parameters}
+    except Exception as e:
+        logger.error(f"加载模型参数失败: {e}")
+        return {"success": False, "error": str(e), "parameters": {}}
+
 @app.get("/api/live2d/model_config_by_id/{model_id}")
 async def get_model_config(model_id: str):
     """获取指定Live2D模型的model3.json配置"""
@@ -4357,6 +4479,70 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
         logger.error(f"发布创意工坊物品时出错: {e}")
         raise
 
+@app.post('/api/steam/set-achievement-status/{name}')
+async def set_achievement_status(name: str):
+    if steamworks is not None:
+        try:
+            # 先请求统计数据并运行回调，确保数据已加载
+            steamworks.UserStats.RequestCurrentStats()
+            # 运行回调等待数据加载（多次运行以确保接收到响应）
+            for _ in range(10):
+                steamworks.run_callbacks()
+                await asyncio.sleep(0.1)
+            
+            achievement_status = steamworks.UserStats.GetAchievement(name)
+            logger.info(f"Achievement status: {achievement_status}")
+            if not achievement_status:
+                result = steamworks.UserStats.SetAchievement(name)
+                if result:
+                    logger.info(f"成功设置成就: {name}")
+                    steamworks.UserStats.StoreStats()
+                    steamworks.run_callbacks()
+                else:
+                    # 第一次失败，等待后重试一次
+                    logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
+                    await asyncio.sleep(0.5)
+                    steamworks.run_callbacks()
+                    result = steamworks.UserStats.SetAchievement(name)
+                    if result:
+                        logger.info(f"成功设置成就（重试后）: {name}")
+                        steamworks.UserStats.StoreStats()
+                        steamworks.run_callbacks()
+                    else:
+                        logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
+            else:
+                logger.info(f"成就已解锁，无需重复设置: {name}")
+        except Exception as e:
+            logger.error(f"设置成就失败: {e}")
+
+@app.get('/api/steam/list-achievements')
+async def list_achievements():
+    """列出Steam后台已配置的所有成就（调试用）"""
+    if steamworks is not None:
+        try:
+            steamworks.UserStats.RequestCurrentStats()
+            for _ in range(10):
+                steamworks.run_callbacks()
+                await asyncio.sleep(0.1)
+            
+            num_achievements = steamworks.UserStats.GetNumAchievements()
+            achievements = []
+            for i in range(num_achievements):
+                name = steamworks.UserStats.GetAchievementName(i)
+                if name:
+                    # 如果是bytes类型，解码为字符串
+                    if isinstance(name, bytes):
+                        name = name.decode('utf-8')
+                    status = steamworks.UserStats.GetAchievement(name)
+                    achievements.append({"name": name, "unlocked": status})
+            
+            logger.info(f"Steam后台已配置 {num_achievements} 个成就: {achievements}")
+            return JSONResponse(content={"count": num_achievements, "achievements": achievements})
+        except Exception as e:
+            logger.error(f"获取成就列表失败: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=500)
+    else:
+        return JSONResponse(content={"error": "Steamworks未初始化"}, status_code=500)
 
 @app.get('/api/file-exists')
 async def check_file_exists(path: str = None):
@@ -4677,6 +4863,105 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # 复制模型根目录到用户文档的live2d目录
             shutil.copytree(model_root_dir, target_model_dir)
+
+            # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
+            # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
+            # 这样可以兼顾官方参数与模型声明的口型参数，同时忽略未声明的作者自定义命名（避免误伤）。
+            try:
+                import json as _json
+
+                # 官方口型参数白名单（尽量全面列出常见和官方命名的嘴部/口型相关参数）
+                # 仅包含与嘴巴形状、发音帧（A/I/U/E/O）、下颚/唇动作直接相关的参数，
+                # 明确排除头部/身体/表情等其它参数（例如 ParamAngleZ、ParamAngleX 等不应在此）。
+                official_mouth_params = {
+                    # 五个基本发音帧（A/I/U/E/O）
+                    'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO',
+                    # 常见嘴部上下/开合/形状参数
+                    'ParamMouthUp', 'ParamMouthDown', 'ParamMouthOpen', 'ParamMouthOpenY',
+                    'ParamMouthForm', 'ParamMouthX', 'ParamMouthY', 'ParamMouthSmile', 'ParamMouthPucker',
+                    'ParamMouthStretch', 'ParamMouthShrug', 'ParamMouthLeft', 'ParamMouthRight',
+                    'ParamMouthCornerUpLeft', 'ParamMouthCornerUpRight',
+                    'ParamMouthCornerDownLeft', 'ParamMouthCornerDownRight',
+                    # 唇相关（部分模型/官方扩展中可能出现）
+                    'ParamLipA', 'ParamLipI', 'ParamLipU', 'ParamLipE', 'ParamLipO', 'ParamLipThickness',
+                    # 下颚（部分模型以下颚控制口型）
+                    'ParamJawOpen', 'ParamJawForward', 'ParamJawLeft', 'ParamJawRight',
+                    # 其它口型相关（保守列入）
+                    'ParamMouthAngry', 'ParamMouthAngryLine'
+                }
+
+                # 尝试读取模型的 .model3.json，提取 Groups -> Name == "LipSync" && Target == "Parameter" 的 Ids
+                model_declared_mouth_params = set()
+                try:
+                    local_model_json = target_model_dir / model_json_file.name
+                    if local_model_json.exists():
+                        with open(local_model_json, 'r', encoding='utf-8') as mf:
+                            try:
+                                model_cfg = _json.load(mf)
+                                groups = model_cfg.get('Groups') if isinstance(model_cfg, dict) else None
+                                if isinstance(groups, list):
+                                    for grp in groups:
+                                        try:
+                                            if not isinstance(grp, dict):
+                                                continue
+                                            # 仅考虑官方 Group Name 为 LipSync 且 Target 为 Parameter 的条目
+                                            if grp.get('Name') == 'LipSync' and grp.get('Target') == 'Parameter':
+                                                ids = grp.get('Ids') or []
+                                                for pid in ids:
+                                                    if isinstance(pid, str) and pid:
+                                                        model_declared_mouth_params.add(pid)
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                # 解析失败则视为未找到 groups，继续使用官方白名单
+                                pass
+                except Exception:
+                    pass
+
+                # 合并白名单（官方 + 模型声明）
+                mouth_param_whitelist = set(official_mouth_params)
+                mouth_param_whitelist.update(model_declared_mouth_params)
+
+                for motion_path in target_model_dir.rglob('*.motion3.json'):
+                    try:
+                        with open(motion_path, 'r', encoding='utf-8') as mf:
+                            try:
+                                motion_data = _json.load(mf)
+                            except Exception:
+                                # 非 JSON 或解析失败则跳过
+                                continue
+
+                        modified = False
+                        curves = motion_data.get('Curves') if isinstance(motion_data, dict) else None
+                        if isinstance(curves, list):
+                            for curve in curves:
+                                try:
+                                    if not isinstance(curve, dict):
+                                        continue
+                                    cid = curve.get('Id')
+                                    if not cid:
+                                        continue
+                                    # 严格按白名单匹配（避免模糊匹配误伤）
+                                    if cid in mouth_param_whitelist:
+                                        # 清空 Segments（若存在）
+                                        if 'Segments' in curve and curve['Segments']:
+                                            curve['Segments'] = []
+                                            modified = True
+                                except Exception:
+                                    continue
+
+                        if modified:
+                            try:
+                                with open(motion_path, 'w', encoding='utf-8') as mf:
+                                    _json.dump(motion_data, mf, ensure_ascii=False, indent=4)
+                                logger.info(f"已清除口型参数：{motion_path}")
+                            except Exception:
+                                # 写入失败则记录但不阻止上传
+                                logger.exception(f"写入 motion 文件失败: {motion_path}")
+                    except Exception:
+                        continue
+            except Exception:
+                logger.exception("处理 motion 文件时发生错误")
             
             logger.info(f"成功上传Live2D模型: {model_name} -> {target_model_dir}")
             
@@ -5056,6 +5341,19 @@ async def update_agent_flags(request: Request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+@app.get('/api/agent/flags')
+async def get_agent_flags():
+    """获取当前 agent flags 状态（供前端同步）"""
+    try:
+        async with httpx.AsyncClient(timeout=0.7) as client:
+            r = await client.get(f"http://localhost:{TOOL_SERVER_PORT}/agent/flags")
+            if not r.is_success:
+                return JSONResponse({"success": False, "error": "tool_server down"}, status_code=502)
+            return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=502)
+
+
 @app.get('/api/agent/health')
 async def agent_health():
     """Check tool_server health via main_server proxy."""
@@ -5100,12 +5398,21 @@ async def proxy_mcp_availability():
 @app.get('/api/agent/user_plugin/availability')
 async def proxy_up_availability():
     try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/available")
-            if r.is_success:
-                return JSONResponse({"ready":True, "reasons": ["test-233"]}, status_code=200)
-            else:
-                return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
+        async with httpx.AsyncClient(timeout=1.5) as client:  
+            r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/available")  
+            if not r.is_success:  
+                return JSONResponse(  
+                    {"ready": False, "reasons": [f"user_plugin_server responded {r.status_code}"]},  
+                   status_code=502,  
+                )  
+  
+           # 与 /computer_use/availability、/mcp/availability 保持一致，尽量透传对端 JSON  
+            try:  
+                data = r.json()  
+            except Exception:  
+                # 对端如果只是返回 200/空体，就退回一个简单的 ready=True  
+                data = {"ready": True, "reasons": []}  
+            return JSONResponse(data)  
     except Exception as e:
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
@@ -5190,7 +5497,7 @@ async def get_task_status():
 
 
 @app.post('/api/agent/admin/control')
-async def proxy_admin_control(payload):
+async def proxy_admin_control(payload: dict = Body(...)):
     """Proxy admin control commands to tool server."""
     try:
         import httpx

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 DirectTaskExecutor: 合并 Analyzer + Planner 的功能
-并行评估 MCP 和 ComputerUse 可行性（两个独立 LLM 调用）
-优先使用 MCP，其次使用 ComputerUse
+并行评估 MCP 和 ComputerUse 和 UserPlugin 可行性（三个独立 LLM 调用）
+优先使用 MCP，其次使用 ComputerUse，最后使用 UserPlugin
 """
 import json
 import asyncio
@@ -60,7 +60,7 @@ class DirectTaskExecutor:
     
     流程:
     1. 并行调用多个评估器：_assess_mcp、_assess_user_plugin、_assess_computer_use
-    2. 优先使用 MCP（如果可行），其次 UserPlugin，再次 ComputerUse（优先级可调整）
+    2. 优先使用 MCP（如果可行），`其次 UserPlugin，`再次 ComputerUse,`其次 UserPlugin（优先级可调整）
     3. 执行选中的方法
     """
     
@@ -95,7 +95,7 @@ class DirectTaskExecutor:
                         self.plugin_list = plugin_list  # 更新实例变量
             except Exception as e:
                 logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
-        logger.info(self.plugin_list)
+        logger.info(f"[Agent] Loaded {len(self.plugin_list)} plugins: {[p.get('id', 'unknown') for p in self.plugin_list if isinstance(p, dict)]}")
         return self.plugin_list
 
 
@@ -335,6 +335,7 @@ OUTPUT FORMAT (strict JSON):
             if not plugins:
                 return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"No plugins"})
         except Exception:
+            logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
             return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"Invalid plugins"})
     
         # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
@@ -378,15 +379,6 @@ OUTPUT FORMAT (strict JSON):
         if len(plugins_desc) > 2000:
             plugins_desc = plugins_desc[:2000] + "\n... (truncated)"
         logger.debug(f"[UserPlugin] passing plugin descriptions (truncated): {plugins_desc[:1000]}")
-        
-        # Provide a concrete JSON example to guide model outputs and reduce parsing errors
-        example_json = json.dumps({
-            "has_task": True,
-            "can_execute": True,
-            "task_description": "example: call testPlugin with a message",
-            "plugin_id": "testPlugin",
-            "plugin_args": {"message": "hello"}
-        }, ensure_ascii=False)
         
         # Strongly enforce JSON-only output to reduce parsing errors
         # NOTE: Require the model to return entry_id when has_task and can_execute are true.
@@ -458,8 +450,8 @@ Return only the JSON object, nothing else.
                     prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
                 except Exception:
                     prompt_dump = "(failed to build prompt dump)"
-                logger.info(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
-                logger.info(f"[UserPlugin Assessment] raw LLM response: {repr(raw_text)[:2000]}")
+                logger.debug(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
+                logger.debug(f"[UserPlugin Assessment] raw LLM response: {repr(raw_text)[:2000]}")
                 
                 text = raw_text.strip() if isinstance(raw_text, str) else ""
                 
@@ -474,7 +466,7 @@ Return only the JSON object, nothing else.
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.error(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
                     return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": f"JSON parse error: {e}"})
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
@@ -505,7 +497,7 @@ Return only the JSON object, nothing else.
         """
         并行评估 MCP 和 ComputerUse，然后执行任务
         
-        优先级: MCP > ComputerUse
+        优先级: MCP > ComputerUse > UserPlugin
         """
         import uuid
         task_id = str(uuid.uuid4())
@@ -565,7 +557,6 @@ Return only the JSON object, nothing else.
             assessment_tasks.append(('mcp', self._assess_mcp(conversation, capabilities)))
         
         # user plugin 支路（由外部 provider 提供插件列表）
-        user_plugin_enabled = agent_flags.get("user_plugin_enabled", self.user_plugin_enabled_default)
         await self.plugin_list_provider()
         plugins = self.plugin_list
         
@@ -644,7 +635,7 @@ Return only the JSON object, nothing else.
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
             except Exception as e:
-                logger.error(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -756,7 +747,10 @@ Return only the JSON object, nothing else.
         task_description = getattr(up_decision, "task_description", "")
         # Optional: allow up_decision to specify a specific entry id
         # Prefer explicit 'entry_id' returned by the LLM (up_decision.entry_id), then fallback to older names
-        plugin_entry_id = getattr(up_decision, "entry_id", None) # or getattr(up_decision, "plugin_entry_id", None) or plugin_args.pop("_entry", None)
+        plugin_entry_id = (
+            getattr(up_decision, "entry_id", None)
+            or getattr(up_decision, "plugin_entry_id", None)
+            or (plugin_args.pop("_entry", None) if isinstance(plugin_args, dict) else None))
         
         if not plugin_id:
             return TaskResult(
@@ -790,6 +784,7 @@ Return only the JSON object, nothing else.
                     plugin_meta = p
                     break
             except Exception:
+                logger.debug(f"[UserPlugin] Skipped malformed plugin entry during lookup: {p}", exc_info=True)
                 continue
         
         if plugin_meta is None:
@@ -821,6 +816,7 @@ Return only the JSON object, nothing else.
                     try:
                         data = r.json()
                     except Exception:
+                        logger.debug("[TaskExecutor] Failed to parse trigger response as JSON, using text fallback", exc_info=True)
                         data = {"raw_text": r.text}
                     # Enhanced logging: include trigger_body and returned data for diagnosis
                     try:
@@ -841,7 +837,7 @@ Return only the JSON object, nothing else.
                         has_task=True,
                         task_description=task_description,
                         execution_method='user_plugin',
-                        success=False,
+                        success=False, # False indicates trigger accepted but not yet completed
                         result=result_obj,
                         tool_name=plugin_name,
                         tool_args=plugin_args,
@@ -863,7 +859,7 @@ Return only the JSON object, nothing else.
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
         except Exception as e:
-            logger.error(f"[TaskExecutor] Trigger call error: {e}")
+            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

@@ -1,10 +1,8 @@
-# neko_plugin_core/plugin_base.pyfrom plugin_server import upda
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from .event_base import EventHandler, EventMeta
-from user_plugin_server import update_plugin_status
+from .event_base import EventHandler, EventMeta, EVENT_META_ATTR
+from .user_plugin_server import update_plugin_status
 NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
-EVENT_META_ATTR = "__neko_event_meta__"
 NEKO_PLUGIN_TAG = "__neko_plugin__"
 
 
@@ -34,6 +32,8 @@ class NekoPluginBase:
         entries: Dict[str, EventHandler] = {}
         for attr_name in dir(self):
             value = getattr(self, attr_name)
+            if not callable(value):
+                continue
             meta: EventMeta | None = getattr(value, EVENT_META_ATTR, None)
             if meta:
                 entries[meta.id] = EventHandler(meta=meta, handler=value)
@@ -49,3 +49,4 @@ class NekoPluginBase:
                 # 保险一点，避免忘记注入
                 raise RuntimeError("Plugin instance missing _plugin_id, cannot report status")
             update_plugin_status(pid, status)
+            
