@@ -2683,6 +2683,7 @@ function init_app(){
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
         const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
+        const agentUserPluginCheckbox = document.getElementById('live2d-agent-user-plugin');
         
         // 【改进1】只有当总开关关闭 且 弹窗未打开时，才停止轮询
         // 如果弹窗打开，即使总开关关闭也要继续轮询（显示服务器状态）
@@ -2745,7 +2746,7 @@ function init_app(){
                             agentMasterCheckbox._autoDisabled = false;
                             if (typeof agentMasterCheckbox._updateStyle === 'function') agentMasterCheckbox._updateStyle();
                             // 复位子开关
-                            [agentKeyboardCheckbox, agentMcpCheckbox].forEach(cb => {
+                            [agentKeyboardCheckbox, agentMcpCheckbox,agentUserPluginCheckbox].forEach(cb => {
                                 if (cb) {
                                     cb.checked = false;
                                     cb.disabled = true;
@@ -2778,6 +2779,14 @@ function init_app(){
                             agentMcpCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
                             agentMcpCheckbox._autoDisabled = false;
                             if (typeof agentMcpCheckbox._updateStyle === 'function') agentMcpCheckbox._updateStyle();
+                        }
+                        if (agentUserPluginCheckbox && !agentUserPluginCheckbox._processing && agentUserPluginCheckbox.checked !== (flags.user_plugin_enabled || false)) {
+                            console.log('[App] 同步MCP工具开关状态:', flags.user_plugin_enabled);
+                            agentUserPluginCheckbox.checked = flags.user_plugin_enabled || false;
+                            agentUserPluginCheckbox._autoDisabled = true;
+                            agentUserPluginCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+                            agentUserPluginCheckbox._autoDisabled = false;
+                            if (typeof agentUserPluginCheckbox._updateStyle === 'function') agentUserPluginCheckbox._updateStyle();
                         }
                     }
                 }
@@ -2930,12 +2939,13 @@ function init_app(){
         let masterOperationSeq = 0;
         let keyboardOperationSeq = 0;
         let mcpOperationSeq = 0;
+        let userPluginOperationSeq = 0;
         
         // 标记这些 checkbox 有外部处理器（用于 live2d-ui.js 中的 _processing 标志管理）
         agentMasterCheckbox._hasExternalHandler = true;
         if (agentKeyboardCheckbox) agentKeyboardCheckbox._hasExternalHandler = true;
         if (agentMcpCheckbox) agentMcpCheckbox._hasExternalHandler = true;
-        if (agentUserPluginCheckbox) agentMcpCheckbox._hasExternalHandler = true;
+        if (agentUserPluginCheckbox) agentUserPluginCheckbox._hasExternalHandler = true;
         
         
         // 辅助函数：同步更新 checkbox 的 UI 样式
@@ -3070,19 +3080,10 @@ function init_app(){
                             agentMcpCheckbox.disabled = !available;
                             agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.mcpTools')}) : 'MCP工具不可用');
                             syncCheckboxUI(agentMcpCheckbox);
-                        })(),
-                        (async () => {
-                            if (!agentUserPluginCheckbox) return;
-                            const available = await checkCapability('mcp', false);
-                            // 【防竞态】检查完成后再次确认总开关仍然开启
-                            if (!agentMasterCheckbox.checked) {
-                                agentUserPluginCheckbox.disabled = true;
-                                syncCheckboxUI(agentUserPluginCheckbox);
-                                return;
-                            }
+
                             agentUserPluginCheckbox.disabled = !available;
                             agentUserPluginCheckbox.title = available ? (window.t ? window.t('settings.toggles.userPlugin') : '用户插件') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.userPlugin')}) : '用户插件不可用');
-                            syncCheckboxUI(agentMcpCheckbox);
+                            syncCheckboxUI(agentUserPluginCheckbox);
                         })()
                     ]);
                     
@@ -3095,7 +3096,7 @@ function init_app(){
                             headers:{'Content-Type':'application/json'}, 
                             body: JSON.stringify({
                                 lanlan_name: lanlan_config.lanlan_name, 
-                                flags: {agent_enabled:true, computer_use_enabled:false, mcp_enabled:false}
+                                flags: {agent_enabled:true, computer_use_enabled:false, mcp_enabled:false, user_plugin_enabled:false}
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
@@ -3305,17 +3306,95 @@ function init_app(){
             () => mcpOperationSeq,
             () => ++mcpOperationSeq
         );
+        // 用户插件开关逻辑（传入序列号的getter和setter）
+        setupSubCheckbox(
+            agentUserPluginCheckbox, 
+            'user_plugin', 
+            'user_plugin_enabled', 
+            '用户插件',
+            () => userPluginOperationSeq,
+            () => ++userPluginOperationSeq
+        );
         
-        // 监听 Agent 弹窗打开事件，在弹窗显示时检查服务器状态
-        window.addEventListener('live2d-agent-popup-opening', async () => {
-            // 如果总开关已经是开启状态，不需要检查
-            if (agentMasterCheckbox.checked) {
-                return;
+        // 从后端同步 flags 状态到前端开关（完整同步，处理所有情况）
+        async function syncFlagsFromBackend() {
+            try {
+                const resp = await fetch('/api/agent/flags');
+                if (!resp.ok) return false;
+                const data = await resp.json();
+                if (!data.success) return false;
+
+                const flags = data.agent_flags || {};
+                const analyzerEnabled = data.analyzer_enabled || false;
+                const cuEnabled = flags.computer_use_enabled || false;
+                const mcpEnabled = flags.mcp_enabled || false;
+                const userPluginEnabled = flags.user_plugin_enabled || false;
+
+                console.log('[App] 从后端获取 flags 状态:', {analyzerEnabled, cuEnabled, mcpEnabled,userPluginEnabled});
+
+                // 同步总开关状态
+                if (agentMasterCheckbox) {
+                    agentMasterCheckbox.checked = analyzerEnabled;
+                    agentMasterCheckbox.disabled = false;
+                    agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+                    syncCheckboxUI(agentMasterCheckbox);
+                }
+
+                // 同步键鼠控制子开关
+                if (agentKeyboardCheckbox) {
+                    if (analyzerEnabled) {
+                        // Agent 已开启，根据后端状态设置
+                        agentKeyboardCheckbox.checked = cuEnabled;
+                        agentKeyboardCheckbox.disabled = false; // 先设为可用，后续可用性检查会更新
+                        agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制';
+                    } else {
+                        // Agent 未开启，复位子开关
+                        agentKeyboardCheckbox.checked = false;
+                        agentKeyboardCheckbox.disabled = true;
+                        agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', {name: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制'}) : '请先开启Agent总开关';
+                    }
+                    syncCheckboxUI(agentKeyboardCheckbox);
+                }
+                // 同步 用户插件子开关
+                if (agentUserPluginCheckbox) {
+                    if (analyzerEnabled) {
+                        // Agent 已开启，根据后端状态设置
+                        agentUserPluginCheckbox.checked = mcpEnabled;
+                        agentUserPluginCheckbox.disabled = false; // 先设为可用，后续可用性检查会更新
+                        agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.userPlugin') : '用户插件';
+                    } else {
+                        // Agent 未开启，复位子开关
+                        agentUserPluginCheckbox.checked = false;
+                        agentUserPluginCheckbox.disabled = true;
+                        agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', {name: window.t ? window.t('settings.toggles.userPlugin') : '用户插件'}) : '请先开启Agent总开关';
+                    }
+                    syncCheckboxUI(agentUserPluginCheckbox);
+                }
+                // 同步 MCP 工具子开关
+                if (agentMcpCheckbox) {
+                    if (analyzerEnabled) {
+                        // Agent 已开启，根据后端状态设置
+                        agentMcpCheckbox.checked = mcpEnabled;
+                        agentMcpCheckbox.disabled = false; // 先设为可用，后续可用性检查会更新
+                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具';
+                    } else {
+                        // Agent 未开启，复位子开关
+                        agentMcpCheckbox.checked = false;
+                        agentMcpCheckbox.disabled = true;
+                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.masterRequired', {name: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具'}) : '请先开启Agent总开关';
+                    }
+                    syncCheckboxUI(agentMcpCheckbox);
+                }
+
+                return analyzerEnabled;
+            } catch (e) {
+                console.warn('[App] 同步 flags 状态失败:', e);
+                return false;
             }
         }
         
         // 暴露同步函数供外部调用（如定时轮询）
-        window.syncAgentFlagsFromBackend = syncFlagsFromBackend;
+        window.syncAgentFlagsFromBackend = syncFlagsFromBackend,
         
         // 监听 Agent 弹窗打开事件，在弹窗显示时检查服务器状态并同步 flags
         window.addEventListener('live2d-agent-popup-opening', async () => {
