@@ -177,7 +177,7 @@ def _plugin_process_runner(plugin_id: str, entry_point: str, config_path: Path,
                 else:
                     startup_fn()
             except Exception as e:
-                logger.error(f"Error in lifecycle.startup: {e}")
+                logger.exception(f"Error in lifecycle.startup: {e}")
 
         # ========== 3. 定时任务：timer ==========
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str):
@@ -188,7 +188,7 @@ def _plugin_process_runner(plugin_id: str, entry_point: str, config_path: Path,
                     else:
                         fn()
                 except Exception as e:
-                    logger.error(f"Timer '{fn_name}' failed: {e}")
+                    logger.exception(f"Timer '{fn_name}' failed: {e}")
                 time.sleep(interval_seconds)
 
         timer_events = events_by_type.get("timer", {})
@@ -267,7 +267,7 @@ class PluginProcessHost:
         self.cmd_queue = multiprocessing.Queue()
         self.res_queue = multiprocessing.Queue()
         self.status_queue = multiprocessing.Queue()
-        
+        self._pending_results: Dict[str, Any] = {}
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(plugin_id, entry_point, config_path, 
@@ -294,7 +294,14 @@ class PluginProcessHost:
 
     async def trigger(self, entry_id: str, args: dict, timeout=10.0):
         req_id = str(uuid.uuid4())
-        
+        # 先检查缓存里有没有
+        if req_id in self._pending_results:
+            res = self._pending_results.pop(req_id)
+            if res['success']:
+                return res['data']
+            else:
+                raise Exception(res['error'])
+
         self.cmd_queue.put({
             "type": "TRIGGER", "req_id": req_id, 
             "entry_id": entry_id, "args": args
@@ -308,11 +315,15 @@ class PluginProcessHost:
             try:
                 # 尝试非阻塞读
                 res = await loop.run_in_executor(None, self._get_result_safe)
-                if res and res['req_id'] == req_id:
-                    if res['success']: 
-                        return res['data']
-                    else: 
-                        raise Exception(res['error'])
+                if res:
+                    if res['req_id'] == req_id:
+                        if res['success']: 
+                            return res['data']
+                        else: 
+                            raise Exception(res['error'])
+                    else:
+                        # 缓存起来给别的请求用
+                        self._pending_results[res['req_id']] = res
             except Empty:
                 await asyncio.sleep(0.05)
         
@@ -426,7 +437,7 @@ def _load_plugins_from_toml() -> None:
                 mod = importlib.import_module(module_path)
                 cls = getattr(mod, class_name)
             except Exception as e:
-                logger.error(f"Failed to import plugin class {entry}: {e}")
+                logger.exception(f"Failed to import plugin class {entry}: {e}")
                 continue
 
             # 3. [关键步骤] 启动子进程宿主
@@ -462,7 +473,17 @@ def _load_plugins_from_toml() -> None:
 
         except Exception:
             logger.exception("Failed to load plugin from %s", toml_path)
-
+@dataclass
+class SimpleEntryMeta:
+    event_type: str = "plugin_entry"
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    input_schema: dict = None
+    
+    def __post_init__(self):
+        if self.input_schema is None:
+            self.input_schema = {}
 def _scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict):
     """
     辅助函数：在不实例化的情况下，扫描类属性获取 EventHandler 信息
@@ -500,15 +521,13 @@ def _scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict):
             handler_fn = getattr(cls, eid, None)
             
             # 构造虚拟 Meta
-            @dataclass
-            class SimpleEntryMeta:
-                event_type: str = "plugin_entry"
-                id: str = eid
-                name: str = ent.get("name", "") if isinstance(ent, dict) else ""
-                description: str = ent.get("description", "") if isinstance(ent, dict) else ""
-                input_schema: dict = ent.get("input_schema", {}) if isinstance(ent, dict) else {}
 
-            entry_meta = SimpleEntryMeta()
+            entry_meta = SimpleEntryMeta(
+                id=eid,
+                name=ent.get("name", "") if isinstance(ent, dict) else "",
+                description=ent.get("description", "") if isinstance(ent, dict) else "",
+                input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
+            )
             # 即使 handler_fn 为 None (纯配置定义)，我们也注册，保证 /plugins 能看到
             eh = EventHandler(meta=entry_meta, handler=handler_fn) 
             _event_handlers[f"{pid}.{eid}"] = eh
