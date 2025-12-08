@@ -46,6 +46,7 @@ _plugin_status: Dict[str, Dict[str, Any]] = {}
 _plugin_status_lock = threading.Lock()
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
 # Populated during plugin load to help server-side fallback when EventHandler lookup fails.
+_timer_stop_flags: Dict[str, threading.Event] = {}
 _plugin_entry_method_map: Dict[tuple, str] = {}
 # Where to look for plugin.toml files: ./plugins/<any>/plugin.toml
 PLUGIN_CONFIG_ROOT = Path(__file__).parent / "plugins"
@@ -180,8 +181,8 @@ def _plugin_process_runner(plugin_id: str, entry_point: str, config_path: Path,
                 logger.exception(f"Error in lifecycle.startup: {e}")
 
         # ========== 3. 定时任务：timer ==========
-        def _run_timer_interval(fn, interval_seconds: int, fn_name: str):
-            while True:
+        def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
+            while not stop_event.is_set():
                 try:
                     if asyncio.iscoroutinefunction(fn):
                         asyncio.run(fn())
