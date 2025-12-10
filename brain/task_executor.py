@@ -114,11 +114,8 @@ class DirectTaskExecutor:
                     try:
                         data = resp.json()
                     except Exception:
-                        # fallback to text parse
-                        try:
-                            data = json.loads(await resp.aread())
-                        except Exception:
-                            data = {}
+                        logger.warning("[Agent] Failed to parse plugins response as JSON")
+                        data = {}
                     plugin_list = data.get("plugins", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                     # only update cache when we obtained a non-empty list
                     if plugin_list:
@@ -870,7 +867,7 @@ Return only the JSON object, nothing else.
                     logger.info(
                         "[TaskExecutor] ✅ Trigger accepted for plugin %s (entry_id=%s)",
                         plugin_id,
-                        entry_id or trigger_body.get("entry_id"),
+                        plugin_entry_id or trigger_body.get("entry_id"),
                     )
                     logger.debug(
                         "[TaskExecutor] Trigger payload=%r, response=%r",

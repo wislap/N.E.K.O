@@ -366,7 +366,7 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         # testUserPlugin: log before analysis when user_plugin_enabled is true
         try:
             if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.info("testUserPlugin: Starting analyze_and_execute with user_plugin_enabled = True")
+                logger.debug("testUserPlugin: Starting analyze_and_execute with user_plugin_enabled = True")
         except Exception:
             pass
 
@@ -380,21 +380,21 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         # testUserPlugin: log after analysis decision if user_plugin_enabled is true
         try:
             if Modules.agent_flags.get("user_plugin_enabled", False):
-                logger.info("testUserPlugin: analyze_and_execute completed, checking result for user plugin involvement")
+                logger.debug("testUserPlugin: analyze_and_execute completed, checking result for user plugin involvement")
                 # If result indicates user_plugin execution or decision, log succinct info
                 if result is None:
-                    logger.info("testUserPlugin: analyze_and_execute returned None (no task detected)")
+                    logger.debug("testUserPlugin: analyze_and_execute returned None (no task detected)")
                 else:
                     # Attempt to surface if user_plugin was chosen or considered
                     try:
-                        logger.info(
+                        logger.debug(
                             "testUserPlugin: execution_method=%s, success=%s, tool_name=%s",
                             getattr(result, "execution_method", None),
                             getattr(result, "success", None),
                             getattr(result, "tool_name", None),
                         )
                     except Exception:
-                        logger.info("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
+                        logger.debug("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
         except Exception:
             pass
 
@@ -484,11 +484,17 @@ async def startup():
 
         async def _http_plugin_provider(force_refresh: bool = False):
             url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins"
+            if force_refresh:
+                url += "?refresh=true"
             try:
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     r = await client.get(url)
                     if r.status_code == 200:
-                        data = r.json()
+                        try:
+                            data = r.json()
+                        except Exception as parse_err:
+                            logger.debug(f"[Agent] plugin_list_provider parse error: {parse_err}")
+                            data = {}
                         return data.get("plugins", []) or []
             except Exception as e:
                 logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
@@ -649,7 +655,10 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
             info["error"] = str(e)
             logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
 
-    asyncio.create_task(_run_plugin())
+    task = asyncio.create_task(_run_plugin())
+    # Optional: keep a reference to avoid premature GC; if you add a tasks set, track here.
+    # Modules.background_tasks.add(task)
+    # task.add_done_callback(Modules.background_tasks.discard)
     return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
 
 
@@ -809,6 +818,28 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules.agent_flags["computer_use_enabled"] = False
             
     if isinstance(uf, bool):
+        if uf:  # Attempting to enable UserPlugin
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=1.0) as client:
+                    r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins")
+                    if r.status_code != 200:
+                        Modules.agent_flags["user_plugin_enabled"] = False
+                        Modules.notification = "无法开启 UserPlugin: 插件服务不可用"
+                        logger.warning("[Agent] Cannot enable UserPlugin: service unavailable")
+                        return {"success": True, "agent_flags": Modules.agent_flags}
+                    data = r.json()
+                    plugins = data.get("plugins", []) if isinstance(data, dict) else []
+                    if not plugins:
+                        Modules.agent_flags["user_plugin_enabled"] = False
+                        Modules.notification = "无法开启 UserPlugin: 未发现可用插件"
+                        logger.warning("[Agent] Cannot enable UserPlugin: no plugins found")
+                        return {"success": True, "agent_flags": Modules.agent_flags}
+            except Exception as e:
+                Modules.agent_flags["user_plugin_enabled"] = False
+                Modules.notification = f"开启 UserPlugin 失败: {str(e)}"
+                logger.error(f"[Agent] Cannot enable UserPlugin: {e}")
+                return {"success": True, "agent_flags": Modules.agent_flags}
         Modules.agent_flags["user_plugin_enabled"] = uf
 
     # testUserPlugin: log when user_plugin_enabled toggles
@@ -840,15 +871,12 @@ async def analyze_and_plan(payload: Dict[str, Any]):
     # This forwarding has been removed to avoid relying on that endpoint.
     # If in future a safe user-plugin integration is needed, implement a provider
     # that enumerates plugins and forwards to configured endpoints with retry/backoff.
+    # Preserve check and a light log when user_plugin_enabled is true for traceability.
     try:
-        # Preserve check and a light log when user_plugin_enabled is true for traceability.
         if Modules.agent_flags.get("user_plugin_enabled", False):
-            try:
-                logger.info("user_plugin_enabled is true but /plugin/testPlugin forwarding is disabled.")
-            except Exception:
-                pass
+            logger.info("user_plugin_enabled is true but /plugin/testPlugin forwarding is disabled.")
     except Exception:
-        pass
+        pass  # Defensive: catch edge cases in flag access
 
     # Fire-and-forget background processing and scheduling
     asyncio.create_task(_background_analyze_and_plan(messages, (payload or {}).get("lanlan_name")))
