@@ -3887,9 +3887,9 @@ function init_app(){
                 if (agentUserPluginCheckbox) {
                     if (analyzerEnabled) {
                         // Agent 已开启，根据后端状态设置
-                        agentUserPluginCheckbox.checked = userPluginEnabled;
-                        agentUserPluginCheckbox.disabled = false; // 先设为可用，后续可用性检查会更新
-                        agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.userPlugin') : '用户插件';
+                        agentUserPluginCheckbox.checked = flags.user_plugin_enabled || false;                       
+                        agentUserPluginCheckbox.disabled = true; // 先设为可用，后续可用性检查会更新
+                        agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
                     } else {
                         // Agent 未开启，复位子开关
                         agentUserPluginCheckbox.checked = false;
@@ -4026,11 +4026,7 @@ function init_app(){
                             agentUserPluginCheckbox.title = userPluginAvailable ? (window.t ? window.t('settings.toggles.userPlugin') : '用户插件') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.userPlugin')}) : '用户插件不可用');
                             syncCheckboxUI(agentUserPluginCheckbox);
                         }
-           if (agentUserPluginCheckbox) {
-                agentUserPluginCheckbox.disabled = true;
-                agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
-                syncCheckboxUI(agentUserPluginCheckbox);
-           }
+
             
             
                         setFloatingAgentStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启');
