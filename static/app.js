@@ -3396,7 +3396,7 @@ function init_app(){
         const apis = {
             computer_use: { url: '/api/agent/computer_use/availability', nameKey: 'keyboardControl' },
             mcp: { url: '/api/agent/mcp/availability', nameKey: 'mcpTools' },
-            user_plugin: { url: '/api/agent/user_plugin/availability', name: 'userPlugin'}
+            user_plugin: { url: '/api/agent/user_plugin/availability', nameKey: 'userPlugin' }
         };
         const config = apis[kind];
         if (!config) return false;
@@ -3820,7 +3820,7 @@ function init_app(){
             agentUserPluginCheckbox, 
             'user_plugin', 
             'user_plugin_enabled', 
-            '用户插件',
+            'userPlugin',
             () => userPluginOperationSeq,
             () => ++userPluginOperationSeq
         );

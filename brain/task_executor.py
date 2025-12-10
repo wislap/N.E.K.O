@@ -355,7 +355,7 @@ OUTPUT FORMAT (strict JSON):
                 logger.error(f"[ComputerUse Assessment] Failed: {e}")
                 return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
     
-    async def _assess_user_plugin(self, conversation: str, plugins: Any) -> Any:
+    async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
         """
         评估本地用户插件可行性（plugins 为外部传入的插件列表）
         返回结构与 MCP 决策类似，但包含 plugin_id/plugin_args
@@ -363,10 +363,10 @@ OUTPUT FORMAT (strict JSON):
         # 如果没有插件，快速返回
         try:
             if not plugins:
-                return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"No plugins"})
+                return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="No plugins")
         except Exception:
             logger.debug("[UserPlugin] Failed to check plugins validity", exc_info=True)
-            return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"Invalid plugins"})
+            return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Invalid plugins")
     
         # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
         lines = []
@@ -491,32 +491,32 @@ Return only the JSON object, nothing else.
                 # If the response is empty or not valid JSON, log and return a safe decision
                 if not text:
                     logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
-                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": "Empty LLM response"})
+                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
                 
                 try:
                     decision = json.loads(text)
                 except Exception as e:
                     logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
-                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": f"JSON parse error: {e}"})
+                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
-                return type("UP", (), {
-                    "has_task": decision.get("has_task", False),
-                    "can_execute": decision.get("can_execute", False),
-                    "task_description": decision.get("task_description", ""),
-                    "plugin_id": decision.get("plugin_id"),
-                    "entry_id": decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id"),
-                    "plugin_args": decision.get("plugin_args"),
-                    "reason": decision.get("reason", "")
-                })
+                return UserPluginDecision(
+                    has_task=decision.get("has_task", False),
+                    can_execute=decision.get("can_execute", False),
+                    task_description=decision.get("task_description", ""),
+                    plugin_id=decision.get("plugin_id"),
+                    entry_id=decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id"),
+                    plugin_args=decision.get("plugin_args"),
+                    reason=decision.get("reason", "")
+                )
                 
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delays[attempt])
                 else:
-                    return type("UP", (), {"has_task": False, "can_execute": False, "reason": f"Assessment error: {e}"})
+                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"Assessment error: {e}")
             except Exception as e:
-                return type("UP", (), {"has_task": False, "can_execute": False, "reason": f"Assessment error: {e}"})
+                return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"Assessment error: {e}")
     
     async def analyze_and_execute(
         self, 
@@ -862,12 +862,13 @@ Return only the JSON object, nothing else.
                     logger.debug(f"[TaskExecutor] Resolved entry_id for plugin {plugin_id}: {entry_id} (from response or trigger_body)")
                     # Return TaskResult with independent entry_id field in result
                     result_obj = {"accepted": True, "trigger_response": data, "entry_id": entry_id}
+                    # success=True 表示“触发已被接受”，实际执行进度由 plugin_server 跟踪
                     return TaskResult(
                         task_id=task_id,
                         has_task=True,
                         task_description=task_description,
                         execution_method='user_plugin',
-                        success=False, # False indicates trigger accepted but not yet completed
+                        success=True,
                         result=result_obj,
                         tool_name=plugin_name,
                         tool_args=plugin_args,

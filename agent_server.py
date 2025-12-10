@@ -623,16 +623,26 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     # Execute via task_executor.execute_user_plugin_direct in background
     async def _run_plugin():
         try:
-            res = await Modules.task_executor.execute_user_plugin_direct(task_id=task_id, plugin_id=plugin_id, plugin_args=args, entry_id=entry_id)
-            info["status"] = "completed" if res.success else "failed"
+            res = await Modules.task_executor.execute_user_plugin_direct(
+                task_id=task_id, plugin_id=plugin_id, plugin_args=args, entry_id=entry_id
+            )
             info["result"] = res.result
-            # Notify main server if appropriate
-            try:
-                summary = f'插件任务 "{plugin_id}" 已接受'
-                async with httpx.AsyncClient(timeout=0.5) as _client:
-                    await _client.post(f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result", json={"text": summary[:240], "lanlan_name": lanlan_name})
-            except Exception:
-                pass
+            # _execute_user_plugin marks success=False for "accepted but not completed", so rely on accepted flag in result
+            accepted = isinstance(res.result, dict) and res.result.get("accepted")
+            info["status"] = "completed" if accepted else "failed"
+            if not accepted and res.error:
+                info["error"] = res.error
+            # Only notify main server when actually accepted
+            if accepted:
+                try:
+                    summary = f'插件任务 "{plugin_id}" 已接受'
+                    async with httpx.AsyncClient(timeout=0.5) as _client:
+                        await _client.post(
+                            f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                            json={"text": summary[:240], "lanlan_name": lanlan_name},
+                        )
+                except Exception:
+                    pass
         except Exception as e:
             info["status"] = "failed"
             info["error"] = str(e)
