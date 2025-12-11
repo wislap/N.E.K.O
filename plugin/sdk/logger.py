@@ -190,23 +190,23 @@ class PluginFileLogger:
         
         # 记录初始化信息（仅输出到文件，不输出到控制台）
         if self._file_handler:
-            # 临时移除控制台handler，只记录到文件
-            console_handlers = []
-            for handler in list(self._logger.handlers):
-                if isinstance(handler, StreamHandler) and handler.stream == sys.stdout:
-                    console_handlers.append(handler)
-                    self._logger.removeHandler(handler)
-            
-            # 记录初始化信息（此时只会输出到文件）
-            self._logger.info(f"Plugin file logger initialized: {self.log_file}")
-            self._logger.info(f"Log level: {logging.getLevelName(self.log_level)}")
-            self._logger.info(f"Max file size: {self.max_bytes / 1024 / 1024:.1f}MB")
-            self._logger.info(f"Backup count: {self.backup_count}")
-            self._logger.info(f"Max files: {self.max_files}")
-            
-            # 恢复控制台handler
-            for handler in console_handlers:
-                self._logger.addHandler(handler)
+            # 直接写入文件handler，避免操作 handler 列表的竞态
+            init_msg = (
+                f"Plugin file logger initialized: {self.log_file}, "
+                f"level={logging.getLevelName(self.log_level)}, "
+                f"max_size={self.max_bytes / 1024 / 1024:.1f}MB, "
+                f"backup_count={self.backup_count}, max_files={self.max_files}"
+            )
+            record = logging.LogRecord(
+                name=self._logger.name,
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=0,
+                msg=init_msg,
+                args=(),
+                exc_info=None,
+            )
+            self._file_handler.emit(record)
         
         return self._logger
     

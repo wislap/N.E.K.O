@@ -83,6 +83,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     """
     在不实例化的情况下扫描类属性，提取 @EventHandler 元数据并填充全局表。
     """
+    logger = logging.getLogger(__name__)
     for name, member in inspect.getmembers(cls):
         event_meta = getattr(member, EVENT_META_ATTR, None)
         if event_meta is None and hasattr(member, "__wrapped__"):
@@ -98,11 +99,21 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
 
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:
+        logger = logging.getLogger(__name__)
         try:
             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
             if not eid:
                 continue
-            handler_fn = getattr(cls, eid, None)
+            try:
+                handler_fn = getattr(cls, eid)
+            except AttributeError:
+                logger.warning(
+                    "Entry id %s for plugin %s has no handler on class %s, skipping",
+                    eid,
+                    pid,
+                    cls.__name__,
+                )
+                continue
             entry_meta = SimpleEntryMeta(
                 id=eid,
                 name=ent.get("name", "") if isinstance(ent, dict) else "",
@@ -114,7 +125,6 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
         except (AttributeError, KeyError, TypeError) as e:
-            logger = logging.getLogger(__name__)
             logger.warning("Error parsing entry %s for plugin %s: %s", ent, pid, e, exc_info=True)
             # 继续处理其他条目，不中断整个插件加载
 

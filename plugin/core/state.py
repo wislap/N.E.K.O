@@ -6,7 +6,7 @@
 import asyncio
 import logging
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
@@ -24,8 +24,21 @@ class PluginRuntimeState:
         self.plugin_status_lock = threading.Lock()
         self.plugins_lock = threading.Lock()  # 保护 plugins 字典的线程安全
         self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
-        self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
-        self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
+        self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
+        self._event_queue: Optional[asyncio.Queue] = None
+        self._message_queue: Optional[asyncio.Queue] = None
+
+    @property
+    def event_queue(self) -> asyncio.Queue:
+        if self._event_queue is None:
+            self._event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
+        return self._event_queue
+
+    @property
+    def message_queue(self) -> asyncio.Queue:
+        if self._message_queue is None:
+            self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
+        return self._message_queue
 
 
 # 全局状态实例

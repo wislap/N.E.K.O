@@ -27,8 +27,9 @@ class TkWindowPlugin(NekoPluginBase):
         
     def _run_tk(self, title: str, message: str):
         root = tk.Tk()
-        self._root = root
-        self._should_close = False
+        with self._lock:
+            self._root = root
+            self._should_close = False
         
         root.title(title)
         label = tk.Label(root, text=message, padx=20, pady=20)
@@ -38,11 +39,13 @@ class TkWindowPlugin(NekoPluginBase):
         
         # 在 Tk 线程内部轮询关闭标志
         def poll_close_flag():
-            if self._should_close:
+            with self._lock:
+                should_close = self._should_close
+            if should_close:
                 root.destroy()
             else:
                 root.after(100, poll_close_flag)  # 100ms 后再检查一次
-        root.after(100,poll_close_flag)
+        root.after(100, poll_close_flag)
         root.mainloop()
         
         with self._lock:
@@ -65,6 +68,8 @@ class TkWindowPlugin(NekoPluginBase):
         },
     )
     def open_window(self, title: str | None = None, message: str | None = None, **_):
+        window_title = title or "N.E.K.O Tk Plugin"
+        window_message = message or "Hello from Tk plugin!"
         with self._lock:
             if self._started:
                 # 推送消息：窗口已打开
@@ -78,9 +83,12 @@ class TkWindowPlugin(NekoPluginBase):
                 )
                 return {"started": False, "reason": "window already running"}
             self._started = True
-        
-        window_title = title or "N.E.K.O Tk Plugin"
-        window_message = message or "Hello from Tk plugin!"
+            t = threading.Thread(
+                target=self._run_tk,
+                args=(window_title, window_message),
+                daemon=True,
+            )
+            self._thread = t
         
         # 推送消息：窗口正在打开
         self.ctx.push_message(
@@ -92,13 +100,7 @@ class TkWindowPlugin(NekoPluginBase):
             metadata={"action": "open", "title": window_title, "message": window_message}
         )
         
-        t = threading.Thread(
-            target=self._run_tk,
-            args=(window_title, window_message),
-            daemon=True,
-        )
         t.start()
-        self._thread = t
         
         self.report_status({"started": True})
         
