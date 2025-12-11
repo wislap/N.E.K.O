@@ -23,7 +23,6 @@ def get_plugin_config_root() -> Path:
     默认路径：plugin/plugins
     可以通过环境变量 PLUGIN_CONFIG_ROOT 覆盖
     """
-    import os
     custom_path = os.getenv("PLUGIN_CONFIG_ROOT")
     if custom_path:
         return Path(custom_path)
