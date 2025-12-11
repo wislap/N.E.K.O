@@ -166,9 +166,16 @@ def _plugin_process_runner(
                     else:
                         try:
                             res = method(**args)
-                        except TypeError:
-                            # 尝试将 args 作为单个参数传递（向后兼容）
-                            res = method(args)
+                        except TypeError as err:
+                            # 检查是否可能是旧式接口（只接收一个 dict 参数）
+                            sig = inspect.signature(method)
+                            params = list(sig.parameters.keys())
+                            if len(params) == 1 and params[0] not in args:
+                                # 旧式只接收一个 dict 的接口，尝试向后兼容
+                                res = method(args)
+                            else:
+                                # 不是旧式接口，重新抛出原始 TypeError
+                                raise err
                     
                     ret_payload["success"] = True
                     ret_payload["data"] = res
@@ -304,6 +311,16 @@ class PluginProcessHost:
             self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command: {e}")
+        
+        # 尽量通知通信管理器停止（即使不等待）
+        if getattr(self, "comm_manager", None) is not None:
+            try:
+                # 标记 shutdown event，后台协程会自行退出
+                if getattr(self.comm_manager, "_shutdown_event", None) is not None:
+                    self.comm_manager._shutdown_event.set()
+            except Exception:
+                # 保持同步关闭的"尽力而为"语义，不要让这里抛异常
+                pass
         
         # 关闭进程
         self._shutdown_process(timeout=timeout)

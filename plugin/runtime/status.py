@@ -38,8 +38,14 @@ class PluginStatusManager:
     _plugin_hosts_getter: Optional[callable] = field(default=None, init=False)
     
     def __post_init__(self):
-        """初始化异步资源"""
-        self._shutdown_event = asyncio.Event()
+        """初始化异步资源（延迟创建 Event，确保在正确的事件循环中）"""
+        # 延迟到实际使用时再创建，避免在模块导入时创建 Event
+        pass
+    
+    def _ensure_shutdown_event(self) -> None:
+        """确保 shutdown_event 已创建（延迟初始化）"""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
 
     def apply_status_update(self, plugin_id: str, status: Dict[str, Any], source: str) -> None:
         """统一落地插件状态的内部工具函数。"""
@@ -76,6 +82,7 @@ class PluginStatusManager:
         Args:
             plugin_hosts_getter: 返回 plugin_hosts 字典的回调函数
         """
+        self._ensure_shutdown_event()
         self._plugin_hosts_getter = plugin_hosts_getter
         if self._status_consumer_task is None or self._status_consumer_task.done():
             self._status_consumer_task = asyncio.create_task(self._consume_status())
@@ -91,6 +98,7 @@ class PluginStatusManager:
         self.logger.debug("Shutting down status consumer")
         
         if self._status_consumer_task and not self._status_consumer_task.done():
+            self._ensure_shutdown_event()
             self._shutdown_event.set()
             try:
                 await asyncio.wait_for(self._status_consumer_task, timeout=timeout)
@@ -110,6 +118,7 @@ class PluginStatusManager:
         
         从所有插件的状态队列中消费状态更新消息
         """
+        self._ensure_shutdown_event()
         while not self._shutdown_event.is_set():
             try:
                 if not self._plugin_hosts_getter:

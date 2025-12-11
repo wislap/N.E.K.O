@@ -119,7 +119,7 @@ class PluginCommunicationResourceManager:
         
         # 关闭线程池
         if self._executor:
-            self._executor.shutdown(wait=True, timeout=timeout)
+            self._executor.shutdown(wait=True)
             self._executor = None
         
         self.logger.debug(f"Communication resources for plugin {self.plugin_id} shutdown complete")
@@ -127,7 +127,7 @@ class PluginCommunicationResourceManager:
     def _cleanup_pending_futures(self) -> None:
         """清理所有待处理的 Future"""
         count = len(self._pending_futures)
-        for req_id, future in self._pending_futures.items():
+        for _req_id, future in self._pending_futures.items():
             if not future.done():
                 future.cancel()
         self._pending_futures.clear()

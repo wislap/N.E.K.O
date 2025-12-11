@@ -37,12 +37,16 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     """
     result = []
     
-    if not state.plugins:
-        return result
+    with state.plugins_lock:
+        if not state.plugins:
+            return result
+        
+        # 创建副本以避免长时间持有锁
+        plugins_copy = dict(state.plugins)
     
     logger.info("加载插件列表成功")
     
-    for plugin_id, plugin_meta in state.plugins.items():
+    for plugin_id, plugin_meta in plugins_copy.items():
         try:
             plugin_info = plugin_meta.copy()
             plugin_info["entries"] = []
@@ -200,24 +204,36 @@ def get_messages_from_queue(
     """
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
-    messages = []
-    count = 0
     
-    while count < max_count:
+    # 先把当前队列内容全部取出
+    remaining: List[Dict[str, Any]] = []
+    while True:
         try:
             msg = state.message_queue.get_nowait()
-            
+            remaining.append(msg)
+        except asyncio.QueueEmpty:
+            break
+    
+    # 在内存里按顺序过滤 + 构造返回
+    messages: List[Dict[str, Any]] = []
+    kept: List[Dict[str, Any]] = []
+    count = 0
+    
+    for msg in remaining:
+        if count < max_count:
             # 过滤插件ID
             if plugin_id and msg.get("plugin_id") != plugin_id:
+                kept.append(msg)
                 continue
             
             # 过滤优先级
             if priority_min is not None:
                 msg_priority = msg.get("priority", 0)
                 if msg_priority < priority_min:
+                    kept.append(msg)
                     continue
             
-            # 构造完整的消息对象
+            # 命中的消息构建 PluginPushMessage
             message_id = str(uuid.uuid4())
             plugin_message = PluginPushMessage(
                 plugin_id=msg.get("plugin_id", ""),
@@ -236,17 +252,26 @@ def get_messages_from_queue(
             messages.append(message_dict)
             
             # 服务器终端日志输出
+            content_str = msg.get("content") or ""
             logger.info(
                 f"[MESSAGE] Plugin: {msg.get('plugin_id', 'unknown')} | "
                 f"Source: {msg.get('source', 'unknown')} | "
                 f"Priority: {msg.get('priority', 0)} | "
                 f"Description: {msg.get('description', '')} | "
-                f"Content: {msg.get('content', '')[:100]}"
+                f"Content: {content_str[:100]}"
             )
             
             count += 1
-            
-        except asyncio.QueueEmpty:
+        else:
+            # 已达到最大数量，剩余消息保留
+            kept.append(msg)
+    
+    # 未消费的消息按原顺序放回队列
+    for msg in kept:
+        try:
+            state.message_queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning("Message queue is full when re-queueing filtered messages, dropping")
             break
     
     return messages

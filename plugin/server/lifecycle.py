@@ -34,7 +34,9 @@ async def startup() -> None:
     """
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
-    logger.info("Plugin registry after startup: %s", list(state.plugins.keys()))
+    with state.plugins_lock:
+        plugin_keys = list(state.plugins.keys())
+    logger.info("Plugin registry after startup: %s", plugin_keys)
     
     # 启动诊断：列出插件实例和公共方法
     _log_startup_diagnostics()
@@ -66,8 +68,8 @@ async def shutdown() -> None:
     # 关闭状态消费任务
     try:
         await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
-    except Exception as e:
-        logger.exception("Error shutting down status consumer: {e}")
+    except Exception:
+        logger.exception("Error shutting down status consumer")
     
     # 关闭所有插件的资源
     shutdown_tasks = []

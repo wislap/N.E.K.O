@@ -49,10 +49,12 @@ async def health():
 @app.get("/available")
 async def available():
     """返回可用性和基本统计"""
+    with state.plugins_lock:
+        plugins_count = len(state.plugins)
     return {
         "status": "ok",
         "available": True,
-        "plugins_count": len(state.plugins),
+        "plugins_count": plugins_count,
         "time": now_iso()
     }
 
@@ -78,7 +80,7 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
             }
     except Exception as e:
         logger.exception("Failed to get plugin status")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # ========== 插件管理路由 ==========
@@ -107,7 +109,7 @@ async def list_plugins():
             }
     except Exception as e:
         logger.exception("Failed to list plugins")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @app.post("/plugin/trigger", response_model=PluginTriggerResponse)
@@ -129,7 +131,7 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
         raise
     except Exception as e:
         logger.exception("plugin_trigger: unexpected error")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # ========== 消息路由 ==========
@@ -162,11 +164,11 @@ async def get_plugin_messages(
         }
     except Exception as e:
         logger.exception("Failed to get plugin messages")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @app.post("/plugin/push", response_model=PluginPushMessageResponse)
-async def plugin_push_message(payload: PluginPushMessageRequest, request: Request):
+async def plugin_push_message(payload: PluginPushMessageRequest):
     """
     接收插件推送的消息（HTTP端点，主要用于外部调用或测试）
     
@@ -174,7 +176,9 @@ async def plugin_push_message(payload: PluginPushMessageRequest, request: Reques
     """
     try:
         # 验证插件是否存在
-        if payload.plugin_id not in state.plugins:
+        with state.plugins_lock:
+            plugin_exists = payload.plugin_id in state.plugins
+        if not plugin_exists:
             raise HTTPException(
                 status_code=404,
                 detail=f"Plugin '{payload.plugin_id}' is not registered"
@@ -202,7 +206,7 @@ async def plugin_push_message(payload: PluginPushMessageRequest, request: Reques
         raise
     except Exception as e:
         logger.exception("plugin_push: unexpected error")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # ========== 生命周期事件 ==========

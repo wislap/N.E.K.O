@@ -41,12 +41,14 @@ plugin_entry_method_map: Dict[tuple, str] = {}
 
 def get_plugins() -> List[Dict[str, Any]]:
     """Return list of plugin dicts (in-process access)."""
-    return list(state.plugins.values())
+    with state.plugins_lock:
+        return list(state.plugins.values())
 
 
 def register_plugin(plugin: PluginMeta) -> None:
     """Insert plugin into registry (not exposed as HTTP)."""
-    state.plugins[plugin.id] = plugin.model_dump()
+    with state.plugins_lock:
+        state.plugins[plugin.id] = plugin.model_dump()
 
 
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:

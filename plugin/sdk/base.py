@@ -51,6 +51,12 @@ class NekoPluginBase:
                 continue
             meta: EventMeta | None = getattr(value, EVENT_META_ATTR, None)
             if meta:
+                if meta.id in entries:
+                    logger = getattr(self, "ctx", None)
+                    if logger:
+                        logger = getattr(logger, "logger", None)
+                    if logger:
+                        logger.warning(f"Duplicate entry id '{meta.id}' in plugin {self._plugin_id}")
                 entries[meta.id] = EventHandler(meta=meta, handler=value)
         return entries
     
