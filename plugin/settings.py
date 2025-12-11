@@ -1,0 +1,179 @@
+"""
+Plugin System Configuration
+
+统一管理插件系统的所有配置项，包括：
+- 队列配置
+- 超时配置
+- 路径配置
+- SDK元数据属性
+- 线程池配置
+- 消息队列配置
+"""
+from pathlib import Path
+from typing import Dict, Any
+
+
+# ========== 路径配置 ==========
+
+def get_plugin_config_root() -> Path:
+    """
+    获取插件配置根目录
+    
+    默认路径：plugin/plugins
+    可以通过环境变量 PLUGIN_CONFIG_ROOT 覆盖
+    """
+    import os
+    custom_path = os.getenv("PLUGIN_CONFIG_ROOT")
+    if custom_path:
+        return Path(custom_path)
+    # 默认路径：相对于 plugin 目录
+    return Path(__file__).parent / "plugins"
+
+
+PLUGIN_CONFIG_ROOT = get_plugin_config_root()
+
+
+# ========== 队列配置 ==========
+
+# 事件队列最大容量
+EVENT_QUEUE_MAX = 1000
+
+# 消息队列最大容量
+MESSAGE_QUEUE_MAX = 1000
+
+
+# ========== 超时配置（秒） ==========
+
+# 插件执行超时（trigger_plugin）
+PLUGIN_EXECUTION_TIMEOUT = 30.0
+
+# 插件触发超时（host.trigger）
+PLUGIN_TRIGGER_TIMEOUT = 10.0
+
+# 插件关闭超时（shutdown）
+PLUGIN_SHUTDOWN_TIMEOUT = 5.0
+
+# 队列操作超时（queue.get）
+QUEUE_GET_TIMEOUT = 1.0
+
+# 状态消费关闭超时
+STATUS_CONSUMER_SHUTDOWN_TIMEOUT = 5.0
+
+# 进程关闭超时
+PROCESS_SHUTDOWN_TIMEOUT = 5.0
+
+# 进程强制终止超时
+PROCESS_TERMINATE_TIMEOUT = 1.0
+
+
+# ========== 线程池配置 ==========
+
+# 通信资源管理器的线程池最大工作线程数
+COMMUNICATION_THREAD_POOL_MAX_WORKERS = 1
+
+
+# ========== 消息队列配置 ==========
+
+# 获取消息时的默认最大数量
+MESSAGE_QUEUE_DEFAULT_MAX_COUNT = 100
+
+# 状态消息获取时的默认最大数量
+STATUS_MESSAGE_DEFAULT_MAX_COUNT = 100
+
+
+# ========== SDK 元数据属性 ==========
+
+# 插件元数据属性名（用于标记插件类）
+NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
+
+# 插件标签（用于标记插件类）
+NEKO_PLUGIN_TAG = "__neko_plugin__"
+
+# 事件元数据属性名（用于标记事件处理器）
+EVENT_META_ATTR = "__neko_event_meta__"
+
+
+# ========== 其他配置 ==========
+
+# 状态消费任务的休眠间隔（秒）
+STATUS_CONSUMER_SLEEP_INTERVAL = 0.1
+
+# 消息消费任务的休眠间隔（秒）
+MESSAGE_CONSUMER_SLEEP_INTERVAL = 0.1
+
+# 结果消费任务的休眠间隔（秒）
+RESULT_CONSUMER_SLEEP_INTERVAL = 0.1
+
+
+# ========== 配置验证 ==========
+
+def validate_config() -> None:
+    """
+    验证配置的有效性
+    
+    Raises:
+        ValueError: 如果配置无效
+    """
+    if EVENT_QUEUE_MAX <= 0:
+        raise ValueError("EVENT_QUEUE_MAX must be positive")
+    if MESSAGE_QUEUE_MAX <= 0:
+        raise ValueError("MESSAGE_QUEUE_MAX must be positive")
+    if PLUGIN_EXECUTION_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_EXECUTION_TIMEOUT must be positive")
+    if PLUGIN_TRIGGER_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_TRIGGER_TIMEOUT must be positive")
+    if PLUGIN_SHUTDOWN_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT must be positive")
+    if COMMUNICATION_THREAD_POOL_MAX_WORKERS <= 0:
+        raise ValueError("COMMUNICATION_THREAD_POOL_MAX_WORKERS must be positive")
+    if MESSAGE_QUEUE_DEFAULT_MAX_COUNT <= 0:
+        raise ValueError("MESSAGE_QUEUE_DEFAULT_MAX_COUNT must be positive")
+    if STATUS_MESSAGE_DEFAULT_MAX_COUNT <= 0:
+        raise ValueError("STATUS_MESSAGE_DEFAULT_MAX_COUNT must be positive")
+
+
+# 在模块加载时验证配置
+validate_config()
+
+
+# ========== 导出 ==========
+
+__all__ = [
+    # 路径配置
+    "PLUGIN_CONFIG_ROOT",
+    "get_plugin_config_root",
+    
+    # 队列配置
+    "EVENT_QUEUE_MAX",
+    "MESSAGE_QUEUE_MAX",
+    
+    # 超时配置
+    "PLUGIN_EXECUTION_TIMEOUT",
+    "PLUGIN_TRIGGER_TIMEOUT",
+    "PLUGIN_SHUTDOWN_TIMEOUT",
+    "QUEUE_GET_TIMEOUT",
+    "STATUS_CONSUMER_SHUTDOWN_TIMEOUT",
+    "PROCESS_SHUTDOWN_TIMEOUT",
+    "PROCESS_TERMINATE_TIMEOUT",
+    
+    # 线程池配置
+    "COMMUNICATION_THREAD_POOL_MAX_WORKERS",
+    
+    # 消息队列配置
+    "MESSAGE_QUEUE_DEFAULT_MAX_COUNT",
+    "STATUS_MESSAGE_DEFAULT_MAX_COUNT",
+    
+    # SDK 元数据属性
+    "NEKO_PLUGIN_META_ATTR",
+    "NEKO_PLUGIN_TAG",
+    "EVENT_META_ATTR",
+    
+    # 其他配置
+    "STATUS_CONSUMER_SLEEP_INTERVAL",
+    "MESSAGE_CONSUMER_SLEEP_INTERVAL",
+    "RESULT_CONSUMER_SLEEP_INTERVAL",
+    
+    # 验证函数
+    "validate_config",
+]
+

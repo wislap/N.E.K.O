@@ -22,6 +22,13 @@ from plugin.api.exceptions import (
     PluginExecutionError,
     PluginError,
 )
+from plugin.settings import (
+    PLUGIN_TRIGGER_TIMEOUT,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    QUEUE_GET_TIMEOUT,
+    PROCESS_SHUTDOWN_TIMEOUT,
+    PROCESS_TERMINATE_TIMEOUT,
+)
 
 
 def _plugin_process_runner(
@@ -131,7 +138,7 @@ def _plugin_process_runner(
         # 命令循环
         while True:
             try:
-                msg = cmd_queue.get(timeout=1.0)
+                msg = cmd_queue.get(timeout=QUEUE_GET_TIMEOUT)
             except Empty:
                 continue
 
@@ -261,7 +268,7 @@ class PluginProcessHost:
         """
         await self.comm_manager.start(message_target_queue=message_target_queue)
     
-    async def shutdown(self, timeout: float = 5.0) -> None:
+    async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
         优雅关闭插件
         
@@ -286,7 +293,7 @@ class PluginProcessHost:
         else:
             self.logger.warning(f"Plugin {self.plugin_id} shutdown with issues")
     
-    def shutdown_sync(self, timeout: float = 5.0) -> None:
+    def shutdown_sync(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
         同步版本的关闭方法（用于非异步上下文）
         
@@ -294,14 +301,14 @@ class PluginProcessHost:
         """
         # 发送停止命令（同步）
         try:
-            self.cmd_queue.put({"type": "STOP"}, timeout=1.0)
+            self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command: {e}")
         
         # 关闭进程
         self._shutdown_process(timeout=timeout)
     
-    async def trigger(self, entry_id: str, args: dict, timeout: float = 10.0) -> Any:
+    async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
         发送 TRIGGER 命令到子进程并等待结果
         
@@ -340,7 +347,7 @@ class PluginProcessHost:
             },
         )
     
-    def _shutdown_process(self, timeout: float = 5.0) -> bool:
+    def _shutdown_process(self, timeout: float = PROCESS_SHUTDOWN_TIMEOUT) -> bool:
         """
         优雅关闭进程
         
@@ -363,12 +370,12 @@ class PluginProcessHost:
                     f"Plugin {self.plugin_id} didn't stop gracefully within {timeout}s, terminating"
                 )
                 self.process.terminate()
-                self.process.join(timeout=1.0)
+                self.process.join(timeout=PROCESS_TERMINATE_TIMEOUT)
                 
                 if self.process.is_alive():
                     self.logger.error(f"Plugin {self.plugin_id} failed to terminate, killing")
                     self.process.kill()
-                    self.process.join(timeout=1.0)
+                    self.process.join(timeout=PROCESS_TERMINATE_TIMEOUT)
                     return False
             
             self.logger.info(f"Plugin {self.plugin_id} process shutdown successfully")

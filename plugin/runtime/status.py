@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import threading
 
+from plugin.settings import (
+    STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
+    STATUS_MESSAGE_DEFAULT_MAX_COUNT,
+    STATUS_CONSUMER_SLEEP_INTERVAL,
+)
+
 
 def _now_iso() -> str:
     """统一的 ISO 时间戳生成"""
@@ -75,7 +81,7 @@ class PluginStatusManager:
             self._status_consumer_task = asyncio.create_task(self._consume_status())
             self.logger.debug("Started status consumer task")
 
-    async def shutdown_status_consumer(self, timeout: float = 5.0) -> None:
+    async def shutdown_status_consumer(self, timeout: float = STATUS_CONSUMER_SHUTDOWN_TIMEOUT) -> None:
         """
         关闭状态消费任务
         
@@ -124,7 +130,7 @@ class PluginStatusManager:
                             continue
                         
                         # 批量获取状态消息
-                        messages = comm_manager.get_status_messages(max_count=100)
+                        messages = comm_manager.get_status_messages(max_count=STATUS_MESSAGE_DEFAULT_MAX_COUNT)
                         for msg in messages:
                             if msg.get("type") == "STATUS_UPDATE":
                                 # 直接调用状态更新方法
@@ -139,7 +145,7 @@ class PluginStatusManager:
                         self.logger.exception(f"Error consuming status for plugin {plugin_id}: {e}")
                 
                 # 短暂休眠避免 CPU 占用过高
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(STATUS_CONSUMER_SLEEP_INTERVAL)
                 
             except (OSError, RuntimeError) as e:
                 # 系统级错误

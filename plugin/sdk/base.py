@@ -6,9 +6,7 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
-
-NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
-NEKO_PLUGIN_TAG = "__neko_plugin__"
+from plugin.settings import NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 
 
 @dataclass

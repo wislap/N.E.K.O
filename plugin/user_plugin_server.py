@@ -29,6 +29,7 @@ from plugin.server.services import (
 )
 from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
+from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
 app = FastAPI(title="N.E.K.O User Plugin Server")
 logger = logging.getLogger("user_plugin_server")
@@ -136,7 +137,7 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
 @app.get("/plugin/messages")
 async def get_plugin_messages(
     plugin_id: Optional[str] = Query(default=None),
-    max_count: int = Query(default=100, ge=1, le=1000),
+    max_count: int = Query(default=MESSAGE_QUEUE_DEFAULT_MAX_COUNT, ge=1, le=1000),
     priority_min: Optional[int] = Query(default=None, description="最低优先级（包含）"),
 ):
     """

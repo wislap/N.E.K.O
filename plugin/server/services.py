@@ -21,6 +21,10 @@ from plugin.api.exceptions import (
     PluginTimeoutError,
 )
 from plugin.server.utils import now_iso
+from plugin.settings import (
+    PLUGIN_EXECUTION_TIMEOUT,
+    MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
+)
 
 logger = logging.getLogger("user_plugin_server")
 
@@ -153,7 +157,7 @@ async def trigger_plugin(
     plugin_error: Optional[Dict[str, Any]] = None
     
     try:
-        plugin_response = await host.trigger(entry_id, args, timeout=30.0)
+        plugin_response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
     except TimeoutError as e:
         plugin_error = {"error": "Plugin execution timed out"}
         logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
@@ -180,7 +184,7 @@ async def trigger_plugin(
 
 def get_messages_from_queue(
     plugin_id: Optional[str] = None,
-    max_count: int = 100,
+    max_count: int = None,
     priority_min: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -188,12 +192,14 @@ def get_messages_from_queue(
     
     Args:
         plugin_id: 过滤特定插件（可选）
-        max_count: 最大数量
+        max_count: 最大数量（None 时使用默认值）
         priority_min: 最低优先级（可选）
     
     Returns:
         消息列表
     """
+    if max_count is None:
+        max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
     messages = []
     count = 0
     

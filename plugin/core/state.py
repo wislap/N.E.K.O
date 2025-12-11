@@ -9,10 +9,7 @@ import threading
 from typing import Any, Dict
 
 from plugin.sdk.events import EventHandler
-
-
-EVENT_QUEUE_MAX = 1000
-MESSAGE_QUEUE_MAX = 1000
+from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
 
 
 class PluginRuntimeState:

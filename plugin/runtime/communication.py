@@ -15,6 +15,15 @@ from typing import Any, Dict, Optional
 
 from multiprocessing import Queue
 
+from plugin.settings import (
+    COMMUNICATION_THREAD_POOL_MAX_WORKERS,
+    PLUGIN_TRIGGER_TIMEOUT,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+    QUEUE_GET_TIMEOUT,
+    MESSAGE_CONSUMER_SLEEP_INTERVAL,
+    RESULT_CONSUMER_SLEEP_INTERVAL,
+)
+
 
 @dataclass
 class PluginCommunicationResourceManager:
@@ -48,7 +57,7 @@ class PluginCommunicationResourceManager:
         self._shutdown_event = asyncio.Event()
         # 为每个插件创建独立的线程池，避免阻塞
         self._executor = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=COMMUNICATION_THREAD_POOL_MAX_WORKERS,
             thread_name_prefix=f"plugin-comm-{self.plugin_id}"
         )
     
@@ -67,7 +76,7 @@ class PluginCommunicationResourceManager:
             self._message_consumer_task = asyncio.create_task(self._consume_messages())
             self.logger.debug(f"Started message consumer for plugin {self.plugin_id}")
     
-    async def shutdown(self, timeout: float = 5.0) -> None:
+    async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
         关闭通信资源
         
@@ -125,7 +134,7 @@ class PluginCommunicationResourceManager:
         if count > 0:
             self.logger.debug(f"Cleaned up {count} pending futures for plugin {self.plugin_id}")
     
-    async def trigger(self, entry_id: str, args: dict, timeout: float = 10.0) -> Any:
+    async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
         发送触发命令并等待结果
         
@@ -173,7 +182,7 @@ class PluginCommunicationResourceManager:
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
         try:
-            self.cmd_queue.put({"type": "STOP"}, timeout=1.0)
+            self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)
             self.logger.debug(f"Sent STOP command to plugin {self.plugin_id}")
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command to plugin {self.plugin_id}: {e}")
@@ -191,7 +200,7 @@ class PluginCommunicationResourceManager:
                 # 使用 executor 在后台线程中阻塞读取队列
                 res = await loop.run_in_executor(
                     self._executor,
-                    lambda: self.res_queue.get(timeout=1.0)
+                    lambda: self.res_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
                 
                 req_id = res.get("req_id")
@@ -218,24 +227,27 @@ class PluginCommunicationResourceManager:
                 # 系统级错误，记录并继续
                 if not self._shutdown_event.is_set():
                     self.logger.error(f"System error consuming results for plugin {self.plugin_id}: {e}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
             except Exception as e:
                 # 其他未知异常，记录详细信息
                 if not self._shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}: {e}")
                 # 短暂休眠避免 CPU 占用过高
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
     
-    def get_status_messages(self, max_count: int = 100) -> list[Dict[str, Any]]:
+    def get_status_messages(self, max_count: int = None) -> list[Dict[str, Any]]:
         """
         从状态队列中获取消息（非阻塞）
         
         Args:
-            max_count: 最多获取的消息数量
+            max_count: 最多获取的消息数量（None 时使用默认值）
         
         Returns:
             状态消息列表
         """
+        from plugin.settings import STATUS_MESSAGE_DEFAULT_MAX_COUNT
+        if max_count is None:
+            max_count = STATUS_MESSAGE_DEFAULT_MAX_COUNT
         messages = []
         count = 0
         while count < max_count:
@@ -264,7 +276,7 @@ class PluginCommunicationResourceManager:
                 # 使用 executor 在后台线程中阻塞读取队列
                 msg = await loop.run_in_executor(
                     self._executor,
-                    lambda: self.message_queue.get(timeout=1.0)
+                    lambda: self.message_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
                 
                 # 转发消息到主进程的消息队列
@@ -292,11 +304,11 @@ class PluginCommunicationResourceManager:
                 # 系统级错误
                 if not self._shutdown_event.is_set():
                     self.logger.error(f"System error consuming messages for plugin {self.plugin_id}: {e}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
             except Exception as e:
                 # 其他未知异常
                 if not self._shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}: {e}")
                 # 短暂休眠避免 CPU 占用过高
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 

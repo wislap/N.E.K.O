@@ -47,6 +47,7 @@ from plugin.sdk.events import (
     EventType,
     EVENT_META_ATTR,
 )
+from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
 from plugin.sdk.decorators import (
     neko_plugin,
     on_event,
@@ -72,8 +73,8 @@ _old_modules = {
 _old_modules['plugin.server_base'].state = state
 _old_modules['plugin.server_base'].PluginRuntimeState = PluginRuntimeState
 _old_modules['plugin.server_base'].PluginContext = PluginContext
-_old_modules['plugin.server_base'].EVENT_QUEUE_MAX = 1000
-_old_modules['plugin.server_base'].MESSAGE_QUEUE_MAX = 1000
+_old_modules['plugin.server_base'].EVENT_QUEUE_MAX = EVENT_QUEUE_MAX
+_old_modules['plugin.server_base'].MESSAGE_QUEUE_MAX = MESSAGE_QUEUE_MAX
 
 _old_modules['plugin.event_base'].EventMeta = EventMeta
 _old_modules['plugin.event_base'].EventHandler = EventHandler

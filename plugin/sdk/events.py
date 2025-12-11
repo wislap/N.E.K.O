@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 from typing import Dict, Any, Callable, Literal, Optional
 
-EVENT_META_ATTR = "__neko_event_meta__"
+from plugin.settings import EVENT_META_ATTR
 
 EventType = Literal[
     "plugin_entry",  # 对外可调用入口(plugin_entry) 目前已经实现

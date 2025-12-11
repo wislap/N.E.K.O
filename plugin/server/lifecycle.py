@@ -11,11 +11,12 @@ from plugin.core.state import state
 from plugin.runtime.registry import load_plugins_from_toml
 from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
+from plugin.settings import (
+    PLUGIN_CONFIG_ROOT,
+    PLUGIN_SHUTDOWN_TIMEOUT,
+)
 
 logger = logging.getLogger("user_plugin_server")
-
-# 插件配置根目录
-PLUGIN_CONFIG_ROOT = Path(__file__).parent.parent / "plugins"
 
 
 def _factory(pid: str, entry: str, config_path: Path) -> PluginProcessHost:
@@ -64,14 +65,14 @@ async def shutdown() -> None:
     
     # 关闭状态消费任务
     try:
-        await status_manager.shutdown_status_consumer(timeout=5.0)
+        await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
     except Exception as e:
         logger.exception("Error shutting down status consumer: {e}")
     
     # 关闭所有插件的资源
     shutdown_tasks = []
     for plugin_id, host in state.plugin_hosts.items():
-        shutdown_tasks.append(host.shutdown(timeout=5.0))
+        shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
     
     # 并发关闭所有插件
     if shutdown_tasks:
