@@ -701,20 +701,31 @@ _state_lock = asyncio.Lock()
 
 def require_admin(request: Request) -> None:
     """
-    检查请求是否来自管理员（本地请求）
+    检查请求是否来自管理员
     
-    注意：当前实现仅允许本地请求。如需更严格的鉴权，可以：
-    1. 添加 API key 验证
-    2. 添加 session 验证
-    3. 添加 IP 白名单
+    支持两种鉴权方式（按优先级）：
+    1. API Key 验证（如果设置了 MCP_ADMIN_API_KEY 环境变量）
+    2. 本地请求验证（127.0.0.1 或 localhost）
     """
-    # 仅允许本地请求（127.0.0.1 或 localhost）
+    from fastapi import HTTPException
+    
+    # 优先检查 API Key（如果配置了）
+    admin_api_key = os.getenv("MCP_ADMIN_API_KEY")
+    if admin_api_key:
+        api_key = request.headers.get("x-api-key") or request.headers.get("authorization", "").replace("Bearer ", "")
+        if api_key == admin_api_key:
+            return  # API Key 验证通过
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Invalid or missing API key"
+        )
+    
+    # 如果没有配置 API Key，则仅允许本地请求
     client_host = request.client.host if request.client else None
     if client_host not in ("127.0.0.1", "localhost", "::1"):
-        from fastapi import HTTPException
         raise HTTPException(
             status_code=403,
-            detail="Admin access required. Only localhost requests are allowed."
+            detail="Admin access required. Only localhost requests are allowed. Set MCP_ADMIN_API_KEY for network access."
         )
 
 
@@ -1228,12 +1239,23 @@ async def get_servers():
 @app.post("/api/servers")
 async def add_server(request: Request):
     """添加新的 MCP 服务器（支持 HTTP 和 stdio）"""
+    require_admin(request)
+    
+    # 检查是否启用 stdio 服务器（默认禁用，需要显式启用）
+    enable_stdio_servers = os.getenv("MCP_ENABLE_STDIO_SERVERS", "0") == "1"
+    
     try:
         data = await request.json()
         server_type = data.get("type", "http")
         
         if server_type == "stdio":
-            # stdio 服务器
+            # stdio 服务器（需要显式启用）
+            if not enable_stdio_servers:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "stdio servers are disabled. Set MCP_ENABLE_STDIO_SERVERS=1 to enable."}
+                )
+            
             command = data.get("command", "").strip()
             args = data.get("args", [])
             
@@ -1292,6 +1314,36 @@ async def add_server(request: Request):
                     content={"error": "Invalid URL format. Must start with http:// or https://"}
                 )
             
+            # SSRF 保护：禁止内网地址和云元数据地址
+            forbidden_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
+            forbidden_prefixes = ["169.254.", "10.", "172.16.", "172.17.", "172.18.", "172.19.", 
+                                  "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                                  "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                                  "192.168.", "169.254.169.254"]  # AWS/GCP/Azure metadata
+            
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(server_url)
+                hostname = parsed.hostname or ""
+                
+                # 检查是否为禁止的主机名
+                if hostname.lower() in forbidden_hosts:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "URL cannot point to localhost or loopback addresses"}
+                    )
+                
+                # 检查是否为禁止的 IP 段
+                for prefix in forbidden_prefixes:
+                    if hostname.startswith(prefix):
+                        return JSONResponse(
+                            status_code=400,
+                            content={"error": f"URL cannot point to private/internal network addresses (blocked: {prefix})"}
+                        )
+            except Exception as e:
+                logger.warning(f"[MCP Server] Failed to validate URL: {e}")
+                # 如果解析失败，仍然允许（可能是域名）
+            
             # 检查是否已存在
             for existing in REMOTE_SERVERS:
                 if get_server_identifier(existing) == server_url:
@@ -1330,6 +1382,10 @@ async def add_server(request: Request):
 async def import_remote_config(request: Request):
     """导入 Remote MCP 服务配置（JSON 格式）"""
     require_admin(request)
+    
+    # 检查是否启用 stdio 服务器（默认禁用，需要显式启用）
+    enable_stdio_servers = os.getenv("MCP_ENABLE_STDIO_SERVERS", "0") == "1"
+    
     try:
         data = await request.json()
         config_json = data.get("config", "").strip()
@@ -1379,6 +1435,37 @@ async def import_remote_config(request: Request):
                         errors.append(f"{server_name}: Invalid URL format")
                         continue
                     
+                    # SSRF 保护：禁止内网地址和云元数据地址
+                    forbidden_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
+                    forbidden_prefixes = ["169.254.", "10.", "172.16.", "172.17.", "172.18.", "172.19.", 
+                                          "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                                          "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                                          "192.168.", "169.254.169.254"]  # AWS/GCP/Azure metadata
+                    
+                    url_blocked = False
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(server_url)
+                        hostname = parsed.hostname or ""
+                        
+                        # 检查是否为禁止的主机名
+                        if hostname.lower() in forbidden_hosts:
+                            errors.append(f"{server_name}: URL cannot point to localhost or loopback addresses")
+                            url_blocked = True
+                        else:
+                            # 检查是否为禁止的 IP 段
+                            for prefix in forbidden_prefixes:
+                                if hostname.startswith(prefix):
+                                    errors.append(f"{server_name}: URL cannot point to private/internal network addresses (blocked: {prefix})")
+                                    url_blocked = True
+                                    break
+                    except Exception as e:
+                        logger.warning(f"[MCP Server] Failed to validate URL for {server_name}: {e}")
+                        # 如果解析失败，仍然允许（可能是域名）
+                    
+                    if url_blocked:
+                        continue
+                    
                     # 构建配置对象
                     imported_config = {
                         "type": "http",
@@ -1415,7 +1502,11 @@ async def import_remote_config(request: Request):
                     logger.info(f"[MCP Server] Imported HTTP server '{server_name}': {server_url}")
                     
                 elif server_type == "stdio" or "command" in server_config:
-                    # stdio 服务器
+                    # stdio 服务器（需要显式启用）
+                    if not enable_stdio_servers:
+                        errors.append(f"{server_name}: stdio servers are disabled. Set MCP_ENABLE_STDIO_SERVERS=1 to enable.")
+                        continue
+                    
                     command = server_config.get("command", "").strip()
                     args = server_config.get("args", [])
                     
@@ -1611,6 +1702,33 @@ if __name__ == "__main__":
     # 固定使用端口 3282（必须）
     REQUIRED_PORT = 3282
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
+    
+    # 检查是否绑定到非回环地址（包括 0.0.0.0 和 ::）
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning("=" * 60)
+        logger.warning(f"⚠️  警告：MCP 服务器将绑定到 {host}")
+        if host in ("0.0.0.0", "::"):
+            logger.warning("⚠️  严重：绑定到 {host} 将监听所有网络接口！")
+        logger.warning("⚠️  这会将管理 API 暴露到网络，但这些 API 没有鉴权保护！")
+        logger.warning("⚠️  任何网络访问者都能添加/删除服务器、执行任意命令！")
+        logger.warning("⚠️  建议：")
+        logger.warning("⚠️    1. 只在开发/测试环境使用非回环地址")
+        logger.warning("⚠️    2. 配置防火墙规则限制访问")
+        logger.warning("⚠️    3. 设置 MCP_ADMIN_API_KEY 环境变量启用 API Key 鉴权")
+        logger.warning("⚠️    4. 设置 MCP_ENABLE_STDIO_SERVERS=1 才允许 stdio 服务器（默认禁用）")
+        logger.warning("=" * 60)
+        # 要求显式确认
+        if not os.getenv("MCP_ALLOW_NETWORK_BINDING"):
+            logger.error("拒绝绑定到非回环地址。设置 MCP_ALLOW_NETWORK_BINDING=1 环境变量以确认")
+            sys.exit(1)
+        else:
+            logger.warning(f"⚠️  已确认：MCP_ALLOW_NETWORK_BINDING=1，允许绑定到 {host}")
+    
+    # 记录绑定地址和暴露范围
+    if host in ("127.0.0.1", "localhost", "::1"):
+        logger.info(f"[MCP Server] 绑定到回环地址 {host}，仅本地访问")
+    else:
+        logger.warning(f"[MCP Server] ⚠️  绑定到 {host}，管理 API 暴露到网络！")
     
     # 如果提供了远程服务器参数（作为第二个参数）- 命令行参数会追加到配置文件中
     # 注意：现在主要通过 Web 界面配置，命令行参数仅用于初始配置

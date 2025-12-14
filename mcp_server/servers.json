@@ -1,9 +1,12 @@
 {
   "servers": [
-    "http://localhost:3283",
     {
       "type": "http",
-      "url": "https://mcp.api-inference.modelscope.net/bd062f01ef8b4e/mcp"
+      "url": "http://localhost:3283"
+    },
+    {
+      "type": "http",
+      "url": "https://mcp.api-inference.modelscope.net/EXAMPLE_TOKEN/mcp"
     }
   ],
   "updated_at": "2025-12-14T15:13:18.727256"

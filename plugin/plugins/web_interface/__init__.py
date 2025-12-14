@@ -38,9 +38,10 @@ class WebInterfacePlugin(NekoPluginBase):
         self.host = "127.0.0.1"
         self.port = 8888
         
-        # 消息存储
+        # 消息存储（使用锁保护并发访问）
         self.messages = []
         self.max_messages = 100
+        self._messages_lock = threading.Lock()
         
         self.logger.info("WebInterfacePlugin initialized")
     
@@ -151,7 +152,8 @@ class WebInterfacePlugin(NekoPluginBase):
         async def get_messages():
             """获取消息列表 API"""
             # 返回消息列表的浅拷贝，避免并发修改问题
-            messages_copy = self.messages.copy()
+            with self._messages_lock:
+                messages_copy = self.messages.copy()
             return {
                 "messages": messages_copy,
                 "count": len(messages_copy)
@@ -191,18 +193,21 @@ class WebInterfacePlugin(NekoPluginBase):
             "priority": priority,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        self.messages.append(message)
-        
-        # 限制消息数量
-        if len(self.messages) > self.max_messages:
-            self.messages = self.messages[-self.max_messages:]
+        with self._messages_lock:
+            self.messages.append(message)
+            # 限制消息数量
+            if len(self.messages) > self.max_messages:
+                self.messages = self.messages[-self.max_messages:]
         
         self.logger.debug(f"Added message: {source} - {content}")
     
     def _get_html_page(self) -> str:
         """生成 HTML 页面"""
         messages_html = ""
-        for msg in reversed(self.messages[-20:]):  # 显示最近20条
+        # 在锁内获取消息快照，避免并发修改问题
+        with self._messages_lock:
+            recent_messages = self.messages[-20:]
+        for msg in reversed(recent_messages):  # 显示最近20条
             # 确保 priority 是整数类型
             priority = int(msg.get("priority", 5)) if isinstance(msg.get("priority"), (int, str)) else 5
             priority_class = "priority-high" if priority >= 7 else "priority-normal"
@@ -661,14 +666,13 @@ class WebInterfacePlugin(NekoPluginBase):
         self._add_message(source, content, priority)
 
         # 记录消息添加成功，但不记录完整内容（避免泄露敏感信息）
-        content_preview = content[:50] + "..." if len(content) > 50 else content
         self.logger.info(
-            "[WebInterface] Added message via API: source=%s, priority=%s, content_length=%d, preview=%s",
+            "[WebInterface] Added message via API: source=%s, priority=%s, content_length=%d",
             source,
             priority,
-            len(content),
-            content_preview,
+            len(content) if content else 0,
         )
+        self.logger.debug("[WebInterface] Added message content: %s", content)
         
         return {
             "success": True,

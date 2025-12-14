@@ -519,27 +519,16 @@ Return only the JSON object, nothing else.
                             decision = json.loads(cleaned_text)
                             logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
                         else:
-                            # If JSON is incomplete, try to complete it with default values
-                            if text.strip().startswith('{') and '"has_task"' in text:
-                                logger.warning("[UserPlugin Assessment] JSON appears incomplete, attempting to complete it")
-                                # Try to extract what we can and use defaults
-                                has_task_match = re.search(r'"has_task"\s*:\s*(true|false)', text)
-                                can_execute_match = re.search(r'"can_execute"\s*:\s*(true|false)', text)
-                                plugin_id_match = re.search(r'"plugin_id"\s*:\s*"([^"]*)"', text)
-                                entry_id_match = re.search(r'"entry_id"\s*:\s*"([^"]*)"', text)
-                                
-                                decision = {
-                                    "has_task": has_task_match.group(1) == "true" if has_task_match else False,
-                                    "can_execute": can_execute_match.group(1) == "true" if can_execute_match else False,
-                                    "task_description": "",
-                                    "plugin_id": plugin_id_match.group(1) if plugin_id_match else None,
-                                    "entry_id": entry_id_match.group(1) if entry_id_match else None,
-                                    "plugin_args": None,
-                                    "reason": "JSON was incomplete, extracted partial data"
-                                }
-                                logger.info(f"[UserPlugin Assessment] Reconstructed decision from incomplete JSON: {decision}")
-                            else:
-                                raise ValueError("No JSON object found in text")
+                            # JSON extraction failed - return safe default instead of trying to reconstruct
+                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
+                            return UserPluginDecision(
+                                has_task=False, 
+                                can_execute=False, 
+                                task_description="", 
+                                plugin_id=None, 
+                                plugin_args=None, 
+                                reason=f"JSON parse error: {e}"
+                            )
                     except Exception as e2:
                         logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
                         return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
@@ -709,7 +698,7 @@ Return only the JSON object, nothing else.
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
-            except Exception:
+            except Exception as e:
                 logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
                     task_id=task_id,
@@ -969,7 +958,7 @@ Return only the JSON object, nothing else.
                         tool_args=plugin_args,
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
-        except Exception:
+        except Exception as e:
             logger.exception("[TaskExecutor] Trigger call error")
             return TaskResult(
                 task_id=task_id,
