@@ -192,7 +192,7 @@ def _plugin_process_runner(
                             params,
                             list(args.keys()) if isinstance(args, dict) else "N/A",
                         )
-                    except Exception as e:
+                    except (ValueError, TypeError) as e:
                         logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
                     
                     if asyncio.iscoroutinefunction(method):

@@ -622,7 +622,6 @@ class WebInterfacePlugin(NekoPluginBase):
         )
         
         # 支持 message 参数作为 content 的别名（用于兼容性）
-        original_content = content
         if not content and "message" in kwargs:
             content = kwargs.pop("message")
             self.logger.info(
@@ -655,8 +654,16 @@ class WebInterfacePlugin(NekoPluginBase):
         )
         
         self._add_message(source, content, priority)
-        
-        self.logger.info(f"Added message via API: {source} - {content}")
+
+        # 记录消息添加成功，但不记录完整内容（避免泄露敏感信息）
+        content_preview = content[:50] + "..." if len(content) > 50 else content
+        self.logger.info(
+            "[WebInterface] Added message via API: source=%s, priority=%s, content_length=%d, preview=%s",
+            source,
+            priority,
+            len(content),
+            content_preview,
+        )
         
         return {
             "success": True,

@@ -137,12 +137,33 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
             payload.entry_id,
             payload.task_id,
         )
-        # 详细参数信息使用 DEBUG
+        # 详细参数信息使用 DEBUG（脱敏处理，避免泄露敏感数据）
+        safe_args = payload.args
+        if isinstance(safe_args, dict):
+            # 脱敏敏感字段
+            redacted = {}
+            sensitive_keys = {"api_key", "apikey", "token", "authorization", "cookie", "password", "secret", "credential"}
+            for k, v in safe_args.items():
+                if k.lower() in sensitive_keys or any(sensitive in k.lower() for sensitive in sensitive_keys):
+                    redacted[k] = "***REDACTED***"
+                else:
+                    # 对于非敏感字段，如果是字符串且过长则截断
+                    if isinstance(v, str) and len(v) > 100:
+                        redacted[k] = v[:100] + "...(truncated)"
+                    else:
+                        redacted[k] = v
+            safe_args = redacted
+        
+        # 截断整个输出，避免日志爆炸
+        args_preview = str(safe_args)
+        if len(args_preview) > 500:
+            args_preview = args_preview[:500] + "...(truncated)"
+        
         logger.debug(
-            "[plugin_trigger] Request args: type=%s, keys=%s, content=%s",
+            "[plugin_trigger] Request args: type=%s, keys=%s, preview=%s",
             type(payload.args),
             list(payload.args.keys()) if isinstance(payload.args, dict) else "N/A",
-            payload.args,
+            args_preview,
         )
         
         return await trigger_plugin(
