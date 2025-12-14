@@ -150,9 +150,11 @@ class WebInterfacePlugin(NekoPluginBase):
         @self.app.get("/api/messages")
         async def get_messages():
             """获取消息列表 API"""
+            # 返回消息列表的浅拷贝，避免并发修改问题
+            messages_copy = self.messages.copy()
             return {
-                "messages": self.messages,
-                "count": len(self.messages)
+                "messages": messages_copy,
+                "count": len(messages_copy)
             }
         
         @self.app.post("/api/messages")
@@ -160,7 +162,13 @@ class WebInterfacePlugin(NekoPluginBase):
             """添加消息 API"""
             source = message.get("source", "unknown")
             content = message.get("content", "")
-            priority = message.get("priority", 5)
+            # 验证并转换 priority 为整数，失败则使用默认值
+            try:
+                priority = int(message.get("priority", 5))
+                # 限制优先级范围在 0-10
+                priority = max(0, min(10, priority))
+            except (ValueError, TypeError):
+                priority = 5
             self._add_message(source, content, priority)
             return {"success": True, "count": len(self.messages)}
         
@@ -214,7 +222,7 @@ class WebInterfacePlugin(NekoPluginBase):
             </div>
             """
         
-        html = f"""
+        page_html = f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -461,12 +469,12 @@ class WebInterfacePlugin(NekoPluginBase):
                         const priorityClass = priority >= 7 ? 'priority-high' : 'priority-normal';
                         const timestamp = msg.timestamp ? msg.timestamp.substring(0, 19).replace('T', ' ') : '';
                         
-                        // 转义所有用户输入内容
-                        const sourceEscaped = escapeHtml(String(msg.source || 'unknown'));
-                        const contentEscaped = escapeHtml(String(msg.content || ''));
-                        const timestampEscaped = escapeHtml(timestamp);
-                        
                         // 使用 createElement 和 textContent 来安全地创建 DOM 元素
+                        // textContent 会自动转义，不需要手动转义 HTML
+                        const sourceText = String(msg.source || 'unknown');
+                        const contentText = String(msg.content || '');
+                        const timestampText = timestamp;
+                        
                         const messageDiv = document.createElement('div');
                         messageDiv.className = `message ${{priorityClass}}`;
                         
@@ -475,11 +483,11 @@ class WebInterfacePlugin(NekoPluginBase):
                         
                         const sourceSpan = document.createElement('span');
                         sourceSpan.className = 'source';
-                        sourceSpan.textContent = sourceEscaped;
+                        sourceSpan.textContent = sourceText;
                         
                         const timestampSpan = document.createElement('span');
                         timestampSpan.className = 'timestamp';
-                        timestampSpan.textContent = timestampEscaped;
+                        timestampSpan.textContent = timestampText;
                         
                         const prioritySpan = document.createElement('span');
                         prioritySpan.className = 'priority';
@@ -491,7 +499,7 @@ class WebInterfacePlugin(NekoPluginBase):
                         
                         const contentDiv = document.createElement('div');
                         contentDiv.className = 'message-content';
-                        contentDiv.textContent = contentEscaped;
+                        contentDiv.textContent = contentText;
                         
                         messageDiv.appendChild(headerDiv);
                         messageDiv.appendChild(contentDiv);
@@ -524,7 +532,7 @@ class WebInterfacePlugin(NekoPluginBase):
 </body>
 </html>
         """
-        return html
+        return page_html
     
     @lifecycle(
         id="shutdown",
@@ -538,11 +546,8 @@ class WebInterfacePlugin(NekoPluginBase):
         try:
             # 停止服务器
             if self.server:
-                # 设置退出标志
+                # 设置退出标志（uvicorn 0.38.0+ 中 shutdown() 是异步方法，不能在同步线程中调用）
                 self.server.should_exit = True
-                # 触发关闭
-                if hasattr(self.server, 'shutdown'):
-                    self.server.shutdown()
             
             # 等待服务器关闭
             if self.server_thread and self.server_thread.is_alive():

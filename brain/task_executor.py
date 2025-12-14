@@ -320,7 +320,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 800  # 增加 token 限制，避免 JSON 被截断
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -465,7 +465,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 800  # 增加 token 限制，避免 JSON 被截断
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -895,7 +895,7 @@ Return only the JSON object, nothing else.
             trigger_body["entry_id"] = plugin_entry_id
             logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
         
-        # 关键日志：记录准备触发插件
+        # 关键日志: 记录准备触发插件
         logger.info(
             "[TaskExecutor] Preparing plugin trigger: plugin_id=%s, entry_id=%s, endpoint=%s",
             plugin_id,

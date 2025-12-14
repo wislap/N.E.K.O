@@ -156,6 +156,19 @@ def get_server_identifier(server_config: Union[str, Dict[str, Any]]) -> str:
     return str(server_config)
 
 
+def redact_server_config(server_config: Union[str, Dict[str, Any]]) -> Union[str, Dict[str, Any]]:
+    """脱敏服务器配置，移除敏感信息（如 api_key）"""
+    if isinstance(server_config, str):
+        return server_config
+    elif isinstance(server_config, dict):
+        # 创建配置的副本，移除敏感字段
+        redacted = server_config.copy()
+        if "api_key" in redacted:
+            del redacted["api_key"]
+        return redacted
+    return server_config
+
+
 # 启动时加载配置（在模块加载时执行）
 load_servers_config()
 
@@ -686,6 +699,25 @@ _mcp_clients: Dict[str, Union[McpClient, StdioMcpClient]] = {}
 _state_lock = asyncio.Lock()
 
 
+def require_admin(request: Request) -> None:
+    """
+    检查请求是否来自管理员（本地请求）
+    
+    注意：当前实现仅允许本地请求。如需更严格的鉴权，可以：
+    1. 添加 API key 验证
+    2. 添加 session 验证
+    3. 添加 IP 白名单
+    """
+    # 仅允许本地请求（127.0.0.1 或 localhost）
+    client_host = request.client.host if request.client else None
+    if client_host not in ("127.0.0.1", "localhost", "::1"):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required. Only localhost requests are allowed."
+        )
+
+
 from contextlib import asynccontextmanager
 
 
@@ -922,7 +954,7 @@ async def mcp_endpoint(request: Request):
                 "Invalid JSON"
             )
         )
-    except Exception:
+    except Exception as e:
         logger.exception("[MCP Server] Unexpected error")
         return JSONResponse(
             status_code=500,
@@ -1148,7 +1180,7 @@ async def get_status():
         "local_tools": local_tools_list,
         "remote_tools": remote_tools_list,
         "connected_servers": connected_servers_info,
-        "configured_remote_servers": REMOTE_SERVERS
+        "configured_remote_servers": [redact_server_config(s) for s in REMOTE_SERVERS]
     }
 
 
@@ -1241,7 +1273,7 @@ async def add_server(request: Request):
             return {
                 "success": True,
                 "message": f"Stdio server {command} added successfully",
-                "servers": REMOTE_SERVERS
+                "servers": [redact_server_config(s) for s in REMOTE_SERVERS]
             }
         else:
             # HTTP 服务器
@@ -1284,7 +1316,7 @@ async def add_server(request: Request):
             return {
                 "success": True,
                 "message": f"Server {server_url} added successfully",
-                "servers": REMOTE_SERVERS
+                "servers": [redact_server_config(s) for s in REMOTE_SERVERS]
             }
     except Exception as e:
         logger.error(f"[MCP Server] Error adding server: {e}")
@@ -1297,6 +1329,7 @@ async def add_server(request: Request):
 @app.post("/api/servers/import")
 async def import_remote_config(request: Request):
     """导入 Remote MCP 服务配置（JSON 格式）"""
+    require_admin(request)
     try:
         data = await request.json()
         config_json = data.get("config", "").strip()
@@ -1463,6 +1496,7 @@ async def import_remote_config(request: Request):
 @app.delete("/api/servers")
 async def delete_server(request: Request):
     """删除 MCP 服务器"""
+    require_admin(request)
     try:
         data = await request.json()
         server_identifier = data.get("identifier", "").strip()
@@ -1506,7 +1540,7 @@ async def delete_server(request: Request):
         return {
             "success": True,
             "message": f"Server {server_identifier} removed successfully",
-            "servers": REMOTE_SERVERS
+            "servers": [redact_server_config(s) for s in REMOTE_SERVERS]
         }
     except Exception as e:
         logger.error(f"[MCP Server] Error removing server: {e}")
@@ -1517,8 +1551,9 @@ async def delete_server(request: Request):
 
 
 @app.post("/api/reconnect")
-async def reconnect_servers():
+async def reconnect_servers(request: Request):
     """重新连接所有配置的服务器"""
+    require_admin(request)
     try:
         logger.info("[MCP Server] Reconnecting to all servers via API...")
         
