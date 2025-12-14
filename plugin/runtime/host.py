@@ -227,7 +227,7 @@ def _plugin_process_runner(
                                 res = method(args)
                             else:
                                 # 不是旧式接口，重新抛出原始 TypeError
-                                logger.error(
+                                logger.exception(
                                     "[Plugin Process] TypeError not recoverable, params=%s, args_keys=%s",
                                     params,
                                     list(args.keys()) if isinstance(args, dict) else "N/A",

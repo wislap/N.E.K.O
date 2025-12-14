@@ -6,6 +6,7 @@ Web Interface Plugin
 import html
 import logging
 import threading
+import time
 from typing import Any, Optional
 from datetime import datetime, timezone
 
@@ -84,7 +85,6 @@ class WebInterfacePlugin(NekoPluginBase):
             self.server_thread.start()
             
             # 等待服务器启动
-            import time
             time.sleep(0.5)
             
             # 上报状态
@@ -119,7 +119,7 @@ class WebInterfacePlugin(NekoPluginBase):
             }
             
         except Exception as e:
-            self.logger.exception(f"Failed to start web server: {e}")
+            self.logger.exception("Failed to start web server")
             self.report_status({
                 "status": "error",
                 "error": str(e)
@@ -134,8 +134,8 @@ class WebInterfacePlugin(NekoPluginBase):
         try:
             if self.server:
                 self.server.run()
-        except Exception as e:
-            self.logger.exception(f"Web server error: {e}")
+        except Exception:
+            self.logger.exception("Web server error")
     
     def _setup_routes(self):
         """设置路由"""
@@ -561,7 +561,7 @@ class WebInterfacePlugin(NekoPluginBase):
             return {"status": "stopped"}
             
         except Exception as e:
-            self.logger.exception(f"Error during shutdown: {e}")
+            self.logger.exception("Error during shutdown")
             return {"status": "error", "error": str(e)}
     
     @plugin_entry(
