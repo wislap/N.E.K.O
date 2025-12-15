@@ -169,8 +169,7 @@ def redact_server_config(server_config: Union[str, Dict[str, Any]]) -> Union[str
     return server_config
 
 
-# 启动时加载配置（在模块加载时执行）
-load_servers_config()
+# NOTE: 不要在 import 时做 IO；放到 lifespan 启动阶段
 
 
 class StdioMcpClient:
@@ -729,9 +728,6 @@ def require_admin(request: Request) -> None:
         )
 
 
-from contextlib import asynccontextmanager
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -739,6 +735,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("[MCP Server] 🚀 Server startup event triggered")
     logger.info("=" * 60)
+    # 在启动时加载配置（而不是在 import 时）
+    load_servers_config()
     await connect_to_remote_servers()
     logger.info("[MCP Server] ✅ Server startup completed")
     
@@ -1672,10 +1670,11 @@ async def reconnect_servers(request: Request):
 
 
 # 挂载静态文件（UI文件）- 必须在所有路由定义之后
-# 注意：访问 /ui 会提供目录内容，访问 /ui/index.html 获取主页面
+# 注意：不要添加 @app.get("/ui") 路由，否则会拦截静态文件请求
+# 使用 html=True 让访问 /ui 自动返回 index.html
 ui_dir = os.path.join(os.path.dirname(__file__), "ui")
 if os.path.exists(ui_dir):
-    app.mount("/ui", StaticFiles(directory=ui_dir), name="ui")
+    app.mount("/ui", StaticFiles(directory=ui_dir, html=True), name="ui")
 
 
 def check_port_available(host: str, port: int) -> bool:
@@ -1699,6 +1698,9 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    # 在启动时加载配置（不是 import 时）
+    load_servers_config()
+    
     # 固定使用端口 3282（必须）
     REQUIRED_PORT = 3282
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
@@ -1708,9 +1710,8 @@ if __name__ == "__main__":
         logger.warning("=" * 60)
         logger.warning(f"⚠️  警告：MCP 服务器将绑定到 {host}")
         if host in ("0.0.0.0", "::"):
-            logger.warning("⚠️  严重：绑定到 {host} 将监听所有网络接口！")
-        logger.warning("⚠️  这会将管理 API 暴露到网络，但这些 API 没有鉴权保护！")
-        logger.warning("⚠️  任何网络访问者都能添加/删除服务器、执行任意命令！")
+            logger.warning(f"⚠️  严重：绑定到 {host} 将监听所有网络接口！")
+        logger.warning("⚠️  注意：非本机访问管理 API 需要配置 MCP_ADMIN_API_KEY，否则将被 require_admin 拒绝")
         logger.warning("⚠️  建议：")
         logger.warning("⚠️    1. 只在开发/测试环境使用非回环地址")
         logger.warning("⚠️    2. 配置防火墙规则限制访问")

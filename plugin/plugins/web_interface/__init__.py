@@ -172,7 +172,9 @@ class WebInterfacePlugin(NekoPluginBase):
             except (ValueError, TypeError):
                 priority = 5
             self._add_message(source, content, priority)
-            return {"success": True, "count": len(self.messages)}
+            with self._messages_lock:
+                count = len(self.messages)
+            return {"success": True, "count": count}
         
         @self.app.get("/api/status")
         async def get_status():
@@ -207,6 +209,7 @@ class WebInterfacePlugin(NekoPluginBase):
         # 在锁内获取消息快照，避免并发修改问题
         with self._messages_lock:
             recent_messages = self.messages[-20:]
+            message_count = len(self.messages)
         for msg in reversed(recent_messages):  # 显示最近20条
             # 确保 priority 是整数类型
             priority = int(msg.get("priority", 5)) if isinstance(msg.get("priority"), (int, str)) else 5
@@ -422,7 +425,7 @@ class WebInterfacePlugin(NekoPluginBase):
                 <span>状态: 运行中</span>
             </div>
             <div class="status-item">
-                <span>消息总数: {len(self.messages)}</span>
+                <span>消息总数: {message_count}</span>
             </div>
             <div class="status-item">
                 <span>更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
@@ -691,12 +694,17 @@ class WebInterfacePlugin(NekoPluginBase):
     )
     def get_status(self, **_):
         """获取状态"""
+        with self._messages_lock:
+            msg_count = len(self.messages)
+        
+        thread_alive = self.server_thread.is_alive() if self.server_thread else False
+        
         return {
-            "status": "running" if self.server and self.server_thread and self.server_thread.is_alive() else "stopped",
+            "status": "running" if self.server and thread_alive else "stopped",
             "host": self.host,
             "port": self.port,
             "url": f"http://{self.host}:{self.port}",
-            "message_count": len(self.messages),
-            "thread_alive": self.server_thread.is_alive() if self.server_thread else False
+            "message_count": msg_count,
+            "thread_alive": thread_alive
         }
 
