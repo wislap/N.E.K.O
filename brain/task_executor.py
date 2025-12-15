@@ -500,14 +500,19 @@ Return only the JSON object, nothing else.
                 # Remove trailing commas before closing braces/brackets
                 # Fix trailing commas in objects and arrays
                 text = re.sub(r',(\s*[}\]])', r'\1', text)
-                # Remove any comments (though JSON doesn't support comments)
-                text = re.sub(r'//.*?$', '', text, flags=re.MULTILINE)
-                text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
+                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
                 
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    logger.debug(
+                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
+                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                    )
+                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    logger.exception("[UserPlugin Assessment] JSON parse error: %s", str(e))
                     # Try to extract JSON from the text if it's embedded in other text
                     try:
                         # Try to find JSON object in the text (improved regex to handle nested objects)
