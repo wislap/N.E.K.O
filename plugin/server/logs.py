@@ -2,14 +2,16 @@
 插件日志服务
 
 提供插件日志和服务器日志的读取和查询功能。
+支持 WebSocket 实时推送日志更新。
 """
 import logging
 import re
+import asyncio
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from collections import deque
 
-from fastapi import HTTPException
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
 from plugin.settings import PLUGIN_CONFIG_ROOT
 
@@ -35,13 +37,16 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         except Exception as e:
             logger.warning(f"Failed to get server log directory, using fallback: {e}")
             # 降级方案：使用项目根目录下的 log 文件夹
-            fallback_dir = PLUGIN_CONFIG_ROOT.parent / "log"
+            # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
+            project_root = PLUGIN_CONFIG_ROOT.parent.parent
+            fallback_dir = project_root / "log"
             fallback_dir.mkdir(parents=True, exist_ok=True)
             return fallback_dir
     
     # 插件日志：优先使用项目根目录下的 log/plugins/{plugin_id} 目录
     try:
-        project_root = PLUGIN_CONFIG_ROOT.parent
+        # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
+        project_root = PLUGIN_CONFIG_ROOT.parent.parent
         log_dir = project_root / "log" / "plugins" / plugin_id
         log_dir.mkdir(parents=True, exist_ok=True)
         # 测试目录是否可写
@@ -336,4 +341,253 @@ def get_plugin_logs(
         "returned_lines": len(filtered_logs),
         "log_file": latest_log.name
     }
+
+
+# ========== WebSocket 实时日志推送 ==========
+
+# 全局日志监控器字典：{plugin_id: LogFileWatcher}
+_log_watchers: Dict[str, 'LogFileWatcher'] = {}
+
+
+def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[List[Dict[str, Any]], int]:
+    """
+    从指定位置读取日志文件的增量内容
+    
+    Args:
+        log_file: 日志文件路径
+        last_position: 上次读取的位置（字节偏移）
+    
+    Returns:
+        (新增的日志条目列表, 新的位置)
+    """
+    if not log_file.exists():
+        return [], last_position
+    
+    try:
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+            # 移动到上次读取的位置
+            f.seek(last_position)
+            
+            # 读取新增内容
+            new_lines = f.readlines()
+            new_position = f.tell()
+            
+            # 解析新增的日志行
+            new_logs = []
+            for line in new_lines:
+                log_entry = parse_log_line(line)
+                if log_entry:
+                    new_logs.append(log_entry)
+            
+            return new_logs, new_position
+    except Exception as e:
+        logger.exception(f"Failed to read incremental log from {log_file}: {e}")
+        return [], last_position
+
+
+class LogFileWatcher:
+    """日志文件监控器，用于 WebSocket 实时推送"""
+    
+    def __init__(self, plugin_id: str):
+        self.plugin_id = plugin_id
+        self.clients: Set[WebSocket] = set()
+        self.last_position: int = 0
+        self.current_log_file: Optional[Path] = None
+        self._watch_task: Optional[asyncio.Task] = None
+        self._running = False
+    
+    def add_client(self, websocket: WebSocket):
+        """添加 WebSocket 客户端"""
+        self.clients.add(websocket)
+        if not self._running:
+            self._start_watching()
+    
+    def remove_client(self, websocket: WebSocket):
+        """移除 WebSocket 客户端"""
+        self.clients.discard(websocket)
+        if not self.clients and self._running:
+            self._stop_watching()
+    
+    def _start_watching(self):
+        """开始监控日志文件"""
+        if self._running:
+            return
+        
+        self._running = True
+        self._watch_task = asyncio.create_task(self._watch_loop())
+    
+    def _stop_watching(self):
+        """停止监控日志文件"""
+        self._running = False
+        if self._watch_task:
+            self._watch_task.cancel()
+            self._watch_task = None
+    
+    async def _watch_loop(self):
+        """监控循环：定期检查文件变化并推送新日志"""
+        while self._running:
+            try:
+                # 获取最新的日志文件
+                log_dir = get_plugin_log_dir(self.plugin_id)
+                
+                if self.plugin_id == SERVER_LOG_ID:
+                    pattern = "N.E.K.O_PluginServer_*.log"
+                else:
+                    pattern = f"{self.plugin_id}_*.log"
+                
+                log_files = sorted(
+                    log_dir.glob(pattern),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True
+                )
+                
+                if not log_files:
+                    await asyncio.sleep(1)  # 没有日志文件，等待
+                    continue
+                
+                latest_log = log_files[0]
+                
+                # 如果日志文件切换了，重置位置
+                if self.current_log_file != latest_log:
+                    self.current_log_file = latest_log
+                    self.last_position = 0
+                
+                # 读取增量日志
+                new_logs, new_position = read_log_file_incremental(
+                    latest_log, self.last_position
+                )
+                
+                if new_logs:
+                    self.last_position = new_position
+                    # 推送新日志给所有客户端
+                    await self._broadcast_logs(new_logs)
+                
+                # 等待 0.5 秒后再次检查
+                await asyncio.sleep(0.5)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception(f"Error in log watcher loop for {self.plugin_id}: {e}")
+                await asyncio.sleep(1)
+    
+    async def _broadcast_logs(self, logs: List[Dict[str, Any]]):
+        """广播日志给所有连接的客户端"""
+        if not logs or not self.clients:
+            return
+        
+        disconnected = []
+        for client in self.clients:
+            try:
+                # 检查连接状态
+                if hasattr(client, 'client_state'):
+                    from starlette.websockets import WebSocketState
+                    if client.client_state != WebSocketState.CONNECTED:
+                        disconnected.append(client)
+                        continue
+                
+                await client.send_json({
+                    "type": "append",
+                    "logs": logs
+                })
+            except (WebSocketDisconnect, ConnectionError, RuntimeError) as e:
+                # 连接已断开或关闭，记录但不抛出异常
+                logger.debug(f"Failed to send logs to client (disconnected): {e}")
+                disconnected.append(client)
+            except Exception as e:
+                # 其他错误，记录并标记为断开
+                logger.debug(f"Failed to send logs to client: {e}")
+                disconnected.append(client)
+        
+        # 移除断开的客户端
+        for client in disconnected:
+            self.clients.discard(client)
+    
+    async def send_initial_logs(self, websocket: WebSocket, lines: int = 100):
+        """发送初始日志（最后 N 行）"""
+        try:
+            result = get_plugin_logs(self.plugin_id, lines=lines)
+            await websocket.send_json({
+                "type": "initial",
+                "logs": result.get("logs", []),
+                "log_file": result.get("log_file"),
+                "total_lines": result.get("total_lines", 0)
+            })
+            
+            # 记录当前日志文件和位置
+            log_dir = get_plugin_log_dir(self.plugin_id)
+            if self.plugin_id == SERVER_LOG_ID:
+                pattern = "N.E.K.O_PluginServer_*.log"
+            else:
+                pattern = f"{self.plugin_id}_*.log"
+            
+            log_files = sorted(
+                log_dir.glob(pattern),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True
+            )
+            
+            if log_files:
+                self.current_log_file = log_files[0]
+                # 获取文件当前大小作为起始位置
+                self.last_position = self.current_log_file.stat().st_size
+        except Exception as e:
+            logger.exception(f"Failed to send initial logs: {e}")
+
+
+async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
+    """
+    WebSocket 端点：实时推送日志流
+    
+    Args:
+        websocket: WebSocket 连接
+        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+    """
+    await websocket.accept()
+    
+    # 获取或创建监控器
+    if plugin_id not in _log_watchers:
+        _log_watchers[plugin_id] = LogFileWatcher(plugin_id)
+    
+    watcher = _log_watchers[plugin_id]
+    watcher.add_client(websocket)
+    
+    try:
+        # 发送初始日志
+        await watcher.send_initial_logs(websocket, lines=100)
+        
+        # 保持连接，等待客户端消息（可选）
+        while True:
+            try:
+                # 接收客户端消息（如过滤条件变更等）
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # 可以处理客户端消息，比如更新过滤条件
+                # 目前暂时忽略
+            except asyncio.TimeoutError:
+                # 发送心跳保持连接
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    # 如果发送失败，连接可能已关闭，退出循环
+                    break
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                # 其他异常，记录日志并退出
+                logger.debug(f"WebSocket receive error for {plugin_id}: {e}")
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        # 记录错误但不抛出，确保 finally 块执行
+        logger.debug(f"Error in log stream endpoint for {plugin_id}: {e}")
+    finally:
+        # 确保清理客户端连接
+        try:
+            watcher.remove_client(websocket)
+            # 如果没有客户端了，清理监控器
+            if not watcher.clients:
+                _log_watchers.pop(plugin_id, None)
+        except Exception as e:
+            logger.debug(f"Error cleaning up watcher for {plugin_id}: {e}")
 

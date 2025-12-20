@@ -5,6 +5,26 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
+
+// 初始化深色模式（在应用挂载前）
+const initDarkMode = () => {
+  const DARK_MODE_KEY = 'neko-dark-mode'
+  const saved = localStorage.getItem(DARK_MODE_KEY)
+  if (saved !== null) {
+    const dark = saved === 'true'
+    if (dark) {
+      document.documentElement.classList.add('dark')
+    }
+  } else {
+    // 如果没有保存的设置，检查系统偏好
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    if (prefersDark) {
+      document.documentElement.classList.add('dark')
+    }
+  }
+}
+
+initDarkMode()
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import en from 'element-plus/dist/locale/en.mjs'

@@ -23,7 +23,9 @@ export default {
     info: 'Info',
     noData: 'No Data',
     unknown: 'Unknown',
-    nA: 'N/A'
+    nA: 'N/A',
+    darkMode: 'Dark Mode',
+    lightMode: 'Light Mode'
   },
   nav: {
     dashboard: 'Dashboard',
@@ -75,7 +77,9 @@ export default {
     entryId: 'ID',
     entryDescription: 'Description',
     trigger: 'Trigger',
-    noEntries: 'No Entry Points'
+    noEntries: 'No Entry Points',
+    showMetrics: 'Show Metrics',
+    hideMetrics: 'Hide Metrics'
   },
   metrics: {
     title: 'Metrics',
@@ -86,7 +90,13 @@ export default {
     pid: 'Process ID',
     noMetrics: 'No Performance Data',
     refreshInterval: 'Refresh Interval',
-    seconds: 'seconds'
+    seconds: 'seconds',
+    cpu: 'CPU Usage',
+    memory: 'Memory',
+    memoryPercent: 'Memory %',
+    pendingRequests: 'Pending Requests',
+    totalExecutions: 'Total Executions',
+    noData: 'No data'
   },
   logs: {
     title: 'Logs',
@@ -102,7 +112,18 @@ export default {
     autoScroll: 'Auto Scroll',
     scrollToBottom: 'Scroll to Bottom',
     logFiles: 'Log Files',
-    selectFile: 'Select File'
+    selectFile: 'Select File',
+    search: 'Search logs...',
+    lines: 'Lines',
+    totalLogs: 'Total {count} logs',
+    loadError: 'Failed to load logs: {error}',
+    emptyFile: 'Log file is empty or does not exist',
+    noMatches: 'No matching logs',
+    logFile: 'Log File',
+    totalLines: 'Total Lines',
+    connected: 'Connected',
+    disconnected: 'Disconnected',
+    connectionFailed: 'Log stream connection failed'
   },
   status: {
     running: 'Running',

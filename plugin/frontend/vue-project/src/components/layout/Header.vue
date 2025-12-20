@@ -6,6 +6,12 @@
     <div class="header-right">
       <LanguageSwitcher />
       <el-button
+        :icon="isDark ? Sunny : Moon"
+        circle
+        @click="toggleDarkMode"
+        :title="isDark ? $t('common.lightMode') : $t('common.darkMode')"
+      />
+      <el-button
         :icon="Refresh"
         circle
         @click="handleRefresh"
@@ -18,16 +24,18 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Sunny, Moon } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import { ElMessage } from 'element-plus'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import { useDarkMode } from '@/composables/useDarkMode'
 
 const route = useRoute()
 const pluginStore = usePluginStore()
 const { t } = useI18n()
 const refreshing = ref(false)
+const { isDark, toggleDarkMode } = useDarkMode()
 
 const currentTitle = computed(() => {
   if (route.meta.titleKey) {

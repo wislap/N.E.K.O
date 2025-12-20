@@ -23,7 +23,9 @@ export default {
     info: '信息',
     noData: '暂无数据',
     unknown: '未知',
-    nA: 'N/A'
+    nA: 'N/A',
+    darkMode: '深色模式',
+    lightMode: '浅色模式'
   },
   nav: {
     dashboard: '仪表盘',
@@ -75,7 +77,9 @@ export default {
     entryId: 'ID',
     entryDescription: '描述',
     trigger: '触发',
-    noEntries: '暂无入口点'
+    noEntries: '暂无入口点',
+    showMetrics: '显示性能指标',
+    hideMetrics: '隐藏性能指标'
   },
   metrics: {
     title: '性能指标',
@@ -86,7 +90,13 @@ export default {
     pid: '进程ID',
     noMetrics: '暂无性能数据',
     refreshInterval: '刷新间隔',
-    seconds: '秒'
+    seconds: '秒',
+    cpu: 'CPU使用率',
+    memory: '内存使用',
+    memoryPercent: '内存占比',
+    pendingRequests: '待处理请求',
+    totalExecutions: '总执行次数',
+    noData: '暂无数据'
   },
   logs: {
     title: '日志',
@@ -102,7 +112,18 @@ export default {
     autoScroll: '自动滚动',
     scrollToBottom: '滚动到底部',
     logFiles: '日志文件',
-    selectFile: '选择文件'
+    selectFile: '选择文件',
+    search: '搜索日志...',
+    lines: '行数',
+    totalLogs: '共 {count} 条',
+    loadError: '无法加载日志：{error}',
+    emptyFile: '日志文件为空或不存在',
+    noMatches: '没有匹配的日志',
+    logFile: '日志文件',
+    totalLines: '总行数',
+    connected: '已连接',
+    disconnected: '未连接',
+    connectionFailed: '日志流连接失败'
   },
   status: {
     running: '运行中',

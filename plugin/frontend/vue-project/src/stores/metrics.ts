@@ -41,9 +41,12 @@ export const useMetricsStore = defineStore('metrics', () => {
   async function fetchPluginMetrics(pluginId: string) {
     try {
       const response = await getPluginMetrics(pluginId)
-      currentMetrics.value[pluginId] = response.metrics
+      if (response.metrics) {
+        currentMetrics.value[pluginId] = response.metrics
+      }
     } catch (err: any) {
       console.error(`Failed to fetch metrics for plugin ${pluginId}:`, err)
+      // 即使失败也不抛出异常，让组件显示"暂无数据"
     }
   }
 

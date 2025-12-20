@@ -31,19 +31,15 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/metrics',
-    name: 'Metrics',
-    component: () => import('@/views/Metrics.vue'),
-    meta: {
-      titleKey: 'nav.metrics'
-    }
+    path: '/logs',
+    redirect: '/logs/_server'
   },
   {
-    path: '/logs/:id?',
+    path: '/logs/:id',
     name: 'Logs',
     component: () => import('@/views/Logs.vue'),
     meta: {
-      titleKey: 'nav.logs'
+      titleKey: 'nav.serverLogs'
     }
   }
 ]

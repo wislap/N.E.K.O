@@ -17,14 +17,6 @@
         <el-icon><Box /></el-icon>
         <span>{{ $t('nav.plugins') }}</span>
       </el-menu-item>
-      <el-menu-item index="/metrics">
-        <el-icon><DataAnalysis /></el-icon>
-        <span>{{ $t('nav.metrics') }}</span>
-      </el-menu-item>
-      <el-menu-item index="/logs">
-        <el-icon><Document /></el-icon>
-        <span>{{ $t('nav.logs') }}</span>
-      </el-menu-item>
       <el-menu-item index="/logs/_server">
         <el-icon><Monitor /></el-icon>
         <span>{{ $t('nav.serverLogs') }}</span>
@@ -36,7 +28,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Odometer, Box, DataAnalysis, Document, Monitor } from '@element-plus/icons-vue'
+import { Odometer, Box, Monitor } from '@element-plus/icons-vue'
 
 const route = useRoute()
 

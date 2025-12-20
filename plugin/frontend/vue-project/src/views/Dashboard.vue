@@ -50,16 +50,18 @@
                 />
               </div>
             </div>
-            <div class="metric-item">
-              <div class="metric-label">{{ $t('dashboard.totalThreads') }}</div>
-              <div class="metric-value">
-                <el-statistic :value="globalMetrics?.total_threads || 0" />
+            <div class="metric-row">
+              <div class="metric-item">
+                <div class="metric-label">{{ $t('dashboard.totalThreads') }}</div>
+                <div class="metric-value">
+                  <el-statistic :value="globalMetrics?.total_threads || 0" />
+                </div>
               </div>
-            </div>
-            <div class="metric-item">
-              <div class="metric-label">{{ $t('dashboard.activePlugins') }}</div>
-              <div class="metric-value">
-                <el-statistic :value="globalMetrics?.active_plugins || 0" />
+              <div class="metric-item">
+                <div class="metric-label">{{ $t('dashboard.activePlugins') }}</div>
+                <div class="metric-value">
+                  <el-statistic :value="globalMetrics?.active_plugins || 0" />
+                </div>
               </div>
             </div>
           </div>
@@ -241,10 +243,17 @@ onMounted(async () => {
   gap: 20px;
 }
 
+.metric-row {
+  display: flex;
+  flex-direction: row;
+  gap: 40px;
+}
+
 .metric-item {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
 }
 
 .metric-label {

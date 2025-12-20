@@ -9,7 +9,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Query, Body
+from fastapi import FastAPI, HTTPException, Request, Query, Body, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from config import USER_PLUGIN_SERVER_PORT
@@ -37,7 +37,7 @@ from plugin.server.services import (
 from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
 from plugin.server.management import start_plugin, stop_plugin, reload_plugin
-from plugin.server.logs import get_plugin_logs, get_plugin_log_files
+from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint, log_stream_endpoint
 from plugin.server.config_service import load_plugin_config, update_plugin_config
 from plugin.server.metrics_service import metrics_collector
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
@@ -561,6 +561,17 @@ async def get_plugin_log_files_endpoint(plugin_id: str):
     except Exception as e:
         logger.exception(f"Failed to get log files for plugin {plugin_id}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@app.websocket("/ws/logs/{plugin_id}")
+async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
+    """
+    WebSocket 端点：实时推送日志流
+    
+    - WS /ws/logs/{plugin_id} - 实时接收插件日志
+    - WS /ws/logs/_server - 实时接收服务器日志
+    """
+    await log_stream_endpoint(websocket, plugin_id)
 
 
 # ========== 主程序入口 ==========
