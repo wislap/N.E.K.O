@@ -255,13 +255,6 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
-# ========== 工具函数（向后兼容） ==========
-
-def get_plugins():
-    """返回插件列表（同进程访问）"""
-    return registry_get_plugins()
-
-
 # ========== 主程序入口 ==========
 
 if __name__ == "__main__":

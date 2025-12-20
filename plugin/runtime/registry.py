@@ -162,7 +162,7 @@ def load_plugins_from_toml(
             sdk_untested_str = None
             sdk_conflicts_list: List[str] = []
 
-            # Backward compatibility: fall back to single sdk_version when no sdk block present
+            # Parse SDK version requirements from [plugin.sdk] block
             if isinstance(sdk_config, dict):
                 sdk_recommended_str = sdk_config.get("recommended")
                 sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
@@ -173,7 +173,13 @@ def load_plugins_from_toml(
                 elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
                     sdk_conflicts_list = [raw_conflicts.strip()]
             else:
-                sdk_supported_str = pdata.get("sdk_version") or sdk_config
+                # SDK configuration must be a dict (plugin.sdk block)
+                logger.error(
+                    "Plugin %s: SDK configuration must be a dict (plugin.sdk block), got %s; skipping load",
+                    pid,
+                    type(sdk_config).__name__
+                )
+                continue
 
             host_version_obj: Optional[Version] = None
             if Version and SpecifierSet:

@@ -211,28 +211,14 @@ def _plugin_process_runner(
                                 type(res),
                             )
                         except TypeError as err:
-                            logger.warning(
-                                "[Plugin Process] TypeError occurred: %s, attempting compatibility mode",
-                                err,
-                            )
-                            # 检查是否可能是旧式接口（只接收一个 dict 参数）
+                            # 参数不匹配，记录详细信息并抛出
                             sig = inspect.signature(method)
                             params = list(sig.parameters.keys())
-                            if len(params) == 1 and params[0] not in args:
-                                logger.debug(
-                                    "[Plugin Process] Using compatibility mode: passing args as single dict to param '%s'",
-                                    params[0],
-                                )
-                                # 旧式只接收一个 dict 的接口，尝试向后兼容
-                                res = method(args)
-                            else:
-                                # 不是旧式接口，重新抛出原始 TypeError
-                                logger.exception(
-                                    "[Plugin Process] TypeError not recoverable, params=%s, args_keys=%s",
-                                    params,
-                                    list(args.keys()) if isinstance(args, dict) else "N/A",
-                                )
-                                raise err
+                            logger.error(
+                                "[Plugin Process] Invalid call to entry %s: %s, params=%s, args_keys=%s",
+                                entry_id, err, params, list(args.keys()) if isinstance(args, dict) else "N/A"
+                            )
+                            raise
                     
                     ret_payload["success"] = True
                     ret_payload["data"] = res
@@ -317,7 +303,7 @@ class PluginProcessHost:
             message_queue=message_queue,
         )
         
-        # 为了向后兼容，保留这些属性
+        # 保留队列引用（用于 shutdown_sync 等同步方法）
         self.cmd_queue = cmd_queue
         self.res_queue = res_queue
         self.status_queue = status_queue
