@@ -53,6 +53,10 @@ def file_lock(file_obj):
             file_obj.seek(0)  # 回到文件开头
             if file_size > 0:
                 msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, file_size)
+            else:
+                # 空文件锁定至少 1 个字节以提供基本保护
+                # 注意：这会在文件开头锁定 1 个字节，即使文件是空的
+                msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, 1)
         else:
             # Unix/Linux/macOS 使用 fcntl
             fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX)
@@ -65,6 +69,9 @@ def file_lock(file_obj):
                 file_obj.seek(0)
                 if file_size > 0:
                     msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, file_size)
+                else:
+                    # 解锁空文件的 1 字节锁
+                    msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
             except Exception:
                 pass
         else:
