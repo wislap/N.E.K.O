@@ -149,13 +149,28 @@ export default {
     documentation: {
       title: '文档与资源',
       description: '查看项目文档了解更多信息：',
-      links: '<a href="https://github.com/wehos/N.E.K.O" target="_blank" rel="noopener">GitHub 仓库</a>、<a href="https://store.steampowered.com/app/4099310/__NEKO/" target="_blank" rel="noopener">Steam 商店页面</a>、<a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord 社区</a>。',
-      readme: 'README.md 文件：'
+      links: [
+        { text: 'GitHub 仓库', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
+        { text: 'Steam 商店页面', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
+        { text: 'Discord 社区', url: 'https://discord.gg/5kgHfepNJr' }
+      ],
+      linkSeparator: '、',
+      linkLastSeparator: '',
+      readme: 'README.md 文件：',
+      openFailed: '无法在编辑器中打开 README.md 文件',
+      openTimeout: '请求超时，无法打开 README.md 文件',
+      openError: '打开 README.md 文件时发生错误'
     },
     community: {
       title: '社区与支持',
       description: '加入我们的社区，与其他开发者和用户交流：',
-      links: '<a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord 服务器</a>、<a href="https://qm.qq.com/q/hN82yFONJQ" target="_blank" rel="noopener">QQ 群</a>、<a href="https://github.com/wehos/N.E.K.O/issues" target="_blank" rel="noopener">GitHub Issues</a>。'
+      links: [
+        { text: 'Discord 服务器', url: 'https://discord.gg/5kgHfepNJr' },
+        { text: 'QQ 群', url: 'https://qm.qq.com/q/hN82yFONJQ' },
+        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
+      ],
+      linkSeparator: '、',
+      linkLastSeparator: ''
     }
   }
 }

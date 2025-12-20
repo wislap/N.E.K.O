@@ -153,7 +153,7 @@ class RobustLoggerConfig:
             print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
         
         # 如果所有方法都失败，返回当前目录下的 log 文件夹
-        print(f"Warning: All log directory attempts failed, using current directory", file=sys.stderr)
+        print("Warning: All log directory attempts failed, using current directory", file=sys.stderr)
         log_dir = Path.cwd() / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
         return log_dir

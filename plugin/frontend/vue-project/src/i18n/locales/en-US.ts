@@ -149,13 +149,28 @@ export default {
     documentation: {
       title: 'Documentation & Resources',
       description: 'Check out the project documentation for more information:',
-      links: '<a href="https://github.com/wehos/N.E.K.O" target="_blank" rel="noopener">GitHub Repository</a>, <a href="https://store.steampowered.com/app/4099310/__NEKO/" target="_blank" rel="noopener">Steam Store Page</a>, and <a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord Community</a>.',
-      readme: 'README.md file:'
+      links: [
+        { text: 'GitHub Repository', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
+        { text: 'Steam Store Page', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
+        { text: 'Discord Community', url: 'https://discord.gg/5kgHfepNJr' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ', and ',
+      readme: 'README.md file:',
+      openFailed: 'Failed to open README.md in editor',
+      openTimeout: 'Request timeout, failed to open README.md file',
+      openError: 'Error occurred while opening README.md file'
     },
     community: {
       title: 'Community & Support',
       description: 'Join our community to connect with other developers and users:',
-      links: '<a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord Server</a>, <a href="https://qm.qq.com/q/hN82yFONJQ" target="_blank" rel="noopener">QQ Group</a>, and <a href="https://github.com/wehos/N.E.K.O/issues" target="_blank" rel="noopener">GitHub Issues</a>.'
+      links: [
+        { text: 'Discord Server', url: 'https://discord.gg/5kgHfepNJr' },
+        { text: 'QQ Group', url: 'https://qm.qq.com/q/hN82yFONJQ' },
+        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ', and '
     }
   }
 }
