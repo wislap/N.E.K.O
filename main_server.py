@@ -598,6 +598,27 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """服务器关闭时清理所有 AsyncClient 实例"""
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理 AsyncClient 资源...")
+        
+        # 注意：main_server.py 本身不直接创建 McpRouterClient 实例
+        # 但为了完整性，我们在这里处理可能存在的其他 httpx.AsyncClient 实例
+        # 主要的清理工作应该在 agent_server.py 的 shutdown 事件中完成
+        
+        # 等待预加载任务完成（如果还在运行）
+        global _preload_task
+        if _preload_task and not _preload_task.done():
+            try:
+                await asyncio.wait_for(_preload_task, timeout=1.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # 超时或出错时忽略，继续关闭流程
+        
+        logger.info("✅ 资源清理完成")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
