@@ -975,7 +975,7 @@ def long_task(self, **_):
 
 ### 6.3 消息推送
 
-#### 5.3.1 文本消息
+#### 6.3.1 文本消息
 
 ```python
 self.ctx.push_message(
@@ -992,7 +992,7 @@ self.ctx.push_message(
 )
 ```
 
-#### 5.3.2 URL 消息
+#### 6.3.2 URL 消息
 
 ```python
 self.ctx.push_message(
@@ -1009,7 +1009,7 @@ self.ctx.push_message(
 )
 ```
 
-#### 5.3.3 二进制数据
+#### 6.3.3 二进制数据
 
 ```python
 # 小文件直接传输
@@ -1045,7 +1045,7 @@ self.ctx.push_message(
 )
 ```
 
-#### 5.3.4 优先级说明
+#### 6.3.4 优先级说明
 
 优先级范围：0-10
 - `0-2`: 低优先级（信息性消息）
@@ -1053,7 +1053,7 @@ self.ctx.push_message(
 - `6-8`: 高优先级（重要通知）
 - `9-10`: 紧急优先级（需要立即处理）
 
-### 5.4 配置文件访问
+### 6.4 配置文件访问
 
 ```python
 from pathlib import Path
@@ -2195,7 +2195,7 @@ A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pym
 
 ## 第十一章：API 参考
 
-### 10.1 装饰器
+### 11.1 装饰器
 
 #### @neko_plugin
 ```python
@@ -2265,7 +2265,7 @@ class MyPlugin(NekoPluginBase):
 )
 ```
 
-### 10.2 基类方法
+### 11.2 基类方法
 
 #### NekoPluginBase.get_input_schema()
 ```python
@@ -2336,7 +2336,7 @@ def call_plugin(
     """
 ```
 
-### 10.3 上下文方法
+### 11.3 上下文方法
 
 #### PluginContext.update_status()
 ```python

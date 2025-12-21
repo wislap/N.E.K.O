@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from multiprocessing import Queue
 from queue import Empty
 
@@ -42,7 +42,7 @@ def _plugin_process_runner(
     res_queue: Queue,
     status_queue: Queue,
     message_queue: Queue,
-    plugin_comm_queue: Queue = None,
+    plugin_comm_queue: Queue | None = None,
 ) -> None:
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
@@ -53,7 +53,9 @@ def _plugin_process_runner(
     try:
         # 设置 Python 路径，确保能够导入插件模块
         # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
-        project_root = config_path.parent.parent.parent.resolve()
+        # config_path.parent.parent.parent 只能得到 ./plugin 目录
+        # 需要再往上一级才能得到项目根目录（包含 plugin/ 目录的那一层）
+        project_root = config_path.parent.parent.parent.parent.resolve()
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
             logger.info("[Plugin Process] Added project root to sys.path: %s", project_root)
@@ -72,6 +74,9 @@ def _plugin_process_runner(
         cls = getattr(mod, class_name)
         logger.info("[Plugin Process] Class found: %s", cls)
 
+        # 注意：_entry_map 和 _instance 在 PluginContext 中定义为 Optional，
+        # 这里先设置为 None，在创建 instance 和扫描入口映射后再设置。
+        # 在设置之前，context 的方法不应该访问这些属性。
         ctx = PluginContext(
             plugin_id=plugin_id,
             logger=logger,
@@ -81,8 +86,8 @@ def _plugin_process_runner(
             _plugin_comm_queue=plugin_comm_queue,
             _cmd_queue=cmd_queue,  # 传递命令队列，用于在等待期间处理命令
             _res_queue=res_queue,  # 传递结果队列，用于在等待期间处理响应
-            _entry_map=None,  # 将在后面设置
-            _instance=None,  # 将在后面设置
+            _entry_map=None,  # 将在创建 instance 后设置（见下方第116行）
+            _instance=None,  # 将在创建 instance 后设置（见下方第117行）
         )
         instance = cls(ctx)
 
@@ -108,7 +113,8 @@ def _plugin_process_runner(
 
         logger.info("Plugin instance created. Mapped entries: %s", list(entry_map.keys()))
         
-        # 设置命令队列和入口映射到上下文，用于在等待期间处理命令
+        # 设置命令队列、入口映射和实例到上下文，用于在等待期间处理命令
+        # 这些属性在 PluginContext 中定义为 Optional，现在进行初始化
         ctx._cmd_queue = cmd_queue
         ctx._res_queue = res_queue
         ctx._entry_map = entry_map
@@ -176,9 +182,9 @@ def _plugin_process_runner(
                 else:
                     fn()
             except (KeyboardInterrupt, SystemExit):
-                logger.info("Custom event '%s' interrupted", fn_name)
-            except Exception as e:
-                logger.exception("Custom event '%s' failed: %s", fn_name, e)
+                logger.info("Custom event '%s' (type: %s) interrupted", fn_name, event_type)
+            except Exception:
+                logger.exception("Custom event '%s' (type: %s) failed", fn_name, event_type)
 
         # 扫描所有自定义事件类型
         for event_type, events in events_by_type.items():
@@ -272,12 +278,12 @@ def _plugin_process_runner(
                         "[Plugin Process] Response sent successfully for req_id=%s",
                         req_id
                     )
-                except Exception as e:
-                    logger.error(
-                        "[Plugin Process] Failed to send response for req_id=%s: %s",
-                        req_id, e
+                except Exception:
+                    logger.exception(
+                        "[Plugin Process] Failed to send response for req_id=%s",
+                        req_id
                     )
-                    # 即使发送失败，也要继续处理下一个命令
+                    # 即使发送失败，也要继续处理下一个命令（防御性编程）
                 continue
 
             if msg["type"] == "TRIGGER":
@@ -377,13 +383,13 @@ def _plugin_process_runner(
                                 "[Plugin Process] Method call succeeded, result type: %s",
                                 type(res),
                             )
-                        except TypeError as err:
+                        except TypeError:
                             # 参数不匹配，记录详细信息并抛出
                             sig = inspect.signature(method)
                             params = list(sig.parameters.keys())
-                            logger.error(
-                                "[Plugin Process] Invalid call to entry %s: %s, params=%s, args_keys=%s",
-                                entry_id, err, params, list(args.keys()) if isinstance(args, dict) else "N/A"
+                            logger.exception(
+                                "[Plugin Process] Invalid call to entry %s, params=%s, args_keys=%s",
+                                entry_id, params, list(args.keys()) if isinstance(args, dict) else "N/A"
                             )
                             raise
                     

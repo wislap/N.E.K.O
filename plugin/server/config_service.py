@@ -219,8 +219,9 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
     """
     更新插件配置
     
-    使用进程级别的锁保护整个读取-修改-写入周期，防止 TOCTOU 竞态条件。
-    每个插件ID有独立的锁，避免不同插件之间的不必要阻塞。
+    使用进程级别的锁和文件锁双重保护整个读取-修改-写入周期，防止 TOCTOU 竞态条件。
+    每个插件ID有独立的进程内锁，避免不同插件之间的不必要阻塞。
+    文件锁提供跨进程保护，适用于多进程部署场景。
     
     Args:
         plugin_id: 插件ID
@@ -235,63 +236,65 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
             detail="TOML library not available"
         )
     
-    # 获取插件专属的锁（保护整个读取-修改-写入周期）
+    # 获取插件专属的进程内锁（避免同一进程内的并发访问）
     with _config_update_locks_lock:
         if plugin_id not in _config_update_locks:
             _config_update_locks[plugin_id] = threading.Lock()
         lock = _config_update_locks[plugin_id]
     
-    # 在整个读取-修改-写入周期都持有锁，防止 TOCTOU 竞态条件（进程内）
+    # 在整个读取-修改-写入周期都持有进程内锁和文件锁，防止 TOCTOU 竞态条件
     with lock:
         config_path = get_plugin_config_path(plugin_id)
         
         try:
-            # 读取现有配置（进程内锁已持有；如需跨进程安全可在此添加 file_lock）
-            with open(config_path, 'rb') as f:
-                current_config = tomllib.load(f)
-            
-            # 深度合并
-            merged_config = deep_merge(current_config, updates)
-            
-            # 使用临时文件 + 原子性 rename 的方式，确保配置持久化的可靠性
-            # 这样即使写入过程中出问题，原文件也不会损坏
-            config_dir = config_path.parent
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix='.toml',
-                prefix='.plugin_config_',
-                dir=config_dir
-            )
-            
-            try:
-                # 写入临时文件
-                with os.fdopen(temp_fd, 'wb') as temp_file:
-                    tomli_w.dump(merged_config, temp_file)
-                    temp_file.flush()  # 确保数据从 Python 缓冲区写入操作系统
-                    os.fsync(temp_file.fileno())  # 确保数据立即写入磁盘
-                
-                # 原子性地替换原文件
-                # 在大多数文件系统上，rename 是原子操作
-                os.replace(temp_path, config_path)
-                
-                # 确保目录的元数据也同步到磁盘（部分平台不支持 O_DIRECTORY）
-                try:
-                    config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+            # 同时持有进程内锁和跨进程文件锁，保护整个读取-修改-写入周期
+            with open(config_path, 'r+b') as f:
+                with file_lock(f):
+                    # 读取现有配置
+                    current_config = tomllib.load(f)
+                    
+                    # 深度合并
+                    merged_config = deep_merge(current_config, updates)
+                    
+                    # 使用临时文件 + 原子性 rename 的方式，确保配置持久化的可靠性
+                    # 这样即使写入过程中出问题，原文件也不会损坏
+                    config_dir = config_path.parent
+                    temp_fd, temp_path = tempfile.mkstemp(
+                        suffix='.toml',
+                        prefix='.plugin_config_',
+                        dir=config_dir
+                    )
+                    
                     try:
-                        os.fsync(config_dir_fd)
-                    finally:
-                        os.close(config_dir_fd)
-                except (AttributeError, OSError):
-                    # Windows 等平台无 O_DIRECTORY，或目录 fsync 不被支持
-                    pass
-            
-            except Exception:
-                # 如果写入失败，清理临时文件
-                try:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-                except Exception:
-                    pass
-                raise
+                        # 写入临时文件（在文件锁保护下）
+                        with os.fdopen(temp_fd, 'wb') as temp_file:
+                            tomli_w.dump(merged_config, temp_file)
+                            temp_file.flush()  # 确保数据从 Python 缓冲区写入操作系统
+                            os.fsync(temp_file.fileno())  # 确保数据立即写入磁盘
+                        
+                        # 原子性地替换原文件（在文件锁保护下）
+                        # 在大多数文件系统上，rename 是原子操作
+                        os.replace(temp_path, config_path)
+                        
+                        # 确保目录的元数据也同步到磁盘（部分平台不支持 O_DIRECTORY）
+                        try:
+                            config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                            try:
+                                os.fsync(config_dir_fd)
+                            finally:
+                                os.close(config_dir_fd)
+                        except (AttributeError, OSError):
+                            # Windows 等平台无 O_DIRECTORY，或目录 fsync 不被支持
+                            pass
+                    
+                    except Exception:
+                        # 如果写入失败，清理临时文件
+                        try:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                        except Exception:
+                            pass
+                        raise
             
             # 重新加载配置
             updated = load_plugin_config(plugin_id)

@@ -330,13 +330,6 @@ class PluginCommunicationResourceManager:
                     continue
                 
                 # 记录收到响应的时间
-                # #region agent log
-                log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{331}","message":"result received from queue","data":{{"req_id":"{req_id}","success":{res.get("success")}}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
                 self.logger.debug(
                     f"Received result for req_id {req_id} from plugin {self.plugin_id}, "
                     f"success={res.get('success')}"
@@ -344,23 +337,11 @@ class PluginCommunicationResourceManager:
                 
                 future = self._pending_futures.get(req_id)
                 if future:
-                    # #region agent log
-                    try:
-                        with open(log_file, "a") as f:
-                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{342}","message":"future found","data":{{"req_id":"{req_id}","future_done":{future.done()}}},"timestamp":{int(time.time()*1000)}}}\n')
-                    except: pass
-                    # #endregion
                     if not future.done():
                         # Future 还未完成，设置结果
                         self.logger.debug(
                             f"Setting result for req_id {req_id}, Future is not done yet"
                         )
-                        # #region agent log
-                        try:
-                            with open(log_file, "a") as f:
-                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{346}","message":"setting future result","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                        except: pass
-                        # #endregion
                         if res.get("success"):
                             future.set_result(res)
                         else:
@@ -370,12 +351,6 @@ class PluginCommunicationResourceManager:
                         self.logger.debug(f"Result set and Future removed for req_id {req_id}")
                     else:
                         # Future 已经完成（可能因为超时），忽略延迟到达的响应
-                        # #region agent log
-                        try:
-                            with open(log_file, "a") as f:
-                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{357}","message":"future already done (delayed result)","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                        except: pass
-                        # #endregion
                         self.logger.warning(
                             f"Received delayed result for req_id {req_id} from plugin {self.plugin_id}, "
                             f"but Future is already done (likely timed out). Ignoring."

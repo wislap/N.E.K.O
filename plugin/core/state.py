@@ -50,10 +50,10 @@ class PluginRuntimeState:
         """插件间通信队列（用于插件调用其他插件的 custom_event）"""
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
-        if self._plugin_comm_queue is None:
-            import multiprocessing
-            # 使用 multiprocessing.Queue 因为需要跨进程
-            self._plugin_comm_queue = multiprocessing.Queue()
+                if self._plugin_comm_queue is None:
+                    import multiprocessing
+                    # 使用 multiprocessing.Queue 因为需要跨进程
+                    self._plugin_comm_queue = multiprocessing.Queue()
         return self._plugin_comm_queue
     
     @property
@@ -61,12 +61,12 @@ class PluginRuntimeState:
         """插件响应映射（跨进程共享字典）"""
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
-        if self._plugin_response_map is None:
-            import multiprocessing
-            # 使用 Manager 创建跨进程共享的字典
-            if self._plugin_response_map_manager is None:
-                self._plugin_response_map_manager = multiprocessing.Manager()
-            self._plugin_response_map = self._plugin_response_map_manager.dict()
+                if self._plugin_response_map is None:
+                    import multiprocessing
+                    # 使用 Manager 创建跨进程共享的字典
+                    if self._plugin_response_map_manager is None:
+                        self._plugin_response_map_manager = multiprocessing.Manager()
+                    self._plugin_response_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
     
     def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
@@ -129,12 +129,13 @@ class PluginRuntimeState:
         try:
             # 使用快照避免迭代时字典被修改导致 RuntimeError
             for request_id, response_data in list(self.plugin_response_map.items()):
-            expire_time = response_data.get("expire_time", 0)
-            if current_time > expire_time:
-                expired_ids.append(request_id)
-        except Exception:
+                expire_time = response_data.get("expire_time", 0)
+                if current_time > expire_time:
+                    expired_ids.append(request_id)
+        except Exception as e:
             # 如果迭代失败，返回已找到的过期ID数量
-            pass
+            logger = logging.getLogger("user_plugin_server")
+            logger.debug(f"Error iterating expired responses: {e}")
         
         # 删除过期的响应
         for request_id in expired_ids:
