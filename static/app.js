@@ -511,15 +511,15 @@ function init_app() {
                                     await getUserLanguage();
                                 }
                                 
-                                if (window.currentGeminiMessage &&
-                                    window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                                    window.currentGeminiMessage.isConnected) {
-                                    if (userLanguage && userLanguage !== 'zh') {
-                                        await translateMessageBubble(fullText, window.currentGeminiMessage);
-                                    }
-                                }
+                                // 用户要求：不要自动翻译聊天框内的文本
+                                // if (userLanguage && userLanguage !== 'zh') {
+                                //     await translateMessageBubble(fullText, window.currentGeminiMessage);
+                                // }
                                 
-                                await translateAndShowSubtitle(fullText);
+                                // 用户要求：只在开启字幕翻译开关后才进行翻译
+                                if (subtitleEnabled) {
+                                    await translateAndShowSubtitle(fullText);
+                                }
                             } catch (error) {
                                 console.error('翻译处理失败:', {
                                     error: error.message,
@@ -1426,9 +1426,22 @@ function init_app() {
                 throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
             }
 
-            // 等待session真正启动成功
+            // 等待session真正启动成功 AND 麦克风初始化完成（并行执行以减少等待时间）
+            // 并行执行：
+            // 1. 等待后端Session准备就绪 (sessionStartPromise)
+            // 2. 初始化前端麦克风 (startMicCapture)
             try {
-                await sessionStartPromise;
+                // 显示Live2D (提前显示，优化观感)
+                showLive2d();
+                
+                showStatusToast(window.t ? window.t('app.initializingMic') : '正在初始化麦克风...', 3000);
+                
+                // 并行等待
+                await Promise.all([
+                    sessionStartPromise,
+                    startMicCapture()
+                ]);
+                
                 // 成功时清除超时定时器
                 if (timeoutId) {
                     clearTimeout(timeoutId);
@@ -1442,13 +1455,6 @@ function init_app() {
                 }
                 throw error; // 重新抛出错误，让外层 catch 处理
             }
-
-            showStatusToast(window.t ? window.t('app.initializingMic') : '正在初始化麦克风...', 3000);
-            showVoicePreparingToast(window.t ? window.t('app.initializingMic') : '正在初始化麦克风...');
-
-            // 显示Live2D
-            showLive2d();
-            await startMicCapture();
 
             // 启动语音期间的主动视觉定时（如果已开启主动视觉）
             try {
@@ -5893,9 +5899,9 @@ function showSubtitlePrompt() {
     // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
     const browserLang = normalizeLanguageCode(navigator.language);
     const fallbacks = {
-        'zh': '开启字幕',
-        'en': 'Enable Subtitle',
-        'ja': '字幕を有効にする'
+        'zh': '开启字幕翻译',
+        'en': 'Enable Subtitle Translation',
+        'ja': '字幕翻訳を有効にする'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');

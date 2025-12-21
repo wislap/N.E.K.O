@@ -636,8 +636,14 @@
 
         /* 语音模式下的字幕提示框样式（放在 chat-container 底部） */
         .subtitle-prompt-message.voice-mode {
+            width: auto;
             margin: 8px 12px;
             pointer-events: auto;
+        }
+
+        /* 最小化时隐藏字幕提示框 */
+        #chat-container.minimized .subtitle-prompt-message {
+            display: none !important;
         }
 
 

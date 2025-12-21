@@ -255,12 +255,16 @@ def reset_global_language() -> None:
 
 def normalize_language_code(lang: str, format: str = 'short') -> str:
     """
-    归一化语言代码（统一处理 'zh' 和 'zh-CN' 等格式）
+    归一化语言代码（统一处理 'zh', 'zh-CN', Steam语言代码等格式）
     
     此函数是公共 API，供其他模块复用。
     
+    支持的输入格式：
+    - 标准语言代码：'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja' 等
+    - Steam 语言代码：'schinese', 'tchinese', 'english', 'japanese' 等
+    
     Args:
-        lang: 输入的语言代码（如 'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja' 等）
+        lang: 输入的语言代码
         format: 输出格式
             - 'short': 返回短格式 ('zh', 'en', 'ja')
             - 'full': 返回完整格式 ('zh-CN', 'en', 'ja')
@@ -273,6 +277,23 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     
     lang_lower = lang.lower().strip()
     
+    # Steam 语言代码映射
+    # 参考: https://partner.steamgames.com/doc/store/localization/languages
+    STEAM_LANG_MAP = {
+        'schinese': 'zh',      # 简体中文
+        'tchinese': 'zh',      # 繁体中文（映射到简体中文）
+        'english': 'en',       # 英文
+        'japanese': 'ja',      # 日语
+    }
+    
+    # 先检查是否是 Steam 语言代码
+    if lang_lower in STEAM_LANG_MAP:
+        normalized = STEAM_LANG_MAP[lang_lower]
+        if format == 'full' and normalized == 'zh':
+            return 'zh-CN'
+        return normalized
+    
+    # 标准语言代码处理
     if lang_lower.startswith('zh'):
         return 'zh' if format == 'short' else 'zh-CN'
     elif lang_lower.startswith('ja'):
