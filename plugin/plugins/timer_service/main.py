@@ -102,6 +102,11 @@ class TimerServicePlugin(NekoPluginBase):
                         # 如果没有提供 callback_args，至少包含 tick_count
                         final_callback_args["current_count"] = self._timers[timer_id]["tick_count"]
             
+            # 检查是否达到最大次数（在锁外检查，避免阻塞）
+            max_count = None
+            if callback_args and "max_count" in callback_args:
+                max_count = callback_args.get("max_count", 0)
+            
             # 如果有回调插件，触发回调（在锁外执行，避免阻塞）
             if callback_plugin_id and callback_entry_id:
                 self._trigger_callback(
@@ -109,6 +114,22 @@ class TimerServicePlugin(NekoPluginBase):
                     callback_entry_id,
                     final_callback_args
                 )
+            
+            # 如果达到最大次数，自动停止定时器（在回调之后，避免死锁）
+            if max_count and max_count > 0:
+                with self._timer_lock:
+                    if timer_id in self._timers:
+                        tick_count = self._timers[timer_id].get("tick_count", 0)
+                        if tick_count >= max_count:
+                            self.logger.info(
+                                f"[TimerService] 定时器 '{timer_id}' 已达到最大次数 {max_count}，自动停止"
+                            )
+                            # 在锁外停止定时器，避免死锁
+                            stop_result = self._stop_timer_internal(timer_id)
+                            if stop_result.get("success"):
+                                self.logger.info(
+                                    f"[TimerService] 定时器 '{timer_id}' 已自动停止"
+                                )
         except Exception as e:
             self.logger.exception(f"[TimerService] 处理定时器 '{timer_id}' 触发时出错: {e}")
     

@@ -138,7 +138,7 @@ class PluginRouter:
         event_id = request.get("event_id")
         args = request.get("args", {})
         request_id = request.get("request_id")
-        timeout = request.get("timeout", 5.0)
+        timeout = request.get("timeout", 10.0)  # 增加默认超时时间以应对命令循环可能的延迟
         
         logger.info(
             f"[PluginRouter] Routing request: {from_plugin} -> {to_plugin}, "
@@ -181,7 +181,7 @@ class PluginRouter:
             logger.exception(f"[PluginRouter] Error triggering custom event: {e}")
             self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
     
-    def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 5.0) -> None:
+    def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 10.0) -> None:
         """
         发送响应到源插件（使用响应映射，避免共享队列的竞态条件）
         

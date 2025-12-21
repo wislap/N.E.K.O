@@ -898,30 +898,16 @@ class WebInterfacePlugin(NekoPluginBase):
             priority=6
         )
         
-        # 如果达到最大次数，停止定时器
+        # 如果达到最大次数，记录日志
+        # 注意：不要在回调中同步调用 stop_timer，这可能导致死锁
+        # timer_service 会在达到最大次数时自动停止定时器（如果支持 max_count 参数）
         if max_count > 0 and current_count >= max_count:
-            self.logger.info(f"[WebInterface] 定时器 {timer_id} 已达到最大次数，准备停止")
-            # 使用 Queue 机制停止定时器（单线程处理，不阻塞）
-            try:
-                result = self.call_plugin(
-                    plugin_id="timer_service",
-                    event_type="plugin_entry",
-                    event_id="stop_timer",
-                    args={"timer_id": timer_id},
-                    timeout=5.0
-                )
-                if result.get("success"):
-                    self._add_message(
-                        "定时器",
-                        f"定时器 {timer_id} 已自动停止（达到最大次数 {max_count}）",
-                        priority=7
-                    )
-                else:
-                    self.logger.warning(
-                        f"[WebInterface] 停止定时器失败: {result.get('error', '未知错误')}"
-                    )
-            except Exception as e:
-                self.logger.exception(f"[WebInterface] 停止定时器失败: {e}")
+            self.logger.info(f"[WebInterface] 定时器 {timer_id} 已达到最大次数 {max_count}")
+            self._add_message(
+                "定时器",
+                f"定时器 {timer_id} 已达到最大次数 {max_count}，将自动停止",
+                priority=6
+            )
         
         return {
             "success": True,

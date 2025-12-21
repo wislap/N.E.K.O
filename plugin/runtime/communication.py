@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -176,35 +177,47 @@ class PluginCommunicationResourceManager:
             args,
         )
         
+        # 发送命令
+        trigger_msg = {
+            "type": "TRIGGER",
+            "req_id": req_id,
+            "entry_id": entry_id,
+            "args": args
+        }
+        self.logger.debug(
+            "[CommManager] TRIGGER message: %s",
+            trigger_msg,
+        )
+        self.cmd_queue.put(trigger_msg)
+        
+        # 等待结果（带超时）
         try:
-            # 发送命令
-            trigger_msg = {
-                "type": "TRIGGER",
-                "req_id": req_id,
-                "entry_id": entry_id,
-                "args": args
-            }
-            self.logger.debug(
-                "[CommManager] TRIGGER message: %s",
-                trigger_msg,
+            result = await asyncio.wait_for(future, timeout=timeout)
+            if result["success"]:
+                return result["data"]
+            else:
+                raise PluginExecutionError(self.plugin_id, entry_id, result.get("error", "Unknown error"))
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"Plugin {self.plugin_id} entry {entry_id} timed out after {timeout}s, req_id={req_id}"
             )
-            self.cmd_queue.put(trigger_msg)
-            
-            # 等待结果（带超时）
-            try:
-                result = await asyncio.wait_for(future, timeout=timeout)
-                if result["success"]:
-                    return result["data"]
-                else:
-                    raise PluginExecutionError(self.plugin_id, entry_id, result.get("error", "Unknown error"))
-            except asyncio.TimeoutError:
-                self.logger.error(
-                    f"Plugin {self.plugin_id} entry {entry_id} timed out after {timeout}s"
-                )
-                raise TimeoutError(f"Plugin execution timed out after {timeout}s") from None
-        finally:
-            # 清理 Future（无论成功还是失败）
-            self._pending_futures.pop(req_id, None)
+            # 超时后不立即清理 Future，给响应一些时间到达
+            # 延迟清理，避免响应到达时找不到 Future
+            async def cleanup_after_delay():
+                await asyncio.sleep(2.0)  # 给响应2秒时间到达
+                if req_id in self._pending_futures:
+                    future = self._pending_futures.get(req_id)
+                    if future and future.done():
+                        self.logger.debug(
+                            f"Cleaning up completed Future for req_id={req_id} after timeout"
+                        )
+                    self._pending_futures.pop(req_id, None)
+            asyncio.create_task(cleanup_after_delay())
+            raise TimeoutError(f"Plugin execution timed out after {timeout}s") from None
+        # 注意：不在 finally 中清理 Future
+        # - 如果成功，Future 会在 _consume_results 中清理
+        # - 如果超时，延迟清理任务会处理
+        # 这样可以避免超时后立即清理，给延迟响应时间到达
     
     async def trigger_custom_event(
         self, 
@@ -229,6 +242,13 @@ class PluginCommunicationResourceManager:
             TimeoutError: 如果超时
             PluginExecutionError: 如果事件执行出错
         """
+        # #region agent log
+        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
+        try:
+            with open(log_file, "a") as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{244}","message":"trigger_custom_event start","data":{{"req_id_placeholder":"new","event_type":"{event_type}","event_id":"{event_id}","timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
+        except: pass
+        # #endregion
         req_id = str(uuid.uuid4())
         future = asyncio.Future()
         self._pending_futures[req_id] = future
@@ -241,36 +261,83 @@ class PluginCommunicationResourceManager:
             req_id,
         )
         
+        # 发送命令
+        trigger_msg = {
+            "type": "TRIGGER_CUSTOM",
+            "req_id": req_id,
+            "event_type": event_type,
+            "event_id": event_id,
+            "args": args
+        }
+        # #region agent log
+        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
         try:
-            # 发送命令
-            trigger_msg = {
-                "type": "TRIGGER_CUSTOM",
-                "req_id": req_id,
-                "event_type": event_type,
-                "event_id": event_id,
-                "args": args
-            }
-            self.cmd_queue.put(trigger_msg)
-            
-            # 等待结果（带超时）
+            with open(log_file, "a") as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{264}","message":"cmd_queue.put before","data":{{"req_id":"{req_id}","queue_size_estimate":"unknown"}},"timestamp":{int(time.time()*1000)}}}\n')
+        except: pass
+        # #endregion
+        self.cmd_queue.put(trigger_msg)
+        # #region agent log
+        try:
+            with open(log_file, "a") as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{266}","message":"cmd_queue.put after","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
+        except: pass
+        # #endregion
+        
+        # 等待结果（带超时）
+        wait_start_time = time.time()
+        # #region agent log
+        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
+        try:
+            with open(log_file, "a") as f:
+                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{268}","message":"wait_for future start","data":{{"req_id":"{req_id}","timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
+        except: pass
+        # #endregion
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            # #region agent log
+            wait_duration = time.time() - wait_start_time
             try:
-                result = await asyncio.wait_for(future, timeout=timeout)
-                if result["success"]:
-                    return result["data"]
-                else:
-                    raise PluginExecutionError(
-                        self.plugin_id, 
-                        f"{event_type}.{event_id}", 
-                        result.get("error", "Unknown error")
-                    )
-            except asyncio.TimeoutError:
-                self.logger.error(
-                    f"Plugin {self.plugin_id} custom event {event_type}.{event_id} timed out after {timeout}s"
+                with open(log_file, "a") as f:
+                    f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{270}","message":"future resolved","data":{{"req_id":"{req_id}","wait_duration":{wait_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
+            except: pass
+            # #endregion
+            if result["success"]:
+                return result["data"]
+            else:
+                raise PluginExecutionError(
+                    self.plugin_id, 
+                    f"{event_type}.{event_id}", 
+                    result.get("error", "Unknown error")
                 )
-                raise TimeoutError(f"Custom event execution timed out after {timeout}s") from None
-        finally:
-            # 清理 Future
-            self._pending_futures.pop(req_id, None)
+        except asyncio.TimeoutError:
+            wait_duration = time.time() - wait_start_time
+            # #region agent log
+            try:
+                with open(log_file, "a") as f:
+                    f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B,C,D","location":"communication.py:{284}","message":"timeout error","data":{{"req_id":"{req_id}","wait_duration":{wait_duration},"timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
+            except: pass
+            # #endregion
+            self.logger.error(
+                f"Plugin {self.plugin_id} custom event {event_type}.{event_id} timed out after {timeout}s, req_id={req_id}"
+            )
+            # 超时后不立即清理 Future，给响应一些时间到达
+            # 延迟清理，避免响应到达时找不到 Future
+            async def cleanup_after_delay():
+                await asyncio.sleep(2.0)  # 给响应2秒时间到达
+                if req_id in self._pending_futures:
+                    future = self._pending_futures.get(req_id)
+                    if future and future.done():
+                        self.logger.debug(
+                            f"Cleaning up completed Future for req_id={req_id} after timeout"
+                        )
+                    self._pending_futures.pop(req_id, None)
+            asyncio.create_task(cleanup_after_delay())
+            raise TimeoutError(f"Custom event execution timed out after {timeout}s") from None
+        # 注意：不在 finally 中清理 Future
+        # - 如果成功，Future 会在 _consume_results 中清理
+        # - 如果超时，延迟清理任务会处理
+        # 这样可以避免超时后立即清理，给延迟响应时间到达
     
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
@@ -292,26 +359,75 @@ class PluginCommunicationResourceManager:
         while not self._shutdown_event.is_set():
             try:
                 # 使用 executor 在后台线程中阻塞读取队列
+                # QUEUE_GET_TIMEOUT 是 1.0 秒，超时后会继续循环
                 res = await loop.run_in_executor(
                     self._executor,
                     lambda: self.res_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
+                # 收到响应后立即处理，不延迟
                 
                 req_id = res.get("req_id")
                 if not req_id:
                     self.logger.warning(f"Received result without req_id from plugin {self.plugin_id}")
                     continue
                 
-                future = self._pending_futures.pop(req_id, None)
+                # 记录收到响应的时间
+                # #region agent log
+                log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
+                try:
+                    with open(log_file, "a") as f:
+                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{331}","message":"result received from queue","data":{{"req_id":"{req_id}","success":{res.get("success")}}},"timestamp":{int(time.time()*1000)}}}\n')
+                except: pass
+                # #endregion
+                self.logger.debug(
+                    f"Received result for req_id {req_id} from plugin {self.plugin_id}, "
+                    f"success={res.get('success')}"
+                )
+                
+                future = self._pending_futures.get(req_id)
                 if future:
+                    # #region agent log
+                    try:
+                        with open(log_file, "a") as f:
+                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{342}","message":"future found","data":{{"req_id":"{req_id}","future_done":{future.done()}}},"timestamp":{int(time.time()*1000)}}}\n')
+                    except: pass
+                    # #endregion
                     if not future.done():
+                        # Future 还未完成，设置结果
+                        self.logger.debug(
+                            f"Setting result for req_id {req_id}, Future is not done yet"
+                        )
+                        # #region agent log
+                        try:
+                            with open(log_file, "a") as f:
+                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{346}","message":"setting future result","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
+                        except: pass
+                        # #endregion
                         if res.get("success"):
                             future.set_result(res)
                         else:
                             future.set_exception(Exception(res.get("error", "Unknown error")))
+                        # 设置结果后，从字典中移除
+                        self._pending_futures.pop(req_id, None)
+                        self.logger.debug(f"Result set and Future removed for req_id {req_id}")
+                    else:
+                        # Future 已经完成（可能因为超时），忽略延迟到达的响应
+                        # #region agent log
+                        try:
+                            with open(log_file, "a") as f:
+                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{357}","message":"future already done (delayed result)","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
+                        except: pass
+                        # #endregion
+                        self.logger.warning(
+                            f"Received delayed result for req_id {req_id} from plugin {self.plugin_id}, "
+                            f"but Future is already done (likely timed out). Ignoring."
+                        )
+                        # 清理已完成的 Future
+                        self._pending_futures.pop(req_id, None)
                 else:
                     self.logger.warning(
-                        f"Received result for unknown req_id {req_id} from plugin {self.plugin_id}"
+                        f"Received result for unknown req_id {req_id} from plugin {self.plugin_id}. "
+                        f"Available req_ids: {list(self._pending_futures.keys())[:5]}"
                     )
                     
             except Empty:

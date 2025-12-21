@@ -64,7 +64,7 @@ class PluginRuntimeState:
             self._plugin_response_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
     
-    def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 5.0) -> None:
+    def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
         """
         设置插件响应（主进程调用）
         

@@ -157,7 +157,7 @@ class NekoPluginBase:
         event_type: str,
         event_id: str,
         args: Dict[str, Any],
-        timeout: float = 5.0
+        timeout: float = 10.0  # 增加超时时间以应对命令循环可能的延迟
     ) -> Dict[str, Any]:
         """
         调用其他插件的自定义事件（插件间功能复用）
