@@ -2,23 +2,12 @@
  * 性能监控相关 API
  */
 import { get } from './index'
-import type { PluginMetrics } from '@/types/api'
+import type { PluginMetrics, MetricsResponse } from '@/types/api'
 
 /**
  * 获取所有插件的性能指标
  */
-export function getAllMetrics(): Promise<{
-  metrics: PluginMetrics[]
-  count: number
-  global?: {
-    total_cpu_percent: number
-    total_memory_mb: number
-    total_memory_percent: number
-    total_threads: number
-    active_plugins: number
-  }
-  time: string
-}> {
+export function getAllMetrics(): Promise<MetricsResponse> {
   return get('/plugin/metrics')
 }
 

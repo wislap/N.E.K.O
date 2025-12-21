@@ -3,6 +3,7 @@ Web Interface Plugin
 
 一个提供 FastAPI Web 界面的插件，在插件激活后可以通过网页访问并查看消息。
 """
+import asyncio
 import html
 import logging
 import threading
@@ -180,11 +181,13 @@ class WebInterfacePlugin(NekoPluginBase):
         @self.app.get("/api/status")
         async def get_status():
             """获取状态 API"""
+            with self._messages_lock:
+                msg_count = len(self.messages)
             return {
                 "status": "running",
                 "host": self.host,
                 "port": self.port,
-                "message_count": len(self.messages),
+                "message_count": msg_count,
                 "uptime": "active"
             }
         
@@ -192,12 +195,14 @@ class WebInterfacePlugin(NekoPluginBase):
         async def get_timers():
             """获取定时器列表 API（如果 timer_service 可用）"""
             try:
-                # 使用 Queue 机制调用 timer_service 插件
-                result = await self._call_plugin_async(
+                # 使用 Queue 机制调用 timer_service 插件（异步包装同步调用）
+                result = await asyncio.to_thread(
+                    self.call_plugin,
                     plugin_id="timer_service",
                     event_type="plugin_entry",
                     event_id="list_timers",
-                    args={}
+                    args={},
+                    timeout=5.0
                 )
                 if result.get("success"):
                     return result
@@ -705,9 +710,12 @@ class WebInterfacePlugin(NekoPluginBase):
         )
         self.logger.debug("[WebInterface] Added message content: %s", content)
         
+        with self._messages_lock:
+            msg_count = len(self.messages)
+        
         return {
             "success": True,
-            "message_count": len(self.messages),
+            "message_count": msg_count,
             "message": {
                 "source": source,
                 "content": content,
@@ -815,8 +823,9 @@ class WebInterfacePlugin(NekoPluginBase):
         try:
             timer_id = f"web_interface_test_{int(time.time())}"
             
-            # 使用 Queue 机制调用 timer_service 插件
-            result = await self._call_plugin_async(
+            # 使用 Queue 机制调用 timer_service 插件（异步包装同步调用）
+            result = await asyncio.to_thread(
+                self.call_plugin,
                 plugin_id="timer_service",
                 event_type="plugin_entry",
                 event_id="start_timer",
@@ -831,7 +840,8 @@ class WebInterfacePlugin(NekoPluginBase):
                         "max_count": count,
                         "current_count": 0
                     }
-                }
+                },
+                timeout=5.0
             )
             
             if result.get("success"):
@@ -874,7 +884,7 @@ class WebInterfacePlugin(NekoPluginBase):
             }
         }
     )
-    def on_timer_tick(self, timer_id: str = None, max_count: int = 0, current_count: int = 0, **_):
+    def on_timer_tick(self, timer_id: str | None = None, max_count: int = 0, current_count: int = 0, **_):
         """定时器触发回调"""
         # current_count 已经由 timer_service 更新为正确的值，不需要再加1
         self.logger.info(

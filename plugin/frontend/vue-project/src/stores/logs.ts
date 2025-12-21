@@ -87,6 +87,33 @@ export const useLogsStore = defineStore('logs', () => {
     return logFileInfo.value[pluginId] || null
   }
 
+  /**
+   * 设置初始日志（用于 WebSocket 初始数据）
+   */
+  function setInitialLogs(
+    pluginId: string,
+    data: {
+      logs: LogEntry[]
+      log_file?: string
+      total_lines?: number
+    }
+  ) {
+    logs.value[pluginId] = data.logs || []
+    logFileInfo.value[pluginId] = {
+      log_file: data.log_file,
+      total_lines: data.total_lines || 0,
+      returned_lines: data.logs?.length || 0
+    }
+  }
+
+  /**
+   * 追加新日志（用于 WebSocket 增量数据）
+   */
+  function appendLogs(pluginId: string, newLogs: LogEntry[]) {
+    const currentLogs = logs.value[pluginId] || []
+    logs.value[pluginId] = [...currentLogs, ...newLogs]
+  }
+
   return {
     // 状态
     logs,
@@ -99,7 +126,9 @@ export const useLogsStore = defineStore('logs', () => {
     fetchLogFiles,
     getLogs,
     getFiles,
-    getLogFileInfo
+    getLogFileInfo,
+    setInitialLogs,
+    appendLogs
   }
 })
 

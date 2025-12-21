@@ -22,8 +22,55 @@ logger = logging.getLogger("user_plugin_server")
 SERVER_LOG_ID = "_server"
 
 
+def _validate_plugin_id(plugin_id: str) -> None:
+    """
+    验证 plugin_id 是否安全（防止路径遍历攻击）
+    
+    Args:
+        plugin_id: 插件ID
+    
+    Raises:
+        HTTPException: 如果 plugin_id 不安全
+    """
+    # 服务器日志ID是特殊的，允许通过
+    if plugin_id == SERVER_LOG_ID:
+        return
+    
+    # 验证 plugin_id 只包含安全字符（防止路径遍历攻击）
+    if not re.match(r'^[a-zA-Z0-9_-]+$', plugin_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid plugin_id: '{plugin_id}'. Only alphanumeric characters, underscores, and hyphens are allowed."
+        )
+    
+    # 额外检查：确保不包含路径遍历符号
+    if '..' in plugin_id or '/' in plugin_id or '\\' in plugin_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal characters are not allowed."
+        )
+
+
 def get_plugin_log_dir(plugin_id: str) -> Path:
-    """获取插件的日志目录"""
+    """
+    获取插件的日志目录
+    
+    安全措施：
+    1. 验证 plugin_id 只包含安全字符（防止路径遍历攻击）
+    2. 使用 resolve() 和路径检查确保路径在安全目录内
+    
+    Args:
+        plugin_id: 插件ID（或 SERVER_LOG_ID 表示服务器日志）
+    
+    Returns:
+        日志目录路径
+    
+    Raises:
+        HTTPException: 如果 plugin_id 不安全
+    """
+    # 验证 plugin_id 安全性（防止路径遍历攻击）
+    _validate_plugin_id(plugin_id)
+    
     # 如果是服务器日志，使用应用日志目录（log文件夹）
     if plugin_id == SERVER_LOG_ID:
         try:
@@ -49,6 +96,24 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         # PLUGIN_CONFIG_ROOT 是 plugin/plugins，需要向上两级到项目根目录
         project_root = PLUGIN_CONFIG_ROOT.parent.parent
         log_dir = project_root / "log" / "plugins" / plugin_id
+        
+        # 解析路径并验证它在安全目录内（防止路径遍历攻击）
+        try:
+            resolved_path = log_dir.resolve()
+            root_resolved = project_root.resolve()
+            resolved_str = str(resolved_path)
+            root_str = str(root_resolved)
+            if not resolved_str.startswith(root_str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected."
+                )
+        except (OSError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
+            ) from e
+        
         log_dir.mkdir(parents=True, exist_ok=True)
         # 测试目录是否可写
         test_file = log_dir / ".test_write"
@@ -59,13 +124,51 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
         except (OSError, PermissionError):
             # 如果不可写，使用降级方案：插件目录下的logs子目录
             plugin_dir = PLUGIN_CONFIG_ROOT / plugin_id
+            
+            # 再次验证降级路径的安全性
+            try:
+                resolved_plugin_dir = plugin_dir.resolve()
+                config_root_resolved = PLUGIN_CONFIG_ROOT.resolve()
+                resolved_plugin_str = str(resolved_plugin_dir)
+                config_root_str = str(config_root_resolved)
+                if not resolved_plugin_str.startswith(config_root_str):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected in fallback path."
+                    )
+            except (OSError, ValueError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
+                ) from e
+            
             log_dir = plugin_dir / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             return log_dir
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"Failed to use project log directory, using plugin directory: {e}")
         # 降级方案：使用插件目录下的logs子目录
         plugin_dir = PLUGIN_CONFIG_ROOT / plugin_id
+        
+        # 验证降级路径的安全性
+        try:
+            resolved_plugin_dir = plugin_dir.resolve()
+            config_root_resolved = PLUGIN_CONFIG_ROOT.resolve()
+            resolved_plugin_str = str(resolved_plugin_dir)
+            config_root_str = str(config_root_resolved)
+            if not resolved_plugin_str.startswith(config_root_str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid plugin_id: '{plugin_id}'. Path traversal detected in fallback path."
+                )
+        except (OSError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid plugin_id: '{plugin_id}'. {str(e)}"
+            ) from e
+        
         log_dir = plugin_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         return log_dir

@@ -3,7 +3,7 @@
 
 提供插件运行时上下文，包括状态更新和消息推送功能。
 """
-import asyncio
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -155,66 +155,45 @@ class PluginContext:
             raise RuntimeError(f"Failed to send plugin communication request: {e}") from e
         
         # 等待响应（同步等待，因为这是在插件进程的单线程中）
-        # 主进程会将响应通过通信队列返回
-        import time
+        # 主进程会将响应存储在响应映射中，通过 request_id 直接查询
         start_time = time.time()
+        check_interval = 0.05  # 检查间隔（50ms），平衡响应速度和 CPU 占用
         
         while time.time() - start_time < timeout:
-            try:
-                # 从通信队列获取响应（非阻塞）
-                try:
-                    response = self._plugin_comm_queue.get(timeout=0.1)
-                except Exception:
-                    # 队列为空或超时，继续等待
-                    time.sleep(0.01)  # 避免 CPU 占用过高
-                    continue
-                
-                # 检查是否是我们的响应
-                if response.get("type") == "PLUGIN_TO_PLUGIN_RESPONSE":
-                    # 检查目标插件和请求ID
-                    if (response.get("to_plugin") == self.plugin_id and 
-                        response.get("request_id") == request_id):
-                        # 找到我们的响应
-                        if response.get("error"):
-                            error_msg = response.get("error")
-                            self.logger.error(
-                                f"[PluginContext] Plugin communication error: {error_msg}"
-                            )
-                            raise RuntimeError(error_msg)
-                        else:
-                            result = response.get("result")
-                            self.logger.debug(
-                                f"[PluginContext] Received plugin communication response: "
-                                f"req_id={request_id}, result={result}"
-                            )
-                            return result
-                    else:
-                        # 不是我们的响应，需要放回队列
-                        # 由于 multiprocessing.Queue 不支持放回，我们创建一个临时队列
-                        # 或者重新放入队列（但可能顺序会乱）
-                        # 暂时重新放入队列，让其他请求处理
-                        try:
-                            self._plugin_comm_queue.put(response, timeout=0.1)
-                        except Exception:
-                            # 如果放回失败，记录警告但继续
-                            self.logger.warning(
-                                f"[PluginContext] Failed to put back response for different request: "
-                                f"to_plugin={response.get('to_plugin')}, req_id={response.get('request_id')}"
-                            )
+            # 从响应映射中查询响应（避免共享队列的竞态条件）
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            
+            if response is not None:
+                # 找到我们的响应
+                if response.get("error"):
+                    error_msg = response.get("error")
+                    self.logger.error(
+                        f"[PluginContext] Plugin communication error: {error_msg}"
+                    )
+                    raise RuntimeError(error_msg)
                 else:
-                    # 不是响应消息，可能是其他请求，重新放入队列
-                    try:
-                        self._plugin_comm_queue.put(response, timeout=0.1)
-                    except Exception:
-                        self.logger.warning(
-                            f"[PluginContext] Failed to put back non-response message: {response.get('type')}"
-                        )
-                    
-            except Exception as e:
-                self.logger.exception(f"Error waiting for plugin communication response: {e}")
-                raise
+                    result = response.get("result")
+                    self.logger.debug(
+                        f"[PluginContext] Received plugin communication response: "
+                        f"req_id={request_id}, result={result}"
+                    )
+                    return result
+            
+            # 等待一段时间后再次检查
+            time.sleep(check_interval)
         
-        # 超时
+        # 超时：清理可能存在的响应（防止后续干扰）
+        from plugin.core.state import state
+        # 尝试获取并丢弃响应（如果存在），避免成为孤儿响应
+        orphan_response = state.get_plugin_response(request_id)
+        if orphan_response is not None:
+            self.logger.warning(
+                f"[PluginContext] Timeout reached, but response was found (likely delayed). "
+                f"Cleaned up orphan response for req_id={request_id}"
+            )
+        
+        # 抛出超时异常
         raise TimeoutError(
             f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
         )

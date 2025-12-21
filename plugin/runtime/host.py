@@ -500,11 +500,8 @@ class PluginProcessHost:
             list(args.keys()) if isinstance(args, dict) else "N/A",
             args,
         )
-        """
-        发送 TRIGGER 命令到子进程并等待结果
-        
-        委托给通信资源管理器处理
-        """
+        # 发送 TRIGGER 命令到子进程并等待结果
+        # 委托给通信资源管理器处理
         return await self.comm_manager.trigger(entry_id, args, timeout)
     
     async def trigger_custom_event(

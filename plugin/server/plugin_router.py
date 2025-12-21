@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 from typing import Dict, Any, Optional
 
@@ -19,8 +20,16 @@ class PluginRouter:
     
     def __init__(self):
         self._router_task: Optional[asyncio.Task] = None
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event: Optional[asyncio.Event] = None  # 延迟初始化，在 start() 中创建
         self._pending_requests: Dict[str, asyncio.Future] = {}
+        # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
+    
+    def _ensure_shutdown_event(self) -> asyncio.Event:
+        """确保 shutdown_event 已创建（延迟初始化，避免在模块导入时创建）"""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        return self._shutdown_event
     
     async def start(self) -> None:
         """启动路由器任务"""
@@ -28,7 +37,9 @@ class PluginRouter:
             logger.warning("Plugin router is already started")
             return
         
-        self._shutdown_event.clear()
+        # 确保 shutdown_event 已创建（延迟初始化）
+        shutdown_event = self._ensure_shutdown_event()
+        shutdown_event.clear()
         self._router_task = asyncio.create_task(self._router_loop())
         logger.info("Plugin router started")
     
@@ -37,7 +48,9 @@ class PluginRouter:
         if self._router_task is None:
             return
         
-        self._shutdown_event.set()
+        # 确保 shutdown_event 已创建（延迟初始化）
+        shutdown_event = self._ensure_shutdown_event()
+        shutdown_event.set()
         try:
             await asyncio.wait_for(self._router_task, timeout=5.0)
         except asyncio.TimeoutError:
@@ -45,14 +58,32 @@ class PluginRouter:
             self._router_task.cancel()
         finally:
             self._router_task = None
+            # 关闭线程池执行器
+            self._executor.shutdown(wait=True)
             logger.info("Plugin router stopped")
     
     async def _router_loop(self) -> None:
         """路由器主循环"""
         logger.info("Plugin router loop started")
         
-        while not self._shutdown_event.is_set():
+        # 上次清理过期响应的时间
+        last_cleanup_time = 0.0
+        cleanup_interval = 30.0  # 每30秒清理一次过期响应
+        
+        # 确保 shutdown_event 已创建（延迟初始化）
+        shutdown_event = self._ensure_shutdown_event()
+        
+        while not shutdown_event.is_set():
             try:
+                # 定期清理过期的响应（防止响应映射无限增长）
+                import time
+                current_time = time.time()
+                if current_time - last_cleanup_time >= cleanup_interval:
+                    cleaned_count = state.cleanup_expired_responses()
+                    if cleaned_count > 0:
+                        logger.debug(f"[PluginRouter] Cleaned up {cleaned_count} expired responses")
+                    last_cleanup_time = current_time
+                
                 # 从通信队列获取请求
                 request = await asyncio.wait_for(
                     self._get_request_from_queue(),
@@ -80,19 +111,15 @@ class PluginRouter:
             queue = state.plugin_comm_queue
             
             # multiprocessing.Queue.get() 是阻塞的，需要在线程中执行
-            from concurrent.futures import ThreadPoolExecutor
-            executor = ThreadPoolExecutor(max_workers=1)
-            
+            # 使用共享的执行器，避免每次调用都创建新的线程池
             try:
                 request = await loop.run_in_executor(
-                    executor,
+                    self._executor,
                     lambda: queue.get(timeout=0.1)  # 短超时，避免阻塞太久
                 )
                 return request
             except Empty:
                 return None
-            finally:
-                executor.shutdown(wait=False)
         except Exception as e:
             logger.debug(f"Error getting request from queue: {e}")
             return None
@@ -123,7 +150,7 @@ class PluginRouter:
         if not host:
             error_msg = f"Plugin '{to_plugin}' not found"
             logger.error(f"[PluginRouter] {error_msg}")
-            self._send_response(from_plugin, request_id, None, error_msg)
+            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
             return
         
         # 检查进程健康状态
@@ -132,12 +159,12 @@ class PluginRouter:
             if not health.alive:
                 error_msg = f"Plugin '{to_plugin}' process is not alive"
                 logger.error(f"[PluginRouter] {error_msg}")
-                self._send_response(from_plugin, request_id, None, error_msg)
+                self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
                 return
         except Exception as e:
             error_msg = f"Health check failed for plugin '{to_plugin}': {e}"
             logger.error(f"[PluginRouter] {error_msg}")
-            self._send_response(from_plugin, request_id, None, error_msg)
+            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
             return
         
         # 触发目标插件的自定义事件
@@ -148,32 +175,42 @@ class PluginRouter:
                 args=args,
                 timeout=timeout
             )
-            self._send_response(from_plugin, request_id, result, None)
+            self._send_response(from_plugin, request_id, result, None, timeout=timeout)
         except Exception as e:
             error_msg = str(e)
             logger.exception(f"[PluginRouter] Error triggering custom event: {e}")
-            self._send_response(from_plugin, request_id, None, error_msg)
+            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
     
-    def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str]) -> None:
-        """发送响应到源插件"""
+    def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 5.0) -> None:
+        """
+        发送响应到源插件（使用响应映射，避免共享队列的竞态条件）
+        
+        Args:
+            to_plugin: 目标插件ID
+            request_id: 请求ID
+            result: 响应结果
+            error: 错误信息（如果有）
+            timeout: 超时时间（秒），用于计算响应过期时间
+        """
         response = {
             "type": "PLUGIN_TO_PLUGIN_RESPONSE",
-            "to_plugin": to_plugin,  # 添加目标插件ID，方便插件进程识别
+            "to_plugin": to_plugin,
             "request_id": request_id,
             "result": result,
             "error": error,
         }
         
         try:
-            # 通过通信队列发送响应
-            # 所有插件共享同一个通信队列，通过 to_plugin 和 request_id 匹配响应
-            state.plugin_comm_queue.put(response)
+            # 将响应存储在响应映射中，插件进程通过 request_id 直接查询
+            # 这样可以避免共享队列的竞态条件问题
+            # 同时设置过期时间，防止超时后的响应干扰后续请求
+            state.set_plugin_response(request_id, response, timeout=timeout)
             logger.debug(
-                f"[PluginRouter] Sent response to plugin {to_plugin}, req_id={request_id}, "
-                f"error={'yes' if error else 'no'}"
+                f"[PluginRouter] Set response for plugin {to_plugin}, req_id={request_id}, "
+                f"error={'yes' if error else 'no'}, timeout={timeout}s"
             )
         except Exception as e:
-            logger.exception(f"Failed to send response to plugin {to_plugin}: {e}")
+            logger.exception(f"Failed to set response for plugin {to_plugin}: {e}")
 
 
 # 全局路由器实例

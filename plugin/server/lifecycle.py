@@ -72,9 +72,11 @@ async def shutdown() -> None:
     """
     服务器关闭时的清理
     
-    1. 停止性能指标收集器
-    2. 关闭状态消费任务
-    3. 关闭所有插件的资源
+    1. 停止插件间通信路由器
+    2. 停止性能指标收集器
+    3. 关闭状态消费任务
+    4. 关闭所有插件的资源
+    5. 清理插件间通信资源（队列和响应映射）
     """
     logger.info("Shutting down all plugins...")
     
@@ -104,6 +106,13 @@ async def shutdown() -> None:
     # 并发关闭所有插件
     if shutdown_tasks:
         await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+    
+    # 清理插件间通信资源（队列和响应映射）
+    try:
+        state.cleanup_plugin_comm_resources()
+        logger.debug("Plugin communication resources cleaned up")
+    except Exception:
+        logger.exception("Error cleaning up plugin communication resources")
     
     logger.info("All plugins have been gracefully shutdown.")
 

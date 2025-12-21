@@ -147,17 +147,15 @@ const crashedPlugins = computed(() => {
   ).length
 })
 
-function getCpuColor(percent: number): string {
+function getUsageColor(percent: number): string {
   if (percent < 50) return '#67c23a'
   if (percent < 80) return '#e6a23c'
   return '#f56c6c'
 }
 
-function getMemoryColor(percent: number): string {
-  if (percent < 50) return '#67c23a'
-  if (percent < 80) return '#e6a23c'
-  return '#f56c6c'
-}
+// 为兼容性保留别名
+const getCpuColor = getUsageColor
+const getMemoryColor = getUsageColor
 
 function formatTime(time: string): string {
   return dayjs(time).format('YYYY-MM-DD HH:mm:ss')
@@ -193,9 +191,9 @@ async function fetchGlobalMetrics() {
   metricsLoading.value = true
   try {
     const response = await metricsStore.fetchAllMetrics()
-    // 从响应中提取全局指标
-    if (response && 'global' in response) {
-      globalMetrics.value = (response as any).global
+    // 从响应中提取全局指标（使用类型安全的访问）
+    if (response?.global) {
+      globalMetrics.value = response.global
     }
   } catch (err: any) {
     console.error('Failed to fetch global metrics:', err)

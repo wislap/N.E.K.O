@@ -388,7 +388,7 @@ async def get_all_plugin_metrics():
             },
             "time": now_iso()
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get plugin metrics")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
@@ -531,7 +531,7 @@ async def get_plugin_logs_endpoint(
             logger.warning(f"Error getting logs for {plugin_id}: {result.get('error')}")
         return result
     except Exception as e:
-        logger.exception(f"Failed to get logs for plugin {plugin_id}: {e}")
+        logger.exception(f"Failed to get logs for plugin {plugin_id}")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
             "plugin_id": plugin_id,

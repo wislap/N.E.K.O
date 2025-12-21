@@ -129,6 +129,14 @@ export interface GlobalMetrics {
   active_plugins: number
 }
 
+// 性能指标响应
+export interface MetricsResponse {
+  metrics: PluginMetrics[]
+  count: number
+  global?: GlobalMetrics
+  time: string
+}
+
 // 插件触发请求
 export interface PluginTriggerRequest {
   plugin_id: string

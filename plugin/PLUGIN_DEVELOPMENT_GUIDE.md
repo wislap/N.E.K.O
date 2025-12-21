@@ -8,12 +8,13 @@
 - [第二章：快速开始](#第二章快速开始)
 - [第三章：SDK 核心功能](#第三章sdk-核心功能)
 - [第四章：装饰器详解](#第四章装饰器详解)
-- [第五章：上下文对象](#第五章上下文对象)
-- [第六章：完整示例](#第六章完整示例)
-- [第七章：高级主题](#第七章高级主题)
-- [第八章：最佳实践](#第八章最佳实践)
-- [第九章：常见问题](#第九章常见问题)
-- [第十章：API 参考](#第十章api-参考)
+- [第五章：插件间通信](#第五章插件间通信)
+- [第六章：上下文对象](#第六章上下文对象)
+- [第七章：完整示例](#第七章完整示例)
+- [第八章：高级主题](#第八章高级主题)
+- [第九章：最佳实践](#第九章最佳实践)
+- [第十章：常见问题](#第十章常见问题)
+- [第十一章：API 参考](#第十一章api-参考)
 
 ---
 
@@ -635,42 +636,268 @@ def handle_chat(self, text: str, sender: str, timestamp: str, **_):
     return {"handled": True}
 ```
 
-### 4.6 @on_event
+### 4.6 @custom_event
 
-通用事件装饰器，可以定义自定义事件类型。
+定义自定义事件类型，用于插件间功能复用。
+
+**设计理念**：
+- `@plugin_entry`：用户调用插件的入口（对外服务）
+- `@custom_event`：插件之间功能复用的机制（内部调用）
+
+#### 4.6.1 基本用法
 
 ```python
-from plugin.sdk.decorators import on_event
+from plugin.sdk.decorators import custom_event
 
-@on_event(
-    event_type="custom_event",    # 自定义事件类型
-    id="my_custom_handler",
-    name="Custom Event Handler",
-    description="处理自定义事件",
+@custom_event(
+    event_type="file_change",      # 自定义事件类型名称
+    id="on_file_modified",
+    name="文件修改事件",
+    description="当文件被修改时触发",
     input_schema={
         "type": "object",
         "properties": {
-            "event_data": {"type": "string"}
-        }
+            "file_path": {"type": "string"},
+            "action": {"type": "string", "enum": ["created", "modified", "deleted"]}
+        },
+        "required": ["file_path", "action"]
     },
-    kind="hook",
-    auto_start=False,
-    extra={
-        "category": "custom",
-        "version": "1.0"
-    }
+    trigger_method="message",      # 触发方式：message | command | auto
+    auto_start=False
 )
-def custom_handler(self, event_data: str, **_):
-    """处理自定义事件"""
-    # 处理逻辑
+def handle_file_change(self, file_path: str, action: str, **_):
+    """处理文件修改事件"""
+    self.logger.info(f"File {file_path} was {action}")
     return {"processed": True}
+```
+
+#### 4.6.2 参数说明
+
+- `event_type`: 自定义事件类型名称（不能是标准类型：`plugin_entry`、`lifecycle`、`message`、`timer`）
+- `id`: 事件ID（在插件内部唯一）
+- `trigger_method`: 触发方式
+  - `"message"`: 通过消息队列触发（推荐，异步）
+  - `"command"`: 通过命令队列触发（同步，类似 `plugin_entry`）
+  - `"auto"`: 自动启动（类似 `timer auto_start`）
+- `auto_start`: 是否自动启动
+
+#### 4.6.3 与其他插件通信
+
+自定义事件可以被其他插件通过 `call_plugin()` 方法调用：
+
+```python
+# 在插件A中调用插件B的自定义事件
+result = self.call_plugin(
+    plugin_id="plugin_b",
+    event_type="file_change",
+    event_id="on_file_modified",
+    args={
+        "file_path": "/path/to/file.txt",
+        "action": "modified"
+    },
+    timeout=5.0
+)
+```
+
+### 4.7 @on_event
+
+通用事件装饰器，可以定义自定义事件类型（底层实现）。
+
+**注意**：推荐使用 `@custom_event` 装饰器，它提供了更清晰的语义和参数验证。
+
+---
+
+## 第五章：插件间通信
+
+### 5.1 设计理念
+
+N.E.K.O 插件系统提供了两种插件间通信机制：
+
+- **`@plugin_entry`**：用户调用插件的入口（对外服务）
+- **`@custom_event`**：插件之间功能复用的机制（内部调用）
+
+### 5.2 使用 `call_plugin()` 方法
+
+`call_plugin()` 是插件间功能复用的推荐方式，使用 Queue 机制，处理流程和 `plugin_entry` 一样，在单线程的命令循环中执行。
+
+#### 5.2.1 调用其他插件的 custom_event
+
+```python
+from plugin.sdk.base import NekoPluginBase
+from plugin.sdk.decorators import neko_plugin, plugin_entry
+
+@neko_plugin
+class PluginA(NekoPluginBase):
+    @plugin_entry(id="do_something")
+    def do_something(self, **_):
+        """调用插件B的自定义事件"""
+        try:
+            result = self.call_plugin(
+                plugin_id="plugin_b",
+                event_type="file_change",      # 自定义事件类型
+                event_id="on_file_modified",   # 事件ID
+                args={
+                    "file_path": "/path/to/file.txt",
+                    "action": "modified"
+                },
+                timeout=5.0
+            )
+            self.logger.info(f"调用成功: {result}")
+            return {"success": True, "result": result}
+        except TimeoutError:
+            self.logger.error("调用超时")
+            return {"success": False, "error": "timeout"}
+        except Exception as e:
+            self.logger.exception(f"调用失败: {e}")
+            return {"success": False, "error": str(e)}
+```
+
+#### 5.2.2 调用其他插件的 plugin_entry
+
+```python
+@plugin_entry(id="use_timer_service")
+def use_timer_service(self, **_):
+    """使用 timer_service 插件"""
+    try:
+        # 调用 timer_service 的 plugin_entry
+        result = self.call_plugin(
+            plugin_id="timer_service",
+            event_type="plugin_entry",
+            event_id="start_timer",
+            args={
+                "timer_id": "my_timer",
+                "interval": 10,
+                "immediate": True,
+                "callback_plugin_id": self.ctx.plugin_id,
+                "callback_entry_id": "on_timer_tick",
+                "callback_args": {
+                    "max_count": 5
+                }
+            },
+            timeout=5.0
+        )
+        return {"success": True, "result": result}
+    except Exception as e:
+        self.logger.exception(f"启动定时器失败: {e}")
+        return {"success": False, "error": str(e)}
+```
+
+#### 5.2.3 异步函数中的使用
+
+在异步函数中，需要使用 `asyncio.to_thread` 包装同步调用：
+
+```python
+import asyncio
+
+@plugin_entry(id="async_call")
+async def async_call(self, **_):
+    """在异步函数中调用其他插件"""
+    # 使用 asyncio.to_thread 包装同步调用
+    result = await asyncio.to_thread(
+        self.call_plugin,
+        plugin_id="other_plugin",
+        event_type="plugin_entry",
+        event_id="some_function",
+        args={},
+        timeout=5.0
+    )
+    return {"result": result}
+```
+
+### 5.3 定义可被其他插件调用的 custom_event
+
+```python
+from plugin.sdk.decorators import custom_event
+
+@neko_plugin
+class PluginB(NekoPluginBase):
+    @custom_event(
+        event_type="file_change",
+        id="on_file_modified",
+        name="文件修改事件",
+        description="当文件被修改时触发",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "action": {"type": "string"}
+            },
+            "required": ["file_path", "action"]
+        },
+        trigger_method="command",  # 使用 command 方式，类似 plugin_entry
+        auto_start=False
+    )
+    def handle_file_change(self, file_path: str, action: str, **_):
+        """处理文件修改事件"""
+        self.logger.info(f"File {file_path} was {action}")
+        
+        # 处理逻辑
+        # ...
+        
+        return {"processed": True, "file": file_path}
+```
+
+### 5.4 通信机制说明
+
+- **Queue 机制**：使用 `multiprocessing.Queue` 进行进程间通信
+- **单线程处理**：所有调用都在插件的单线程命令循环中执行，保证线程安全
+- **超时保护**：支持超时设置，防止调用挂起
+- **错误处理**：调用失败会抛出异常，需要适当处理
+
+### 5.5 使用 timer_service 插件示例
+
+`timer_service` 是一个系统插件，提供定时器功能：
+
+```python
+@neko_plugin
+class MyPlugin(NekoPluginBase):
+    @plugin_entry(id="start_periodic_task")
+    def start_periodic_task(self, **_):
+        """启动一个定期任务"""
+        timer_id = f"my_task_{int(time.time())}"
+        
+        # 调用 timer_service 启动定时器
+        result = self.call_plugin(
+            plugin_id="timer_service",
+            event_type="plugin_entry",
+            event_id="start_timer",
+            args={
+                "timer_id": timer_id,
+                "interval": 30,  # 每30秒执行一次
+                "immediate": True,  # 立即执行一次
+                "callback_plugin_id": self.ctx.plugin_id,
+                "callback_entry_id": "on_timer_tick",  # 回调入口点
+                "callback_args": {
+                    "task_name": "periodic_task"
+                }
+            },
+            timeout=5.0
+        )
+        
+        if result.get("success"):
+            self.logger.info(f"定时器已启动: {timer_id}")
+            return {"success": True, "timer_id": timer_id}
+        else:
+            return {"success": False, "error": result.get("error")}
+    
+    @plugin_entry(id="on_timer_tick")
+    def on_timer_tick(self, timer_id: str, task_name: str, current_count: int, **_):
+        """定时器回调"""
+        self.logger.info(f"定时器 {timer_id} 触发，第 {current_count} 次")
+        
+        # 执行定期任务
+        self._do_periodic_task(task_name)
+        
+        return {"executed": True}
 ```
 
 ---
 
-## 第五章：上下文对象
+## 第六章：上下文对象
 
 ### 5.1 日志记录
+
+#### 5.1.1 基础日志
 
 ```python
 class MyPlugin(NekoPluginBase):
@@ -689,6 +916,32 @@ class MyPlugin(NekoPluginBase):
         
         return {"status": "ok"}
 ```
+
+#### 5.1.2 文件日志
+
+插件支持将日志同时输出到文件和控制台，便于调试和问题追踪：
+
+```python
+class MyPlugin(NekoPluginBase):
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        # 启用文件日志（同时输出到文件和控制台）
+        self.file_logger = self.enable_file_logging(log_level=logging.INFO)
+        self.logger = self.file_logger  # 使用文件日志器
+    
+    @plugin_entry(id="example")
+    def example(self, **_):
+        # 日志会同时显示在终端和保存到文件
+        self.logger.info("这条日志会保存到文件")
+        return {"status": "ok"}
+```
+
+**文件日志特性**：
+- 日志文件保存在 `{plugin_dir}/logs/` 目录下
+- 日志文件名格式：`{plugin_id}_{YYYYMMDD_HHMMSS}.log`
+- 自动日志轮转：当日志文件达到最大大小时自动轮转
+- 自动清理：超过最大文件数量限制的旧日志会自动删除
+- 同时输出：日志会同时输出到文件和控制台（终端）
 
 ### 5.2 状态管理
 
@@ -828,7 +1081,7 @@ class MyPlugin(NekoPluginBase):
 
 ---
 
-## 第六章：完整示例
+## 第七章：完整示例
 
 ### 6.1 示例 1：文件处理插件
 
@@ -846,7 +1099,8 @@ from plugin.sdk.decorators import (
     neko_plugin,
     plugin_entry,
     lifecycle,
-    timer_interval
+    timer_interval,
+    custom_event  # 用于插件间功能复用
 )
 
 @neko_plugin
@@ -1301,7 +1555,8 @@ from plugin.sdk.decorators import (
     neko_plugin,
     plugin_entry,
     lifecycle,
-    timer_interval
+    timer_interval,
+    custom_event  # 用于插件间功能复用
 )
 
 @neko_plugin
@@ -1486,7 +1741,7 @@ class DataCollectorPlugin(NekoPluginBase):
 
 ---
 
-## 第七章：高级主题
+## 第八章：高级主题
 
 ### 7.1 异步编程
 
@@ -1658,7 +1913,7 @@ class PersistentPlugin(NekoPluginBase):
 
 ---
 
-## 第八章：最佳实践
+## 第九章：最佳实践
 
 ### 8.1 代码组织
 
@@ -1815,7 +2070,7 @@ def unvalidated(self, email: str, age: int, **_):
 
 ---
 
-## 第九章：常见问题
+## 第十章：常见问题
 
 ### Q1: 插件如何接收参数？
 
@@ -1857,11 +2112,64 @@ work_dir.mkdir(exist_ok=True)
 
 ### Q4: 如何实现插件间的通信？
 
-A: 目前通过主系统的消息队列，未来可能支持直接通信。
+A: 插件间通信有两种方式：
+
+**方式1：使用 `call_plugin()` 方法（推荐）**
+
+用于调用其他插件的 `custom_event` 或 `plugin_entry`，使用 Queue 机制，在单线程中处理：
+
+```python
+# 调用其他插件的 custom_event
+result = self.call_plugin(
+    plugin_id="timer_service",
+    event_type="timer_tick",
+    event_id="handle_timer_tick",
+    args={"timer_id": "xxx", "count": 1},
+    timeout=5.0
+)
+
+# 调用其他插件的 plugin_entry
+result = self.call_plugin(
+    plugin_id="other_plugin",
+    event_type="plugin_entry",
+    event_id="some_function",
+    args={"param": "value"},
+    timeout=5.0
+)
+```
+
+**方式2：通过主系统的消息队列**
+
+使用 `ctx.push_message()` 推送消息，其他插件通过 `@message` 装饰器接收。
 
 ### Q5: 定时任务可以动态启动/停止吗？
 
-A: 目前定时任务在插件加载时自动启动（如果 `auto_start=True`），未来可能支持动态控制。
+A: 可以！使用 `timer_service` 系统插件可以动态管理定时器：
+
+```python
+# 启动定时器
+result = self.call_plugin(
+    plugin_id="timer_service",
+    event_type="plugin_entry",
+    event_id="start_timer",
+    args={
+        "timer_id": "my_timer",
+        "interval": 10,
+        "callback_plugin_id": self.ctx.plugin_id,
+        "callback_entry_id": "on_timer_tick"
+    }
+)
+
+# 停止定时器
+result = self.call_plugin(
+    plugin_id="timer_service",
+    event_type="plugin_entry",
+    event_id="stop_timer",
+    args={"timer_id": "my_timer"}
+)
+```
+
+**注意**：`@timer_interval` 装饰器定义的定时任务在插件加载时自动启动（如果 `auto_start=True`），这是另一种定时任务方式。
 
 ### Q6: 插件崩溃会影响主系统吗？
 
@@ -1885,7 +2193,7 @@ A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pym
 
 ---
 
-## 第十章：API 参考
+## 第十一章：API 参考
 
 ### 10.1 装饰器
 
@@ -1977,6 +2285,57 @@ def collect_entries(self) -> Dict[str, EventHandler]:
     """收集入口点"""
 ```
 
+#### NekoPluginBase.enable_file_logging()
+```python
+def enable_file_logging(
+    self,
+    log_level: Optional[int] = None,
+    max_bytes: Optional[int] = None,
+    backup_count: Optional[int] = None,
+    max_files: Optional[int] = None,
+) -> logging.Logger:
+    """
+    启用插件文件日志功能
+    
+    为插件创建独立的文件日志，日志文件保存在插件的logs目录下。
+    日志会同时输出到文件和控制台（终端）。
+    自动管理日志文件数量，支持日志轮转。
+    """
+```
+
+#### NekoPluginBase.call_plugin()
+```python
+def call_plugin(
+    self,
+    plugin_id: str,
+    event_type: str,
+    event_id: str,
+    args: Dict[str, Any],
+    timeout: float = 5.0
+) -> Dict[str, Any]:
+    """
+    调用其他插件的自定义事件或入口点（插件间功能复用）
+    
+    这是插件间功能复用的推荐方式，使用 Queue 而不是 HTTP。
+    处理流程和 plugin_entry 一样，在单线程的命令循环中执行。
+    
+    Args:
+        plugin_id: 目标插件ID
+        event_type: 事件类型（"plugin_entry" 或自定义事件类型）
+        event_id: 事件ID
+        args: 参数字典
+        timeout: 超时时间（秒）
+    
+    Returns:
+        事件处理器的返回结果
+    
+    Raises:
+        RuntimeError: 如果通信队列不可用
+        TimeoutError: 如果超时
+        Exception: 如果事件执行失败
+    """
+```
+
 ### 10.3 上下文方法
 
 #### PluginContext.update_status()
@@ -1999,6 +2358,23 @@ def push_message(
     metadata: Optional[Dict[str, Any]] = None
 ) -> None:
     """推送消息"""
+```
+
+#### PluginContext.trigger_plugin_event()
+```python
+def trigger_plugin_event(
+    self,
+    target_plugin_id: str,
+    event_type: str,
+    event_id: str,
+    args: Dict[str, Any],
+    timeout: float = 5.0
+) -> Dict[str, Any]:
+    """
+    触发其他插件的自定义事件或入口点（插件间通信）
+    
+    注意：通常使用基类的 call_plugin() 方法，它是对此方法的封装。
+    """
 ```
 
 ---

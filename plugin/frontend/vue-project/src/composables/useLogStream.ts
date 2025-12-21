@@ -67,18 +67,16 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
           const id = pluginId.value
           
           if (data.type === 'initial') {
-            // 初始日志：替换所有日志
-            logsStore.logs[id] = data.logs || []
-            logsStore.logFileInfo[id] = {
+            // 初始日志：替换所有日志（使用 store action）
+            logsStore.setInitialLogs(id, {
+              logs: data.logs || [],
               log_file: data.log_file,
-              total_lines: data.total_lines || 0,
-              returned_lines: data.logs?.length || 0
-            }
+              total_lines: data.total_lines || 0
+            })
             console.log(`[LogStream] Received initial logs for ${id}:`, data.logs?.length || 0)
           } else if (data.type === 'append') {
-            // 追加新日志
-            const currentLogs = logsStore.logs[id] || []
-            logsStore.logs[id] = [...currentLogs, ...(data.logs || [])]
+            // 追加新日志（使用 store action）
+            logsStore.appendLogs(id, data.logs || [])
             console.log(`[LogStream] Appended ${data.logs?.length || 0} new logs for ${id}`)
           } else if (data.type === 'ping') {
             // 心跳消息，可以回复 pong（可选）

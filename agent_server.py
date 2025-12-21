@@ -523,53 +523,39 @@ async def shutdown():
     """服务器关闭时清理所有 AsyncClient 实例"""
     logger.info("[Agent] 正在清理 AsyncClient 资源...")
     
-    # 清理 Processor 中的 McpRouterClient
-    if Modules.processor and hasattr(Modules.processor, 'router'):
-        try:
-            await Modules.processor.router.aclose()
-            logger.debug("[Agent] ✅ Processor.router 已清理")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出错: {e}")
-        except asyncio.CancelledError:
-            # 正常关闭流程中的取消
-            logger.debug("[Agent] Processor.router 清理时被取消（正常关闭）")
-        except RuntimeError as e:
-            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
-            logger.debug(f"[Agent] Processor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出现意外错误: {e}")
+    async def _close_router(name: str, module, attr: str):
+        """辅助函数：清理单个 router（带超时保护）"""
+        if module and hasattr(module, attr):
+            try:
+                router = getattr(module, attr)
+                # 添加超时保护，防止清理过程挂起
+                await asyncio.wait_for(router.aclose(), timeout=3.0)
+                logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
+            except asyncio.TimeoutError:
+                logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
+            except asyncio.CancelledError:
+                # 正常关闭流程中的取消
+                logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
+            except RuntimeError as e:
+                # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+                logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+            except Exception as e:
+                logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
     
-    # 清理 TaskPlanner 中的 McpRouterClient
-    if Modules.planner and hasattr(Modules.planner, 'router'):
-        try:
-            await Modules.planner.router.aclose()
-            logger.debug("[Agent] ✅ TaskPlanner.router 已清理")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出错: {e}")
-        except asyncio.CancelledError:
-            # 正常关闭流程中的取消
-            logger.debug("[Agent] TaskPlanner.router 清理时被取消（正常关闭）")
-        except RuntimeError as e:
-            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
-            logger.debug(f"[Agent] TaskPlanner.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出现意外错误: {e}")
-    
-    # 清理 DirectTaskExecutor 中的 McpRouterClient
-    if Modules.task_executor and hasattr(Modules.task_executor, 'router'):
-        try:
-            await Modules.task_executor.router.aclose()
-            logger.debug("[Agent] ✅ DirectTaskExecutor.router 已清理")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出错: {e}")
-        except asyncio.CancelledError:
-            # 正常关闭流程中的取消
-            logger.debug("[Agent] DirectTaskExecutor.router 清理时被取消（正常关闭）")
-        except RuntimeError as e:
-            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
-            logger.debug(f"[Agent] DirectTaskExecutor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
-        except Exception as e:
-            logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出现意外错误: {e}")
+    # 并行清理所有 router，提高关闭速度
+    try:
+        # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
+        await asyncio.wait_for(
+            asyncio.gather(
+                _close_router("Processor", Modules.processor, "router"),
+                _close_router("TaskPlanner", Modules.planner, "router"),
+                _close_router("DirectTaskExecutor", Modules.task_executor, "router"),
+                return_exceptions=True  # 即使某个清理失败，也继续其他清理
+            ),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
     
     logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 

@@ -335,6 +335,7 @@ class TimerServicePlugin(NekoPluginBase):
     
     def _stop_timer_internal(self, timer_id: str) -> Dict[str, Any]:
         """内部方法：停止定时器"""
+        # 在锁内获取定时器信息和统计信息，然后立即释放锁
         with self._timer_lock:
             if timer_id not in self._timers:
                 return {
@@ -346,30 +347,39 @@ class TimerServicePlugin(NekoPluginBase):
             stop_event = timer_info["stop_event"]
             thread = timer_info["thread"]
             
-            # 设置停止事件
-            stop_event.set()
-            
-            # 等待线程结束
-            if thread and thread.is_alive():
-                thread.join(timeout=2.0)
-            
-            # 获取统计信息
+            # 获取统计信息（在删除前）
             tick_count = timer_info.get("tick_count", 0)
             started_at = timer_info.get("started_at", time.time())
-            elapsed = time.time() - started_at
             
-            # 删除定时器
+            # 删除定时器（在锁内删除，防止其他线程访问）
             del self._timers[timer_id]
+        
+        # 在锁外设置停止事件和等待线程（避免死锁）
+        # 注意：此时定时器已从 _timers 中删除，但线程可能还在运行
+        # _handle_timer_tick 会检查 timer_id 是否存在，所以是安全的
+        stop_event.set()
+        
+        # 等待线程结束（在锁外，避免死锁）
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        
+        # 计算运行时间（在锁外）
+        elapsed = time.time() - started_at
         
         self.logger.info(
             f"[TimerService] 停止定时器 '{timer_id}': "
             f"执行次数={tick_count}, 运行时间={elapsed:.1f}s"
         )
         
+        # 更新状态（需要重新获取锁来读取当前定时器数量）
+        with self._timer_lock:
+            timer_count = len(self._timers)
+            timer_ids = list(self._timers.keys())
+        
         self.report_status({
             "status": "running",
-            "timer_count": len(self._timers),
-            "timers": list(self._timers.keys())
+            "timer_count": timer_count,
+            "timers": timer_ids
         })
         
         return {
