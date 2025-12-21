@@ -594,15 +594,16 @@
                 if (!modelName) return;
 
                 currentModelInfo = availableModels.find(m => m.name === modelName);
-                if (currentModelInfo) {
-                    // 设置item_id，确保从dataset中获取
-                    currentModelInfo.item_id = modelId || currentModelInfo.item_id;
-                }
                 if (!currentModelInfo) return;
 
                 // 获取选中的option元素，从中获取item_id
                 const selectedOption = e.target[e.target.selectedIndex];
                 const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
+                
+                // 更新currentModelInfo的item_id（如果从option获取到了）
+                if (modelSteamId && modelSteamId !== 'undefined') {
+                    currentModelInfo.item_id = modelSteamId;
+                }
 
                 await loadModel(modelName, currentModelInfo, modelSteamId);
 

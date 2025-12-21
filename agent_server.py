@@ -528,6 +528,8 @@ async def shutdown():
         try:
             await Modules.processor.router.aclose()
             logger.debug("[Agent] ✅ Processor.router 已清理")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出错: {e}")
         except asyncio.CancelledError:
             # 正常关闭流程中的取消
             logger.debug("[Agent] Processor.router 清理时被取消（正常关闭）")
@@ -542,6 +544,8 @@ async def shutdown():
         try:
             await Modules.planner.router.aclose()
             logger.debug("[Agent] ✅ TaskPlanner.router 已清理")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出错: {e}")
         except asyncio.CancelledError:
             # 正常关闭流程中的取消
             logger.debug("[Agent] TaskPlanner.router 清理时被取消（正常关闭）")
@@ -556,6 +560,8 @@ async def shutdown():
         try:
             await Modules.task_executor.router.aclose()
             logger.debug("[Agent] ✅ DirectTaskExecutor.router 已清理")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出错: {e}")
         except asyncio.CancelledError:
             # 正常关闭流程中的取消
             logger.debug("[Agent] DirectTaskExecutor.router 清理时被取消（正常关闭）")
