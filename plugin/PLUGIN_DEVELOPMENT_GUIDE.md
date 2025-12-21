@@ -92,6 +92,11 @@ description = "一个简单的示例插件"
 version = "1.0.0"
 entry = "plugins.hello_world:HelloWorldPlugin"
 
+# 可选：插件作者信息
+[plugin.author]
+name = "Plugin Author Name"
+email = "author@example.com"
+
 [plugin.sdk]
 # 推荐使用的 SDK 版本范围
 recommended = ">=0.1.0,<0.2.0"
@@ -101,6 +106,26 @@ supported = ">=0.1.0,<0.3.0"
 untested = ">=0.3.0,<0.4.0"
 # 明确冲突的范围（命中即拒绝加载）
 conflicts = ["<0.1.0", ">=0.4.0"]
+
+# 可选：插件依赖配置
+# 方式1：依赖特定插件ID
+[[plugin.dependency]]
+id = "timer_service"
+recommended = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+untested = ">=3.0.0,<4.0.0"  # 必须字段
+conflicts = ["<1.0.0", ">=4.0.0"]
+
+# 方式2：依赖特定入口点（任意插件提供该入口即可）
+[[plugin.dependency]]
+entry = "start_timer"
+untested = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+
+# 方式3：依赖多个候选插件（任一满足即可）
+[[plugin.dependency]]
+providers = ["timer_service", "timer_service_v2"]
+untested = ">=1.0.0,<2.0.0"
 ```
 
 **配置说明：**
@@ -108,12 +133,28 @@ conflicts = ["<0.1.0", ">=0.4.0"]
 - `name`: 插件的显示名称
 - `description`: 插件描述
 - `version`: 插件版本号
+- `entry`: 插件入口点，格式为 `模块路径:类名`
+- `plugin.author`: 插件作者信息（可选）
+  - `name`: 作者名称
+  - `email`: 作者邮箱
 - `plugin.sdk`: SDK 版本要求专用区块
   - `recommended`: 推荐使用的 SDK 范围，命中之外会提示警告
   - `supported`: 完全支持的 SDK 范围，未命中将拒绝加载（除非命中 `untested`）
   - `untested`: 未经完整测试但允许加载的范围，命中时会告警
   - `conflicts`: 明确冲突的范围，命中即拒绝加载
-- `entry`: 插件入口点，格式为 `模块路径:类名`
+- `plugin.dependency`: 插件依赖配置（可选，支持四种方式）
+  - **方式1**：依赖特定插件ID - 使用 `id` 字段指定依赖的插件
+  - **方式2**：依赖特定入口点 - 使用 `entry` 字段指定依赖的入口点
+    - `entry` 字段只能引用 `@plugin_entry` 装饰器定义的入口点ID（`entry_id`）
+    - 格式：`entry_id`（任意插件提供该入口）或 `plugin_id:entry_id`（指定插件必须提供该入口）
+    - **注意**：`entry` 和 `custom_event` 互斥（不能同时使用）
+  - **方式3**：依赖特定自定义事件 - 使用 `custom_event` 字段指定依赖的自定义事件
+    - `custom_event` 字段只能引用 `@custom_event` 装饰器定义的事件
+    - 格式：`event_type:event_id`（任意插件提供该事件）或 `plugin_id:event_type:event_id`（指定插件必须提供该事件）
+    - **注意**：`entry` 和 `custom_event` 互斥（不能同时使用）
+  - **方式4**：依赖多个候选插件 - 使用 `providers` 字段指定多个候选插件，任一满足即可
+  - 如果使用依赖配置，`untested` 字段是必须的（简化格式除外）
+  - 支持版本范围检查：`recommended`、`supported`、`untested`、`conflicts`
 
 #### 步骤 3：创建插件代码 `__init__.py`
 
@@ -2191,6 +2232,81 @@ A: 可以编写单元测试，或者通过 HTTP API 调用插件进行测试。
 
 A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pymongo` 等）。
 
+### Q11: 如何配置插件依赖？
+
+A: 在 `plugin.toml` 中使用 `[[plugin.dependency]]` 配置依赖。支持三种方式：
+
+**方式1：依赖特定插件ID**
+```toml
+[[plugin.dependency]]
+id = "timer_service"
+untested = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+```
+**适用场景**：需要依赖整个插件，包括其所有 `plugin_entry` 和 `custom_event`。
+
+**方式2：依赖特定入口点（更灵活）**
+```toml
+# 任意插件提供 start_timer 入口即可
+[[plugin.dependency]]
+entry = "start_timer"
+untested = ">=1.0.0,<2.0.0"
+
+# 或指定特定插件的特定入口
+[[plugin.dependency]]
+entry = "timer_service:start_timer"
+untested = ">=1.0.0,<2.0.0"
+```
+**重要限制**：
+- `entry` 字段**只能引用 `@plugin_entry` 装饰器定义的入口点ID**
+- `entry` 和 `custom_event` **互斥**（不能同时使用）
+
+**方式3：依赖特定自定义事件（新功能）**
+```toml
+# 任意插件提供 timer_tick.on_tick 事件即可
+[[plugin.dependency]]
+custom_event = "timer_tick:on_tick"
+untested = ">=1.0.0,<2.0.0"
+
+# 或指定特定插件的特定事件
+[[plugin.dependency]]
+custom_event = "timer_service:timer_tick:on_tick"
+untested = ">=1.0.0,<2.0.0"
+```
+**重要限制**：
+- `custom_event` 字段**只能引用 `@custom_event` 装饰器定义的事件**
+- 格式：`event_type:event_id` 或 `plugin_id:event_type:event_id`
+- `entry` 和 `custom_event` **互斥**（不能同时使用）
+
+**方式4：依赖多个候选插件（任一满足即可）**
+```toml
+[[plugin.dependency]]
+providers = ["timer_service", "timer_service_v2"]
+untested = ">=1.0.0,<2.0.0"
+```
+
+**注意：**
+- 如果使用依赖配置，`untested` 字段是必须的（简化格式除外）
+- 依赖检查失败时，插件将无法加载
+- 版本范围使用语义化版本规范（如 `>=1.0.0,<2.0.0`）
+
+**`entry` 与 `custom_event` 的区别：**
+- `entry` 字段只能引用 `@plugin_entry` 定义的入口点（用户调用的接口）
+- `custom_event` 字段只能引用 `@custom_event` 定义的事件（插件间内部通信机制）
+- `entry` 和 `custom_event` **互斥**（不能在同一依赖配置中同时使用）
+
+### Q12: 如何表示插件冲突？
+
+A: 使用简化格式的依赖配置：
+
+```toml
+[[plugin.dependency]]
+id = "conflicting_plugin"
+conflicts = true
+```
+
+如果 `conflicting_plugin` 存在，当前插件将无法加载。
+
 ---
 
 ## 第十一章：API 参考
@@ -2391,13 +2507,158 @@ description = "插件描述"
 version = "1.0.0"
 entry = "plugins.my_plugin:MyPlugin"
 
-# 可选：定义入口点（也可以在代码中使用装饰器定义）
-# [plugin.entries]
-# [[plugin.entries]]
-# id = "entry1"
-# name = "Entry 1"
-# description = "Entry 1 description"
+# 可选：插件作者信息
+[plugin.author]
+name = "Plugin Author Name"
+email = "author@example.com"
+
+# SDK 版本要求
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+untested = ">=0.3.0,<0.4.0"
+conflicts = ["<0.1.0", ">=0.4.0"]
+
+# 可选：插件依赖配置
+# 方式1：依赖特定插件ID
+[[plugin.dependency]]
+id = "timer_service"
+recommended = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+untested = ">=3.0.0,<4.0.0"  # 必须字段
+conflicts = ["<1.0.0", ">=4.0.0"]
+
+# 方式2：依赖特定入口点（任意插件提供该入口即可）
+[[plugin.dependency]]
+entry = "start_timer"  # 或 "timer_service:start_timer" 指定特定插件
+untested = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+
+# 方式3：依赖特定自定义事件（任意插件提供该事件即可）
+[[plugin.dependency]]
+custom_event = "timer_tick:on_tick"  # 或 "timer_service:timer_tick:on_tick" 指定特定插件
+untested = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+
+# 方式4：依赖多个候选插件（任一满足即可）
+[[plugin.dependency]]
+providers = ["timer_service", "timer_service_v2"]
+untested = ">=1.0.0,<2.0.0"
+supported = ">=1.0.0,<3.0.0"
+
+# 简化格式：表示与某个插件冲突（插件存在则拒绝加载）
+[[plugin.dependency]]
+id = "conflicting_plugin"
+conflicts = true
 ```
+
+**依赖配置说明：**
+
+插件依赖配置支持四种灵活的方式，满足不同的使用场景：
+
+1. **依赖特定插件ID**：当插件需要依赖一个特定的插件时使用
+   ```toml
+   [[plugin.dependency]]
+   id = "timer_service"
+   untested = ">=1.0.0,<2.0.0"
+   ```
+   **适用场景**：
+   - 需要依赖整个插件（包括所有功能）
+
+2. **依赖特定入口点**：当插件只需要某个功能（入口点），而不关心是哪个插件提供时使用
+   ```toml
+   [[plugin.dependency]]
+   entry = "start_timer"  # 任意插件提供 start_timer 入口即可
+   untested = ">=1.0.0,<2.0.0"
+   ```
+   也可以指定特定插件的特定入口：
+   ```toml
+   [[plugin.dependency]]
+   entry = "timer_service:start_timer"  # timer_service 插件必须提供 start_timer 入口
+   untested = ">=1.0.0,<2.0.0"
+   ```
+   **重要说明**：
+   - `entry` 字段**只能引用 `@plugin_entry` 装饰器定义的入口点ID**（`entry_id`）
+   - `entry` 和 `custom_event` **互斥**（不能同时使用）
+
+3. **依赖特定自定义事件**：当插件只需要某个自定义事件，而不关心是哪个插件提供时使用
+   ```toml
+   [[plugin.dependency]]
+   custom_event = "timer_tick:on_tick"  # 任意插件提供 timer_tick.on_tick 事件即可
+   untested = ">=1.0.0,<2.0.0"
+   ```
+   也可以指定特定插件的特定事件：
+   ```toml
+   [[plugin.dependency]]
+   custom_event = "timer_service:timer_tick:on_tick"  # timer_service 插件必须提供该事件
+   untested = ">=1.0.0,<2.0.0"
+   ```
+   **重要说明**：
+   - `custom_event` 字段**只能引用 `@custom_event` 装饰器定义的事件**
+   - 格式：`event_type:event_id` 或 `plugin_id:event_type:event_id`
+   - `entry` 和 `custom_event` **互斥**（不能同时使用）
+
+4. **依赖多个候选插件**：当插件可以接受多个候选插件中的任意一个时使用
+   ```toml
+   [[plugin.dependency]]
+   providers = ["timer_service", "timer_service_v2"]  # 任一满足即可
+   untested = ">=1.0.0,<2.0.0"
+   ```
+
+**`entry` 与 `custom_event` 的区别：**
+
+| 字段/概念 | 定义方式 | 依赖配置中的使用 | 说明 |
+|---------|---------|----------------|------|
+| `entry` | `@plugin_entry` 装饰器 | ✅ 支持，使用 `entry` 字段 | 用户调用插件的入口（对外服务） |
+| `custom_event` | `@custom_event` 装饰器 | ✅ 支持，使用 `custom_event` 字段 | 插件间功能复用的机制（内部调用） |
+
+**重要限制**：
+- `entry` 和 `custom_event` **互斥**（不能在同一依赖配置中同时使用）
+- `entry` 字段只能引用 `@plugin_entry` 定义的内容
+- `custom_event` 字段只能引用 `@custom_event` 定义的内容
+
+**示例对比：**
+
+```python
+# 插件A：定义 plugin_entry（可以被依赖配置的 entry 字段引用）
+@plugin_entry(id="start_timer")
+def start_timer(self, **_):
+    pass
+
+# 插件B：定义 custom_event（可以被依赖配置的 custom_event 字段引用）
+@custom_event(event_type="timer_tick", id="on_tick")
+def on_tick(self, **_):
+    pass
+```
+
+```toml
+# ✅ 正确：依赖 plugin_entry
+[[plugin.dependency]]
+entry = "start_timer"  # 可以引用 @plugin_entry 定义的入口点
+untested = ">=1.0.0,<2.0.0"
+
+# ✅ 正确：依赖 custom_event
+[[plugin.dependency]]
+custom_event = "timer_tick:on_tick"  # 可以引用 @custom_event 定义的事件
+untested = ">=1.0.0,<2.0.0"
+
+# ❌ 错误：不能同时使用 entry 和 custom_event
+# [[plugin.dependency]]
+# entry = "start_timer"
+# custom_event = "timer_tick:on_tick"  # 错误！entry 和 custom_event 互斥
+```
+
+**版本范围字段说明：**
+- `untested`: 必须字段（简化格式除外），定义未测试但允许的版本范围
+- `supported`: 可选，定义完全支持的版本范围
+- `recommended`: 可选，定义推荐使用的版本范围（超出范围会警告）
+- `conflicts`: 可选，定义冲突的版本范围列表，或设置为 `true`（简化格式）
+
+**依赖检查规则：**
+- 如果依赖检查失败，插件将无法加载
+- 版本检查优先级：`conflicts` > `supported`/`untested` > `recommended`
+- 如果版本不在 `untested` 或 `supported` 范围内，依赖检查失败
+- 如果版本在 `conflicts` 范围内，依赖检查失败
 
 ### B. JSON Schema 参考
 

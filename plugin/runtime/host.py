@@ -14,7 +14,8 @@ from typing import Any, Dict, Optional
 from multiprocessing import Queue
 from queue import Empty
 
-from plugin.sdk.events import EVENT_META_ATTR
+from plugin.sdk.events import EVENT_META_ATTR, EventHandler
+from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.runtime.communication import PluginCommunicationResourceManager
 from plugin.api.models import HealthCheckResponse
@@ -108,6 +109,12 @@ def _plugin_process_runner(
                 etype = getattr(event_meta, "event_type", "plugin_entry")
                 events_by_type.setdefault(etype, {})
                 events_by_type[etype][eid] = member
+                
+                # 注册到 event_handlers（用于依赖检查）
+                # 格式：plugin_id:event_type:event_id
+                handler_obj = EventHandler(meta=event_meta, handler=member)
+                with state.event_handlers_lock:
+                    state.event_handlers[f"{plugin_id}:{etype}:{eid}"] = handler_obj
             else:
                 entry_map[name] = member
 
@@ -252,8 +259,41 @@ def _plugin_process_runner(
                             event_type, event_id, req_id
                         )
                         if asyncio.iscoroutinefunction(method):
-                            res = asyncio.run(method(**args))
+                            logger.debug("[Plugin Process] Custom event is async, running in thread to avoid blocking command loop")
+                            # 在独立线程中运行异步方法，避免阻塞命令循环
+                            # 这样命令循环可以继续处理其他命令（包括响应命令）
+                            result_container = {"result": None, "exception": None, "done": False}
+                            event = threading.Event()
+                            
+                            def run_async(method=method, args=args, result_container=result_container, event=event):
+                                try:
+                                    result_container["result"] = asyncio.run(method(**args))
+                                except Exception as e:
+                                    result_container["exception"] = e
+                                finally:
+                                    result_container["done"] = True
+                                    event.set()
+                            
+                            thread = threading.Thread(target=run_async, daemon=False)
+                            thread.start()
+                            
+                            # 等待异步方法完成（允许超时）
+                            start_time = time.time()
+                            timeout_seconds = PLUGIN_TRIGGER_TIMEOUT * 2
+                            check_interval = 0.01  # 10ms
+                            
+                            while not result_container["done"]:
+                                if time.time() - start_time > timeout_seconds:
+                                    logger.error(f"Custom event {event_type}.{event_id} execution timed out")
+                                    raise TimeoutError(f"Custom event execution timed out after {timeout_seconds}s")
+                                event.wait(timeout=check_interval)
+                            
+                            if result_container["exception"]:
+                                raise result_container["exception"]
+                            else:
+                                res = result_container["result"]
                         else:
+                            logger.debug("[Plugin Process] Custom event is sync, calling directly")
                             res = method(**args)
                         ret_payload["success"] = True
                         ret_payload["data"] = res

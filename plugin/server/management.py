@@ -13,9 +13,9 @@ from fastapi import HTTPException
 
 from plugin.core.state import state
 from plugin.runtime.host import PluginProcessHost
-from plugin.runtime.registry import scan_static_metadata, register_plugin
+from plugin.runtime.registry import scan_static_metadata, register_plugin, _parse_plugin_dependencies, _check_plugin_dependency
 from plugin.runtime.status import status_manager
-from plugin.api.models import PluginMeta
+from plugin.api.models import PluginMeta, PluginAuthor
 from plugin.api.exceptions import PluginNotFoundError
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
@@ -85,6 +85,23 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             detail=f"Invalid entry point for plugin '{plugin_id}'"
         )
     
+    # 检测并解决插件 ID 冲突
+    from plugin.runtime.registry import _resolve_plugin_id_conflict
+    original_plugin_id = plugin_id
+    plugin_id = _resolve_plugin_id_conflict(
+        plugin_id,
+        logger,
+        config_path=config_path,
+        entry_point=entry,
+        plugin_data=pdata
+    )
+    if plugin_id != original_plugin_id:
+        logger.debug(
+            "Plugin ID changed from '%s' to '%s' due to conflict (detailed warning logged above)",
+            original_plugin_id,
+            plugin_id
+        )
+    
     # 创建并启动插件进程
     try:
         host = PluginProcessHost(
@@ -98,6 +115,25 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         
         # 注册到状态
         with state.plugin_hosts_lock:
+            # 再次检查冲突（可能在启动过程中其他插件已注册）
+            final_plugin_id = _resolve_plugin_id_conflict(
+                plugin_id,
+                logger,
+                config_path=config_path,
+                entry_point=entry,
+                plugin_data=pdata
+            )
+            if final_plugin_id != plugin_id:
+                logger.debug(
+                    "Plugin ID changed during registration from '%s' to '%s' (detailed warning logged above)",
+                    plugin_id,
+                    final_plugin_id
+                )
+                plugin_id = final_plugin_id
+                # 更新 host 的 plugin_id（如果可能）
+                if hasattr(host, 'plugin_id'):
+                    host.plugin_id = plugin_id
+            
             state.plugin_hosts[plugin_id] = host
         
         # 扫描元数据
@@ -107,6 +143,39 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             cls = getattr(mod, class_name)
             scan_static_metadata(plugin_id, cls, conf, pdata)
             
+            # 读取作者信息
+            author_data = pdata.get("author")
+            author = None
+            if author_data and isinstance(author_data, dict):
+                author = PluginAuthor(
+                    name=author_data.get("name"),
+                    email=author_data.get("email")
+                )
+            
+            # 解析并检查插件依赖
+            dependencies = _parse_plugin_dependencies(conf, logger, plugin_id)
+            dependency_check_failed = False
+            if dependencies:
+                logger.info("Plugin %s: found %d dependency(ies)", plugin_id, len(dependencies))
+                for dep in dependencies:
+                    # 检查依赖（包括简化格式和完整格式）
+                    satisfied, error_msg = _check_plugin_dependency(dep, logger, plugin_id)
+                    if not satisfied:
+                        logger.error(
+                            "Plugin %s: dependency check failed: %s; cannot start",
+                            plugin_id, error_msg
+                        )
+                        dependency_check_failed = True
+                        break
+                    logger.debug("Plugin %s: dependency check passed", plugin_id)
+            
+            # 如果依赖检查失败，抛出异常
+            if dependency_check_failed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Plugin dependency check failed for plugin '{plugin_id}'"
+                )
+            
             # 注册插件元数据
             plugin_meta = PluginMeta(
                 id=plugin_id,
@@ -114,17 +183,32 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 description=pdata.get("description", ""),
                 version=pdata.get("version", "0.1.0"),
                 sdk_version=SDK_VERSION,
+                author=author,
+                dependencies=dependencies,
             )
-            register_plugin(plugin_meta)
+            resolved_id = register_plugin(
+                plugin_meta,
+                logger,
+                config_path=config_path,
+                entry_point=entry
+            )
+            if resolved_id != plugin_id:
+                # 如果 ID 被进一步重命名（双重冲突），更新 plugin_id
+                plugin_id = resolved_id
         except Exception as e:
             logger.warning(f"Failed to scan metadata for plugin {plugin_id}: {e}")
         
         logger.info(f"Plugin {plugin_id} started successfully")
-        return {
+        response = {
             "success": True,
             "plugin_id": plugin_id,
             "message": "Plugin started successfully"
         }
+        # 如果 ID 被重命名，在响应中提示
+        if plugin_id != original_plugin_id:
+            response["original_plugin_id"] = original_plugin_id
+            response["message"] = f"Plugin started successfully (renamed from '{original_plugin_id}' to '{plugin_id}' due to ID conflict)"
+        return response
         
     except Exception as e:
         logger.exception(f"Failed to start plugin {plugin_id}: {e}")

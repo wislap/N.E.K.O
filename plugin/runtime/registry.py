@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import importlib
 import inspect
 import logging
@@ -17,7 +18,7 @@ except ImportError:  # pragma: no cover
 from plugin.sdk.events import EventHandler, EVENT_META_ATTR
 from plugin.sdk.version import SDK_VERSION
 from plugin.core.state import state
-from plugin.api.models import PluginMeta
+from plugin.api.models import PluginMeta, PluginAuthor, PluginDependency
 from plugin.api.exceptions import (
     PluginImportError,
     PluginLoadError,
@@ -69,16 +70,644 @@ def _version_matches(spec: Optional[SpecifierSet], version: Version) -> bool:
         return False
 
 
+def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
+    """
+    根据入口点ID查找提供该入口的所有插件（只能查找 @plugin_entry）
+    
+    Args:
+        entry_id: 入口点ID
+    
+    Returns:
+        (插件ID, 插件元数据) 列表
+    """
+    matching_plugins = []
+    
+    with state.event_handlers_lock:
+        event_handlers_copy = dict(state.event_handlers)
+    
+    # 查找所有提供该入口点的插件
+    found_plugin_ids = set()
+    for key, eh in event_handlers_copy.items():
+        # 检查 key 格式：plugin_id.entry_id 或 plugin_id:plugin_entry:entry_id
+        if "." in key:
+            parts = key.split(".", 1)
+            if len(parts) == 2 and parts[1] == entry_id:
+                # 验证是 plugin_entry 类型
+                meta = getattr(eh, "meta", None)
+                if meta and getattr(meta, "event_type", None) == "plugin_entry":
+                    found_plugin_ids.add(parts[0])
+        elif ":" in key:
+            parts = key.split(":", 2)
+            if len(parts) == 3 and parts[1] == "plugin_entry" and parts[2] == entry_id:
+                found_plugin_ids.add(parts[0])
+    
+    # 获取这些插件的元数据
+    with state.plugins_lock:
+        for pid in found_plugin_ids:
+            if pid in state.plugins:
+                matching_plugins.append((pid, state.plugins[pid]))
+    
+    return matching_plugins
+
+
+def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[str, Dict[str, Any]]]:
+    """
+    根据自定义事件类型和ID查找提供该事件的所有插件（只能查找 @custom_event）
+    
+    Args:
+        event_type: 自定义事件类型
+        event_id: 事件ID
+    
+    Returns:
+        (插件ID, 插件元数据) 列表
+    """
+    matching_plugins = []
+    
+    with state.event_handlers_lock:
+        event_handlers_copy = dict(state.event_handlers)
+    
+    # 查找所有提供该自定义事件的插件
+    found_plugin_ids = set()
+    for key, eh in event_handlers_copy.items():
+        # 检查 key 格式：plugin_id:event_type:event_id
+        if ":" in key:
+            parts = key.split(":", 2)
+            if len(parts) == 3:
+                pid, etype, eid = parts
+                if etype == event_type and eid == event_id:
+                    # 验证不是标准类型（plugin_entry, lifecycle, message, timer）
+                    if etype not in ("plugin_entry", "lifecycle", "message", "timer"):
+                        found_plugin_ids.add(pid)
+    
+    # 获取这些插件的元数据
+    with state.plugins_lock:
+        for pid in found_plugin_ids:
+            if pid in state.plugins:
+                matching_plugins.append((pid, state.plugins[pid]))
+    
+    return matching_plugins
+
+
+def _check_plugin_dependency(
+    dependency: PluginDependency,
+    logger: logging.Logger,
+    plugin_id: str
+) -> tuple[bool, Optional[str]]:
+    """
+    检查插件依赖是否满足
+    
+    支持四种依赖方式：
+    1. 依赖特定插件ID：id = "plugin_id"
+    2. 依赖特定入口点：entry = "entry_id" 或 entry = "plugin_id:entry_id"（只能引用 @plugin_entry）
+    3. 依赖特定自定义事件：custom_event = "event_type:event_id" 或 custom_event = "plugin_id:event_type:event_id"（只能引用 @custom_event）
+    4. 依赖多个候选插件：providers = ["plugin1", "plugin2"]（任一满足即可）
+    
+    注意：entry 和 custom_event 互斥（不能同时使用）
+    
+    Args:
+        dependency: 依赖配置
+        logger: 日志记录器
+        plugin_id: 当前插件 ID（用于日志）
+    
+    Returns:
+        (是否满足, 错误信息)
+    """
+    # 如果 conflicts 是 true，表示冲突（不允许）
+    if dependency.conflicts is True:
+        if dependency.id:
+            # 检查依赖插件是否存在
+            with state.plugins_lock:
+                if dependency.id in state.plugins:
+                    return False, f"Dependency plugin '{dependency.id}' conflicts (conflicts=true) but plugin exists"
+        return True, None  # 简化格式，插件不存在则满足
+    
+    # 确定要检查的插件列表
+    plugins_to_check: List[tuple[str, Dict[str, Any]]] = []
+    
+    if dependency.providers:
+        # 方式3：多个候选插件（任一满足即可）
+        with state.plugins_lock:
+            for provider_id in dependency.providers:
+                if provider_id in state.plugins:
+                    plugins_to_check.append((provider_id, state.plugins[provider_id]))
+        
+        if not plugins_to_check:
+            return False, f"None of the provider plugins {dependency.providers} found"
+        
+        # 检查任一插件是否满足（只要有一个满足即可）
+        for dep_id, dep_plugin_meta in plugins_to_check:
+            satisfied, error_msg = _check_single_plugin_version(
+                dep_id, dep_plugin_meta, dependency, logger, plugin_id
+            )
+            if satisfied:
+                logger.debug("Plugin %s: dependency satisfied by provider '%s'", plugin_id, dep_id)
+                return True, None
+        
+        # 所有候选插件都不满足
+        return False, f"None of the provider plugins {dependency.providers} satisfy version requirements"
+    
+    elif dependency.entry:
+        # 方式2：依赖特定入口点（只能引用 @plugin_entry）
+        # 检查是否同时指定了 custom_event（互斥）
+        if dependency.custom_event:
+            return False, "Cannot specify both 'entry' and 'custom_event' in dependency (they are mutually exclusive)"
+        
+        entry_spec = dependency.entry
+        if ":" in entry_spec:
+            # 格式：plugin_id:entry_id
+            parts = entry_spec.split(":", 1)
+            if len(parts) != 2:
+                return False, f"Invalid entry format: '{entry_spec}', expected 'plugin_id:entry_id' or 'entry_id'"
+            target_plugin_id, target_entry_id = parts
+            with state.plugins_lock:
+                if target_plugin_id not in state.plugins:
+                    return False, f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' not found"
+                plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
+        else:
+            # 格式：entry_id（任意插件提供该入口）
+            entry_id = entry_spec
+            matching_plugins = _find_plugins_by_entry(entry_id)
+            if not matching_plugins:
+                return False, f"Dependency entry '{entry_id}' not found in any plugin"
+            plugins_to_check = matching_plugins
+        
+        # 检查提供该入口的插件是否满足版本要求
+        # 如果多个插件提供该入口，任一满足即可
+        for dep_id, dep_plugin_meta in plugins_to_check:
+            satisfied, error_msg = _check_single_plugin_version(
+                dep_id, dep_plugin_meta, dependency, logger, plugin_id
+            )
+            if satisfied:
+                logger.debug("Plugin %s: dependency entry '%s' satisfied by plugin '%s'", plugin_id, entry_spec, dep_id)
+                return True, None
+        
+        # 所有提供该入口的插件都不满足版本要求
+        return False, f"Dependency entry '{entry_spec}' found but version requirements not satisfied"
+    
+    elif dependency.custom_event:
+        # 方式3：依赖特定自定义事件（只能引用 @custom_event）
+        custom_event_spec = dependency.custom_event
+        if ":" in custom_event_spec:
+            # 解析格式：plugin_id:event_type:event_id 或 event_type:event_id
+            parts = custom_event_spec.split(":")
+            if len(parts) == 2:
+                # 格式：event_type:event_id（任意插件提供该事件）
+                event_type, event_id = parts
+                matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
+                if not matching_plugins:
+                    return False, f"Dependency custom_event '{custom_event_spec}' not found in any plugin"
+                plugins_to_check = matching_plugins
+            elif len(parts) == 3:
+                # 格式：plugin_id:event_type:event_id（指定插件必须提供该事件）
+                target_plugin_id, event_type, event_id = parts
+                with state.plugins_lock:
+                    if target_plugin_id not in state.plugins:
+                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' not found"
+                    # 验证该插件是否提供该事件
+                    matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
+                    if not any(pid == target_plugin_id for pid, _ in matching_plugins):
+                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
+                    plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
+            else:
+                return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
+        else:
+            return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
+        
+        # 检查提供该自定义事件的插件是否满足版本要求
+        # 如果多个插件提供该事件，任一满足即可
+        for dep_id, dep_plugin_meta in plugins_to_check:
+            satisfied, error_msg = _check_single_plugin_version(
+                dep_id, dep_plugin_meta, dependency, logger, plugin_id
+            )
+            if satisfied:
+                logger.debug("Plugin %s: dependency custom_event '%s' satisfied by plugin '%s'", plugin_id, custom_event_spec, dep_id)
+                return True, None
+        
+        # 所有提供该事件的插件都不满足版本要求
+        return False, f"Dependency custom_event '{custom_event_spec}' found but version requirements not satisfied"
+    
+    elif dependency.id:
+        # 方式1：依赖特定插件ID
+        dep_id = dependency.id
+        with state.plugins_lock:
+            if dep_id not in state.plugins:
+                return False, f"Dependency plugin '{dep_id}' not found"
+            dep_plugin_meta = state.plugins[dep_id]
+        
+        return _check_single_plugin_version(
+            dep_id, dep_plugin_meta, dependency, logger, plugin_id
+        )
+    
+    else:
+        return False, "Dependency must specify at least one of 'id', 'entry', 'custom_event', or 'providers'"
+
+
+def _check_single_plugin_version(
+    dep_id: str,
+    dep_plugin_meta: Dict[str, Any],
+    dependency: PluginDependency,
+    logger: logging.Logger,
+    plugin_id: str
+) -> tuple[bool, Optional[str]]:
+    """
+    检查单个插件的版本是否满足依赖要求
+    
+    Args:
+        dep_id: 依赖插件ID
+        dep_plugin_meta: 依赖插件元数据
+        dependency: 依赖配置
+        logger: 日志记录器
+        plugin_id: 当前插件ID（用于日志）
+    
+    Returns:
+        (是否满足, 错误信息)
+    """
+    dep_version_str = dep_plugin_meta.get("version", "0.0.0")
+    
+    # 如果 conflicts 是列表，检查版本是否在冲突范围内
+    if isinstance(dependency.conflicts, list) and dependency.conflicts:
+        if Version and SpecifierSet:
+            try:
+                dep_version_obj = Version(dep_version_str)
+                conflict_specs = [
+                    _parse_specifier(conf, logger) for conf in dependency.conflicts
+                ]
+                if any(spec and _version_matches(spec, dep_version_obj) for spec in conflict_specs):
+                    return False, f"Dependency plugin '{dep_id}' version {dep_version_str} conflicts with required ranges: {dependency.conflicts}"
+            except InvalidVersion:
+                logger.warning("Cannot parse dependency plugin '%s' version '%s'", dep_id, dep_version_str)
+    
+    # 如果使用依赖配置，untested 是必须的
+    if dependency.untested is None:
+        return False, f"Dependency configuration requires 'untested' field"
+    
+    # 检查版本是否在 untested 范围内
+    if Version and SpecifierSet:
+        try:
+            dep_version_obj = Version(dep_version_str)
+            untested_spec = _parse_specifier(dependency.untested, logger)
+            
+            if untested_spec:
+                in_untested = _version_matches(untested_spec, dep_version_obj)
+                if not in_untested:
+                    # 检查是否在 supported 范围内
+                    supported_spec = _parse_specifier(dependency.supported, logger)
+                    in_supported = _version_matches(supported_spec, dep_version_obj) if supported_spec else False
+                    
+                    if not in_supported:
+                        return False, (
+                            f"Dependency plugin '{dep_id}' version {dep_version_str} "
+                            f"does not match untested range '{dependency.untested}' "
+                            f"(or supported range '{dependency.supported or 'N/A'}')"
+                        )
+            
+            # 检查 recommended 范围（警告）
+            if dependency.recommended:
+                recommended_spec = _parse_specifier(dependency.recommended, logger)
+                if recommended_spec and not _version_matches(recommended_spec, dep_version_obj):
+                    logger.warning(
+                        "Plugin %s: dependency '%s' version %s is outside recommended range %s",
+                        plugin_id, dep_id, dep_version_str, dependency.recommended
+                    )
+        except InvalidVersion:
+            logger.warning("Cannot parse dependency plugin '%s' version '%s'", dep_id, dep_version_str)
+    
+    return True, None
+
+
+def _parse_plugin_dependencies(
+    conf: Dict[str, Any],
+    logger: logging.Logger,
+    plugin_id: str
+) -> List[PluginDependency]:
+    """
+    解析插件依赖配置
+    
+    支持两种格式：
+    1. [[plugin.dependency]] - 完整格式
+    2. [[plugin.dependency]] with conflicts = true - 简化格式
+    
+    Args:
+        conf: TOML 配置字典
+        logger: 日志记录器
+        plugin_id: 插件 ID（用于日志）
+    
+    Returns:
+        依赖列表
+    """
+    dependencies: List[PluginDependency] = []
+    
+    # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表
+    dep_configs = conf.get("plugin", {}).get("dependency", [])
+    
+    # 如果不是列表，转换为列表
+    if not isinstance(dep_configs, list):
+        if isinstance(dep_configs, dict):
+            dep_configs = [dep_configs]
+        else:
+            return dependencies
+    
+    for dep_config in dep_configs:
+        if not isinstance(dep_config, dict):
+            logger.warning("Plugin %s: invalid dependency config (not a dict), skipping", plugin_id)
+            continue
+        
+        # 支持四种依赖方式：id、entry、custom_event、providers（至少需要一个）
+        dep_id = dep_config.get("id")
+        dep_entry = dep_config.get("entry")
+        dep_custom_event = dep_config.get("custom_event")
+        dep_providers = dep_config.get("providers")
+        
+        if not dep_id and not dep_entry and not dep_custom_event and not dep_providers:
+            logger.warning("Plugin %s: dependency config must have at least one of 'id', 'entry', 'custom_event', or 'providers' field, skipping", plugin_id)
+            continue
+        
+        # 检查 entry 和 custom_event 互斥
+        if dep_entry and dep_custom_event:
+            logger.warning("Plugin %s: dependency config cannot have both 'entry' and 'custom_event' fields (they are mutually exclusive), skipping", plugin_id)
+            continue
+        
+        # 处理简化格式：conflicts = true（仅支持 id 方式）
+        conflicts = dep_config.get("conflicts")
+        if conflicts is True:
+            if not dep_id:
+                logger.warning("Plugin %s: dependency with conflicts=true requires 'id' field, skipping", plugin_id)
+                continue
+            # 简化格式：只有 id 和 conflicts = true
+            dependencies.append(PluginDependency(
+                id=dep_id,
+                conflicts=True
+            ))
+            continue
+        
+        # 完整格式：解析所有字段
+        # 如果使用依赖配置，untested 是必须的（除非是简化格式）
+        untested = dep_config.get("untested")
+        if untested is None:
+            logger.warning(
+                "Plugin %s: dependency missing required 'untested' field, skipping",
+                plugin_id
+            )
+            continue
+        
+        # 处理 conflicts 列表
+        conflicts_list = None
+        raw_conflicts = dep_config.get("conflicts")
+        if isinstance(raw_conflicts, list):
+            conflicts_list = [str(c) for c in raw_conflicts if c]
+        elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
+            conflicts_list = [raw_conflicts.strip()]
+        
+        # 处理 providers 列表
+        providers_list = None
+        if isinstance(dep_providers, list):
+            providers_list = [str(p) for p in dep_providers if p]
+        elif isinstance(dep_providers, str) and dep_providers.strip():
+            providers_list = [dep_providers.strip()]
+        
+        dependencies.append(PluginDependency(
+            id=dep_id,
+            entry=dep_entry,
+            custom_event=dep_custom_event,
+            providers=providers_list,
+            recommended=dep_config.get("recommended"),
+            supported=dep_config.get("supported"),
+            untested=untested,
+            conflicts=conflicts_list
+        ))
+    
+    return dependencies
+
+
 def get_plugins() -> List[Dict[str, Any]]:
     """Return list of plugin dicts (in-process access)."""
     with state.plugins_lock:
         return list(state.plugins.values())
 
 
-def register_plugin(plugin: PluginMeta) -> None:
-    """Insert plugin into registry (not exposed as HTTP)."""
+def _calculate_plugin_hash(config_path: Optional[Path] = None, entry_point: Optional[str] = None, plugin_data: Optional[Dict[str, Any]] = None) -> str:
+    """
+    计算插件的哈希值，用于比较插件内容是否相同
+    
+    Args:
+        config_path: 插件配置文件路径
+        entry_point: 插件入口点
+        plugin_data: 插件配置数据（可选）
+    
+    Returns:
+        插件的哈希值（十六进制字符串）
+    """
+    hash_data = []
+    
+    # 添加配置文件路径（如果提供）
+    if config_path:
+        hash_data.append(f"config_path:{str(config_path.resolve())}")
+    
+    # 添加入口点（如果提供）
+    if entry_point:
+        hash_data.append(f"entry_point:{entry_point}")
+    
+    # 添加插件配置数据的关键字段（如果提供）
+    if plugin_data:
+        # 使用关键字段来标识插件
+        key_fields = ["id", "name", "version", "entry"]
+        for field in key_fields:
+            if field in plugin_data:
+                hash_data.append(f"{field}:{plugin_data[field]}")
+    
+    # 计算哈希值
+    content = "|".join(hash_data)
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]  # 使用前16位作为简短标识
+
+
+def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
+    """
+    获取已存在插件的信息
+    
+    Args:
+        plugin_id: 插件 ID
+    
+    Returns:
+        插件信息字典，包含 config_path、entry_point 等，如果不存在则返回 None
+    """
+    with state.plugin_hosts_lock:
+        if plugin_id in state.plugin_hosts:
+            host = state.plugin_hosts[plugin_id]
+            # 尝试获取 host 的配置信息
+            config_path = getattr(host, 'config_path', None)
+            entry_point = getattr(host, 'entry_point', None)
+            if config_path or entry_point:
+                return {
+                    "config_path": config_path,
+                    "entry_point": entry_point,
+                }
+    
     with state.plugins_lock:
-        state.plugins[plugin.id] = plugin.model_dump()
+        if plugin_id in state.plugins:
+            plugin_meta = state.plugins[plugin_id]
+            return {
+                "plugin_meta": plugin_meta,
+            }
+    
+    return None
+
+
+def _resolve_plugin_id_conflict(
+    plugin_id: str,
+    logger: logging.Logger,
+    config_path: Optional[Path] = None,
+    entry_point: Optional[str] = None,
+    plugin_data: Optional[Dict[str, Any]] = None
+) -> str:
+    """
+    检测并解决插件 ID 冲突
+    
+    如果插件 ID 已存在（在 plugins 或 plugin_hosts 中），
+    生成一个新的唯一 ID（添加数字后缀）并记录警告。
+    如果两个插件的内容哈希值相同，会记录更详细的日志。
+    
+    Args:
+        plugin_id: 原始插件 ID
+        logger: 日志记录器
+        config_path: 当前插件的配置文件路径（可选，用于哈希计算）
+        entry_point: 当前插件的入口点（可选，用于哈希计算）
+        plugin_data: 当前插件的配置数据（可选，用于哈希计算）
+    
+    Returns:
+        解决冲突后的插件 ID（如果无冲突则返回原始 ID）
+    """
+    def _is_id_taken(pid: str) -> bool:
+        """检查 ID 是否已被占用"""
+        with state.plugins_lock:
+            if pid in state.plugins:
+                return True
+        with state.plugin_hosts_lock:
+            if pid in state.plugin_hosts:
+                return True
+        return False
+    
+    if not _is_id_taken(plugin_id):
+        return plugin_id
+    
+    # 计算当前插件的哈希值
+    current_hash = _calculate_plugin_hash(config_path, entry_point, plugin_data)
+    
+    # 获取已存在插件的信息
+    existing_info = _get_existing_plugin_info(plugin_id)
+    existing_hash = None
+    if existing_info:
+        existing_config_path = existing_info.get("config_path")
+        existing_entry_point = existing_info.get("entry_point")
+        existing_plugin_data = existing_info.get("plugin_meta")
+        existing_hash = _calculate_plugin_hash(
+            existing_config_path,
+            existing_entry_point,
+            existing_plugin_data
+        )
+    
+    # ID 冲突，生成新的唯一 ID
+    counter = 1
+    new_id = f"{plugin_id}_{counter}"
+    while _is_id_taken(new_id):
+        counter += 1
+        new_id = f"{plugin_id}_{counter}"
+    
+    # 根据哈希值是否相同，记录不同详细程度的日志
+    if existing_hash and current_hash == existing_hash:
+        # 哈希值相同，说明是同一个插件的重复加载
+        logger.warning(
+            "Plugin ID conflict detected: '%s' already exists with identical content (hash: %s). "
+            "This appears to be a duplicate load of the same plugin. "
+            "Renaming to '%s' to avoid conflict. "
+            "Please check if the plugin is being loaded multiple times from different locations.",
+            plugin_id,
+            current_hash,
+            new_id
+        )
+        if config_path and existing_info and existing_info.get("config_path"):
+            logger.warning(
+                "Duplicate plugin locations: existing='%s', current='%s'",
+                existing_info.get("config_path"),
+                config_path
+            )
+    else:
+        # 哈希值不同，说明是不同的插件使用了相同的 ID
+        logger.warning(
+            "Plugin ID conflict detected: '%s' already exists with different content. "
+            "This is a different plugin using the same ID. "
+            "Renaming to '%s' to avoid conflict. "
+            "Please update the plugin configuration to use a unique ID.",
+            plugin_id,
+            new_id
+        )
+        if existing_hash and current_hash:
+            logger.warning(
+                "Content hash comparison: existing='%s', current='%s'",
+                existing_hash,
+                current_hash
+            )
+    
+    return new_id
+
+
+def register_plugin(
+    plugin: PluginMeta,
+    logger: Optional[logging.Logger] = None,
+    config_path: Optional[Path] = None,
+    entry_point: Optional[str] = None
+) -> str:
+    """
+    注册插件到注册表
+    
+    Args:
+        plugin: 插件元数据
+        logger: 日志记录器（可选，用于冲突检测）
+        config_path: 插件配置文件路径（可选，用于哈希计算）
+        entry_point: 插件入口点（可选，用于哈希计算）
+    
+    Returns:
+        实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    # 准备插件数据用于哈希计算
+    plugin_data = {
+        "id": plugin.id,
+        "name": plugin.name,
+        "version": plugin.version,
+        "entry": entry_point or "",
+    }
+    
+    # 检测并解决 ID 冲突
+    resolved_id = _resolve_plugin_id_conflict(
+        plugin.id,
+        logger,
+        config_path=config_path,
+        entry_point=entry_point,
+        plugin_data=plugin_data
+    )
+    
+    # 如果 ID 被重命名，更新插件元数据
+    if resolved_id != plugin.id:
+        plugin = PluginMeta(
+            id=resolved_id,
+            name=plugin.name,
+            description=plugin.description,
+            version=plugin.version,
+            sdk_version=plugin.sdk_version,
+            sdk_recommended=plugin.sdk_recommended,
+            sdk_supported=plugin.sdk_supported,
+            sdk_untested=plugin.sdk_untested,
+            sdk_conflicts=plugin.sdk_conflicts,
+            input_schema=plugin.input_schema,
+            author=plugin.author,
+        )
+    
+    with state.plugins_lock:
+        state.plugins[resolved_id] = plugin.model_dump()
+    
+    return resolved_id
 
 
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
@@ -283,6 +912,42 @@ def load_plugins_from_toml(
                     continue
                 logger.info("Plugin %s: SDK version string check passed", pid)
 
+            # 解析并检查插件依赖
+            dependencies = _parse_plugin_dependencies(conf, logger, pid)
+            dependency_check_failed = False
+            if dependencies:
+                logger.info("Plugin %s: found %d dependency(ies)", pid, len(dependencies))
+                for dep in dependencies:
+                    # 检查依赖（包括简化格式和完整格式）
+                    satisfied, error_msg = _check_plugin_dependency(dep, logger, pid)
+                    if not satisfied:
+                        logger.error(
+                            "Plugin %s: dependency check failed: %s; skipping load",
+                            pid, error_msg
+                        )
+                        dependency_check_failed = True
+                        break
+                    logger.debug("Plugin %s: dependency check passed", pid)
+            
+            # 如果依赖检查失败，跳过加载
+            if dependency_check_failed:
+                continue
+
+            # 检测并解决插件 ID 冲突（在创建 host 之前）
+            original_pid = pid
+            pid = _resolve_plugin_id_conflict(
+                pid,
+                logger,
+                config_path=toml_path,
+                entry_point=entry,
+                plugin_data=pdata
+            )
+            if pid != original_pid:
+                logger.debug(
+                    "Plugin from %s: ID changed from '%s' to '%s' due to conflict",
+                    toml_path, original_pid, pid
+                )
+
             module_path, class_name = entry.split(":", 1)
             logger.info("Plugin %s: importing module '%s', class '%s'", pid, module_path, class_name)
             try:
@@ -304,7 +969,14 @@ def load_plugins_from_toml(
                 logger.info("Plugin %s: creating process host...", pid)
                 host = process_host_factory(pid, entry, toml_path)
                 logger.info("Plugin %s: process host created successfully", pid)
-                state.plugin_hosts[pid] = host
+                
+                # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
+                if pid != original_pid and hasattr(host, 'plugin_id'):
+                    host.plugin_id = pid
+                    logger.debug("Updated host plugin_id to '%s'", pid)
+                
+                with state.plugin_hosts_lock:
+                    state.plugin_hosts[pid] = host
                 logger.info("Plugin %s: registered in plugin_hosts", pid)
             except (OSError, RuntimeError) as e:
                 logger.error("Failed to start process for plugin %s: %s", pid, e, exc_info=True)
@@ -314,6 +986,15 @@ def load_plugins_from_toml(
                 continue
 
             scan_static_metadata(pid, cls, conf, pdata)
+
+            # 读取作者信息
+            author_data = pdata.get("author")
+            author = None
+            if author_data and isinstance(author_data, dict):
+                author = PluginAuthor(
+                    name=author_data.get("name"),
+                    email=author_data.get("email")
+                )
 
             plugin_meta = PluginMeta(
                 id=pid,
@@ -326,8 +1007,18 @@ def load_plugins_from_toml(
                 sdk_untested=sdk_untested_str,
                 sdk_conflicts=sdk_conflicts_list,
                 input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
+                author=author,
+                dependencies=dependencies,
             )
-            register_plugin(plugin_meta)
+            resolved_id = register_plugin(
+                plugin_meta,
+                logger,
+                config_path=toml_path,
+                entry_point=entry
+            )
+            if resolved_id != pid:
+                # 如果 ID 被进一步重命名（双重冲突），更新 pid
+                pid = resolved_id
 
             logger.info("Loaded plugin %s (Process: %s)", pid, getattr(host, "process", None))
         except (KeyError, ValueError, TypeError) as e:

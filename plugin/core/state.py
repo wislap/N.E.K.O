@@ -50,10 +50,10 @@ class PluginRuntimeState:
         """插件间通信队列（用于插件调用其他插件的 custom_event）"""
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
-                if self._plugin_comm_queue is None:
-                    import multiprocessing
-                    # 使用 multiprocessing.Queue 因为需要跨进程
-                    self._plugin_comm_queue = multiprocessing.Queue()
+        if self._plugin_comm_queue is None:
+            import multiprocessing
+            # 使用 multiprocessing.Queue 因为需要跨进程
+            self._plugin_comm_queue = multiprocessing.Queue()
         return self._plugin_comm_queue
     
     @property
@@ -61,12 +61,12 @@ class PluginRuntimeState:
         """插件响应映射（跨进程共享字典）"""
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
-                if self._plugin_response_map is None:
-                    import multiprocessing
-                    # 使用 Manager 创建跨进程共享的字典
-                    if self._plugin_response_map_manager is None:
-                        self._plugin_response_map_manager = multiprocessing.Manager()
-                    self._plugin_response_map = self._plugin_response_map_manager.dict()
+        if self._plugin_response_map is None:
+            import multiprocessing
+            # 使用 Manager 创建跨进程共享的字典
+            if self._plugin_response_map_manager is None:
+                self._plugin_response_map_manager = multiprocessing.Manager()
+            self._plugin_response_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
     
     def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
@@ -99,8 +99,8 @@ class PluginRuntimeState:
         import time
         current_time = time.time()
         
-        # 获取响应数据（包含过期时间）
-        response_data = self.plugin_response_map.pop(request_id, None)
+        # 先查看响应是否存在（不删除）
+        response_data = self.plugin_response_map.get(request_id, None)
         
         if response_data is None:
             return None
@@ -108,9 +108,12 @@ class PluginRuntimeState:
         # 检查是否过期
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
-            # 响应已过期，已自动清理（pop 已删除）
+            # 响应已过期，删除它
+            self.plugin_response_map.pop(request_id, None)
             return None
         
+        # 响应有效，删除并返回
+        self.plugin_response_map.pop(request_id, None)
         # 返回实际的响应数据
         return response_data.get("response")
     
@@ -129,9 +132,9 @@ class PluginRuntimeState:
         try:
             # 使用快照避免迭代时字典被修改导致 RuntimeError
             for request_id, response_data in list(self.plugin_response_map.items()):
-                expire_time = response_data.get("expire_time", 0)
-                if current_time > expire_time:
-                    expired_ids.append(request_id)
+            expire_time = response_data.get("expire_time", 0)
+            if current_time > expire_time:
+                expired_ids.append(request_id)
         except Exception as e:
             # 如果迭代失败，返回已找到的过期ID数量
             logger = logging.getLogger("user_plugin_server")
