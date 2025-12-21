@@ -279,7 +279,7 @@ def _plugin_process_runner(
                             
                             # 等待异步方法完成（允许超时）
                             start_time = time.time()
-                            timeout_seconds = PLUGIN_TRIGGER_TIMEOUT * 2
+                            timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
                             check_interval = 0.01  # 10ms
                             
                             while not result_container["done"]:
@@ -398,7 +398,7 @@ def _plugin_process_runner(
                         
                         # 等待异步方法完成（允许超时）
                         start_time = time.time()
-                        timeout_seconds = PLUGIN_TRIGGER_TIMEOUT * 2
+                        timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
                         check_interval = 0.01  # 10ms
                         
                         while not result_container["done"]:

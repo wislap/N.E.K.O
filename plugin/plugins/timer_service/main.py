@@ -127,13 +127,13 @@ class TimerServicePlugin(NekoPluginBase):
                             )
                             should_stop = True
                 
-                            # 在锁外停止定时器，避免死锁
+                # 在锁外停止定时器，避免死锁
                 if should_stop:
-                            stop_result = self._stop_timer_internal(timer_id)
-                            if stop_result.get("success"):
-                                self.logger.info(
-                                    f"[TimerService] 定时器 '{timer_id}' 已自动停止"
-                                )
+                    stop_result = self._stop_timer_internal(timer_id)
+                    if stop_result.get("success"):
+                        self.logger.info(
+                            f"[TimerService] 定时器 '{timer_id}' 已自动停止"
+                        )
         except Exception as e:
             self.logger.exception(f"[TimerService] 处理定时器 '{timer_id}' 触发时出错: {e}")
     
@@ -390,7 +390,7 @@ class TimerServicePlugin(NekoPluginBase):
             if thread is threading.current_thread():
                 self.logger.debug("[TimerService] Skip joining current timer thread for '%s'", timer_id)
             else:
-            thread.join(timeout=2.0)
+                thread.join(timeout=2.0)
         
         # 计算运行时间（在锁外）
         elapsed = time.time() - started_at

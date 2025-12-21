@@ -128,7 +128,7 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
     
     # 查找所有提供该自定义事件的插件
     found_plugin_ids = set()
-    for key, eh in event_handlers_copy.items():
+    for key, _eh in event_handlers_copy.items():
         # 检查 key 格式：plugin_id:event_type:event_id
         if ":" in key:
             parts = key.split(":", 2)
@@ -196,7 +196,7 @@ def _check_plugin_dependency(
         
         # 检查任一插件是否满足（只要有一个满足即可）
         for dep_id, dep_plugin_meta in plugins_to_check:
-            satisfied, error_msg = _check_single_plugin_version(
+            satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
@@ -218,7 +218,7 @@ def _check_plugin_dependency(
             parts = entry_spec.split(":", 1)
             if len(parts) != 2:
                 return False, f"Invalid entry format: '{entry_spec}', expected 'plugin_id:entry_id' or 'entry_id'"
-            target_plugin_id, target_entry_id = parts
+            target_plugin_id, _target_entry_id = parts
             with state.plugins_lock:
                 if target_plugin_id not in state.plugins:
                     return False, f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' not found"
@@ -234,7 +234,7 @@ def _check_plugin_dependency(
         # 检查提供该入口的插件是否满足版本要求
         # 如果多个插件提供该入口，任一满足即可
         for dep_id, dep_plugin_meta in plugins_to_check:
-            satisfied, error_msg = _check_single_plugin_version(
+            satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
@@ -276,7 +276,7 @@ def _check_plugin_dependency(
         # 检查提供该自定义事件的插件是否满足版本要求
         # 如果多个插件提供该事件，任一满足即可
         for dep_id, dep_plugin_meta in plugins_to_check:
-            satisfied, error_msg = _check_single_plugin_version(
+            satisfied, _ = _check_single_plugin_version(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
@@ -339,7 +339,7 @@ def _check_single_plugin_version(
     
     # 如果使用依赖配置，untested 是必须的
     if dependency.untested is None:
-        return False, f"Dependency configuration requires 'untested' field"
+        return False, "Dependency configuration requires 'untested' field"
     
     # 检查版本是否在 untested 范围内
     if Version and SpecifierSet:
@@ -702,6 +702,7 @@ def register_plugin(
             sdk_conflicts=plugin.sdk_conflicts,
             input_schema=plugin.input_schema,
             author=plugin.author,
+            dependencies=plugin.dependencies,
         )
     
     with state.plugins_lock:
