@@ -265,7 +265,6 @@ class PluginCommunicationResourceManager:
         self.cmd_queue.put(trigger_msg)
         
         # 等待结果（带超时）
-        wait_start_time = time.time()
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
             if result["success"]:
