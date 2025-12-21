@@ -285,8 +285,6 @@ def _plugin_process_runner(
                 args = msg["args"]
                 req_id = msg["req_id"]
                 
-                trigger_start_time = time.time()
-                
                 # 关键日志：记录接收到的触发消息
                 logger.info(
                     "[Plugin Process] Received TRIGGER: plugin_id=%s, entry_id=%s, req_id=%s",
@@ -332,7 +330,6 @@ def _plugin_process_runner(
                     except (ValueError, TypeError) as e:
                         logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
                     
-                    method_exec_start = time.time()
                     if asyncio.iscoroutinefunction(method):
                         logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
                         # 关键修复：在独立线程中运行异步方法，避免阻塞命令循环
@@ -390,7 +387,6 @@ def _plugin_process_runner(
                             )
                             raise
                     
-                    method_exec_duration = time.time() - method_exec_start
                     ret_payload["success"] = True
                     ret_payload["data"] = res
                     

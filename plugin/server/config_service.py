@@ -275,11 +275,11 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
                 
                 # 确保目录的元数据也同步到磁盘（部分平台不支持 O_DIRECTORY）
                 try:
-                config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
-                try:
-                    os.fsync(config_dir_fd)
-                finally:
-                    os.close(config_dir_fd)
+                    config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                    try:
+                        os.fsync(config_dir_fd)
+                    finally:
+                        os.close(config_dir_fd)
                 except (AttributeError, OSError):
                     # Windows 等平台无 O_DIRECTORY，或目录 fsync 不被支持
                     pass

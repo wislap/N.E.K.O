@@ -638,7 +638,7 @@ def handle_chat(self, text: str, sender: str, timestamp: str, **_):
 
 ### 4.6 @custom_event
 
-定义自定义事件类型，用于插件间功能复用。
+定义自定义事件类型，用于插件间的功能复用。
 
 **设计理念**：
 - `@plugin_entry`：用户调用插件的入口（对外服务）
@@ -718,7 +718,7 @@ N.E.K.O 插件系统提供了两种插件间通信机制：
 
 ### 5.2 使用 `call_plugin()` 方法
 
-`call_plugin()` 是插件间功能复用的推荐方式，使用 Queue 机制，处理流程和 `plugin_entry` 一样，在单线程的命令循环中执行。
+`call_plugin()` 是插件间的功能复用推荐方式，使用 Queue 机制，处理流程和 `plugin_entry` 一样，在单线程的命令循环中执行。
 
 #### 5.2.1 调用其他插件的 custom_event
 
@@ -1083,7 +1083,7 @@ class MyPlugin(NekoPluginBase):
 
 ## 第七章：完整示例
 
-### 6.1 示例 1：文件处理插件
+### 7.1 示例 1：文件处理插件
 
 ```python
 """
@@ -1307,7 +1307,7 @@ version = "1.0.0"
 entry = "plugins.file_processor:FileProcessorPlugin"
 ```
 
-### 6.2 示例 2：Web API 客户端插件
+### 7.2 示例 2：Web API 客户端插件
 
 ```python
 """
@@ -1538,7 +1538,7 @@ class APIClientPlugin(NekoPluginBase):
         }
 ```
 
-### 6.3 示例 3：数据采集插件
+### 7.3 示例 3：数据采集插件
 
 ```python
 """
@@ -1743,7 +1743,7 @@ class DataCollectorPlugin(NekoPluginBase):
 
 ## 第八章：高级主题
 
-### 7.1 异步编程
+### 8.1 异步编程
 
 插件支持异步函数，适合I/O密集型操作：
 
@@ -1774,7 +1774,7 @@ async def parallel_tasks(self, urls: list, **_):
     return {"results": results}
 ```
 
-### 7.2 线程安全
+### 8.2 线程安全
 
 如果插件使用多线程，需要注意线程安全：
 
@@ -1803,7 +1803,7 @@ class ThreadSafePlugin(NekoPluginBase):
             return {"value": self._shared_data.get(key)}
 ```
 
-### 7.3 错误处理和重试
+### 8.3 错误处理和重试
 
 ```python
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -1821,7 +1821,7 @@ def retry_task(self, url: str, **_):
     return {"data": response.json()}
 ```
 
-### 7.4 配置管理
+### 8.4 配置管理
 
 ```python
 import json
@@ -1860,7 +1860,7 @@ class ConfigurablePlugin(NekoPluginBase):
         return {"updated": True}
 ```
 
-### 7.5 数据持久化
+### 8.5 数据持久化
 
 ```python
 import sqlite3
@@ -1915,7 +1915,7 @@ class PersistentPlugin(NekoPluginBase):
 
 ## 第九章：最佳实践
 
-### 8.1 代码组织
+### 9.1 代码组织
 
 ```python
 # ✅ 好的实践：清晰的代码组织
@@ -1947,7 +1947,7 @@ class BadPlugin(NekoPluginBase):
         pass
 ```
 
-### 8.2 错误处理
+### 9.2 错误处理
 
 ```python
 # ✅ 好的实践：详细的错误处理
@@ -1978,7 +1978,7 @@ def fragile_task(self, param: str, **_):
     return result
 ```
 
-### 8.3 日志记录
+### 9.3 日志记录
 
 ```python
 # ✅ 好的实践：适当的日志级别
@@ -2000,7 +2000,7 @@ def bad_logging(self, **_):
     # ... 或者没有日志
 ```
 
-### 8.4 状态管理
+### 9.4 状态管理
 
 ```python
 # ✅ 好的实践：及时更新状态
@@ -2029,7 +2029,7 @@ def bad_status(self, **_):
     return {"success": True}
 ```
 
-### 8.5 输入验证
+### 9.5 输入验证
 
 ```python
 # ✅ 好的实践：详细的输入模式
@@ -2114,7 +2114,7 @@ work_dir.mkdir(exist_ok=True)
 
 A: 插件间通信有两种方式：
 
-**方式1：使用 `call_plugin()` 方法（推荐）**
+#### 方式1：使用 `call_plugin()` 方法（推荐）
 
 用于调用其他插件的 `custom_event` 或 `plugin_entry`，使用 Queue 机制，在单线程中处理：
 
@@ -2138,7 +2138,7 @@ result = self.call_plugin(
 )
 ```
 
-**方式2：通过主系统的消息队列**
+#### 方式2：通过主系统的消息队列
 
 使用 `ctx.push_message()` 推送消息，其他插件通过 `@message` 装饰器接收。
 
