@@ -137,6 +137,21 @@ export interface MetricsResponse {
   time: string
 }
 
+// 单个插件性能指标
+export interface PluginMetricsResult {
+  plugin_id: string
+  metrics: PluginMetrics
+  time: string
+}
+
+// 插件性能指标历史
+export interface PluginMetricsHistoryResult {
+  plugin_id: string
+  history: PluginMetrics[]
+  count: number
+  time: string
+}
+
 // 插件触发请求
 export interface PluginTriggerRequest {
   plugin_id: string

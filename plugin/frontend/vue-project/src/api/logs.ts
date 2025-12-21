@@ -22,6 +22,7 @@ export function getPluginLogs(
   total_lines: number
   returned_lines: number
   log_file?: string
+  error?: string
 }> {
   return get(`/plugin/${pluginId}/logs`, { params })
 }

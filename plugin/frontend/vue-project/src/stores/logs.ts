@@ -36,13 +36,13 @@ export const useLogsStore = defineStore('logs', () => {
         log_file: response.log_file,
         total_lines: response.total_lines,
         returned_lines: response.returned_lines,
-        error: (response as any).error
+        error: response.error
       }
       
       // 如果有错误信息，记录到 error 状态
-      if ((response as any).error) {
-        error.value = (response as any).error
-        console.warn(`Log fetch warning for plugin ${pluginId}:`, (response as any).error)
+      if (response.error) {
+        error.value = response.error
+        console.warn(`Log fetch warning for plugin ${pluginId}:`, response.error)
       } else {
         error.value = null
       }

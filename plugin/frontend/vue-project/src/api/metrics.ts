@@ -2,7 +2,12 @@
  * 性能监控相关 API
  */
 import { get } from './index'
-import type { PluginMetrics, MetricsResponse } from '@/types/api'
+import type {
+  PluginMetrics,
+  MetricsResponse,
+  PluginMetricsResult,
+  PluginMetricsHistoryResult,
+} from '@/types/api'
 
 /**
  * 获取所有插件的性能指标
@@ -14,8 +19,8 @@ export function getAllMetrics(): Promise<MetricsResponse> {
 /**
  * 获取指定插件的性能指标
  */
-export function getPluginMetrics(pluginId: string): Promise<{ plugin_id: string; metrics: PluginMetrics; time: string }> {
-  return get(`/plugin/metrics/${pluginId}`)
+export function getPluginMetrics(pluginId: string): Promise<PluginMetricsResult> {
+  return get(`/plugin/metrics/${encodeURIComponent(pluginId)}`)
 }
 
 /**
@@ -28,7 +33,7 @@ export function getPluginMetricsHistory(
     start_time?: string
     end_time?: string
   }
-): Promise<{ plugin_id: string; history: PluginMetrics[]; count: number; time: string }> {
-  return get(`/plugin/metrics/${pluginId}/history`, { params })
+): Promise<PluginMetricsHistoryResult> {
+  return get(`/plugin/metrics/${encodeURIComponent(pluginId)}/history`, { params })
 }
 

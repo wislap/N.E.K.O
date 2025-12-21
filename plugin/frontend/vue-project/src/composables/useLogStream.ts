@@ -64,9 +64,20 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
       ws.value.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          
+          // 基础结构校验
+          if (!data || typeof data !== 'object' || !('type' in data)) {
+            console.warn('[LogStream] Invalid message format:', data)
+            return
+          }
+          
           const id = pluginId.value
           
           if (data.type === 'initial') {
+            if (!Array.isArray(data.logs)) {
+              console.warn('[LogStream] Initial message missing logs array')
+              return
+            }
             // 初始日志：替换所有日志（使用 store action）
             logsStore.setInitialLogs(id, {
               logs: data.logs || [],
@@ -75,12 +86,18 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
             })
             console.log(`[LogStream] Received initial logs for ${id}:`, data.logs?.length || 0)
           } else if (data.type === 'append') {
+            if (!Array.isArray(data.logs)) {
+              console.warn('[LogStream] Append message missing logs array')
+              return
+            }
             // 追加新日志（使用 store action）
             logsStore.appendLogs(id, data.logs || [])
             console.log(`[LogStream] Appended ${data.logs?.length || 0} new logs for ${id}`)
           } else if (data.type === 'ping') {
             // 心跳消息，可以回复 pong（可选）
             // 目前不需要回复
+          } else {
+            console.warn('[LogStream] Unknown message type:', (data as any).type)
           }
         } catch (error) {
           console.error('[LogStream] Failed to parse message:', error)

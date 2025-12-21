@@ -241,12 +241,12 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
             _config_update_locks[plugin_id] = threading.Lock()
         lock = _config_update_locks[plugin_id]
     
-    # 在整个读取-修改-写入周期都持有锁，防止 TOCTOU 竞态条件
+    # 在整个读取-修改-写入周期都持有锁，防止 TOCTOU 竞态条件（进程内）
     with lock:
         config_path = get_plugin_config_path(plugin_id)
         
         try:
-            # 读取现有配置（不再需要文件锁，因为已经有进程级别的锁保护）
+            # 读取现有配置（进程内锁已持有；如需跨进程安全可在此添加 file_lock）
             with open(config_path, 'rb') as f:
                 current_config = tomllib.load(f)
             
@@ -275,11 +275,11 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
                 
                 # 确保目录的元数据也同步到磁盘（部分平台不支持 O_DIRECTORY）
                 try:
-                    config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
-                    try:
-                        os.fsync(config_dir_fd)
-                    finally:
-                        os.close(config_dir_fd)
+                config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                try:
+                    os.fsync(config_dir_fd)
+                finally:
+                    os.close(config_dir_fd)
                 except (AttributeError, OSError):
                     # Windows 等平台无 O_DIRECTORY，或目录 fsync 不被支持
                     pass

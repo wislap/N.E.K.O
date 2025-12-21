@@ -222,15 +222,6 @@ def _plugin_process_runner(
                 args = msg.get("args", {})
                 req_id = msg.get("req_id", "unknown")
                 
-                # #region agent log
-                log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
-                cmd_received_time = time.time()
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{214}","message":"TRIGGER_CUSTOM cmd received","data":{{"req_id":"{req_id}","event_type":"{event_type}","event_id":"{event_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
-                
                 logger.info(
                     "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
                     plugin_id,
@@ -250,13 +241,6 @@ def _plugin_process_runner(
                         ret_payload["error"] = f"Custom event '{event_type}.{event_id}' not found"
                     else:
                         # 执行自定义事件
-                        # #region agent log
-                        exec_start_time = time.time()
-                        try:
-                            with open(log_file, "a") as f:
-                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"host.py:{237}","message":"event handler execution start","data":{{"req_id":"{req_id}","cmd_received_delay":{exec_start_time-cmd_received_time}}},"timestamp":{int(time.time()*1000)}}}\n')
-                        except: pass
-                        # #endregion
                         logger.debug(
                             "[Plugin Process] Executing custom event %s.%s, req_id=%s",
                             event_type, event_id, req_id
@@ -265,13 +249,6 @@ def _plugin_process_runner(
                             res = asyncio.run(method(**args))
                         else:
                             res = method(**args)
-                        exec_duration = time.time() - exec_start_time
-                        # #region agent log
-                        try:
-                            with open(log_file, "a") as f:
-                                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"host.py:{245}","message":"event handler execution complete","data":{{"req_id":"{req_id}","exec_duration":{exec_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-                        except: pass
-                        # #endregion
                         ret_payload["success"] = True
                         ret_payload["data"] = res
                         logger.debug(
@@ -279,23 +256,10 @@ def _plugin_process_runner(
                             event_type, event_id, req_id
                         )
                 except Exception as e:
-                    # #region agent log
-                    try:
-                        with open(log_file, "a") as f:
-                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"host.py:{249}","message":"event handler exception","data":{{"req_id":"{req_id}","error":"{str(e)[:100]}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                    except: pass
-                    # #endregion
                     logger.exception("Error executing custom event %s.%s", event_type, event_id)
                     ret_payload["error"] = str(e)
                 
                 # 发送响应到结果队列
-                # #region agent log
-                send_start_time = time.time()
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"host.py:{256}","message":"res_queue.put before","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
                 logger.debug(
                     "[Plugin Process] Sending response for req_id=%s, success=%s",
                     req_id, ret_payload.get("success")
@@ -304,24 +268,11 @@ def _plugin_process_runner(
                     # multiprocessing.Queue.put() 默认会阻塞直到有空间
                     # 使用 timeout 避免无限阻塞，但通常不会阻塞
                     res_queue.put(ret_payload, timeout=10.0)
-                    send_duration = time.time() - send_start_time
-                    # #region agent log
-                    try:
-                        with open(log_file, "a") as f:
-                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"host.py:{261}","message":"res_queue.put after","data":{{"req_id":"{req_id}","send_duration":{send_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-                    except: pass
-                    # #endregion
                     logger.debug(
                         "[Plugin Process] Response sent successfully for req_id=%s",
                         req_id
                     )
                 except Exception as e:
-                    # #region agent log
-                    try:
-                        with open(log_file, "a") as f:
-                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"host.py:{267}","message":"res_queue.put exception","data":{{"req_id":"{req_id}","error":"{str(e)[:100]}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                    except: pass
-                    # #endregion
                     logger.error(
                         "[Plugin Process] Failed to send response for req_id=%s: %s",
                         req_id, e
@@ -390,7 +341,7 @@ def _plugin_process_runner(
                         result_container = {"result": None, "exception": None, "done": False}
                         event = threading.Event()
                         
-                        def run_async():
+                        def run_async(method=method, args=args, result_container=result_container, event=event):
                             try:
                                 result_container["result"] = asyncio.run(method(**args))
                             except Exception as e:
@@ -440,12 +391,6 @@ def _plugin_process_runner(
                             raise
                     
                     method_exec_duration = time.time() - method_exec_start
-                    # #region agent log
-                    try:
-                        with open(log_file, "a") as f:
-                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{412}","message":"TRIGGER method execution complete","data":{{"req_id":"{req_id}","exec_duration":{method_exec_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-                    except: pass
-                    # #endregion
                     ret_payload["success"] = True
                     ret_payload["data"] = res
                     
@@ -467,22 +412,7 @@ def _plugin_process_runner(
                     logger.exception("Unexpected error executing %s", entry_id)
                     ret_payload["error"] = f"Unexpected error: {str(e)}"
 
-                # #region agent log
-                trigger_total_duration = time.time() - trigger_start_time
-                res_queue_put_start = time.time()
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{456}","message":"TRIGGER res_queue.put before","data":{{"req_id":"{req_id}","trigger_total_duration":{trigger_total_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
                 res_queue.put(ret_payload)
-                res_queue_put_duration = time.time() - res_queue_put_start
-                # #region agent log
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{459}","message":"TRIGGER res_queue.put after","data":{{"req_id":"{req_id}","put_duration":{res_queue_put_duration},"trigger_total_duration":{time.time()-trigger_start_time}}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
 
     except (KeyboardInterrupt, SystemExit):
         # 系统级中断，正常退出

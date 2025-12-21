@@ -895,9 +895,9 @@ class MyPlugin(NekoPluginBase):
 
 ## 第六章：上下文对象
 
-### 5.1 日志记录
+### 6.1 日志记录
 
-#### 5.1.1 基础日志
+#### 6.1.1 基础日志
 
 ```python
 class MyPlugin(NekoPluginBase):
@@ -917,7 +917,7 @@ class MyPlugin(NekoPluginBase):
         return {"status": "ok"}
 ```
 
-#### 5.1.2 文件日志
+#### 6.1.2 文件日志
 
 插件支持将日志同时输出到文件和控制台，便于调试和问题追踪：
 
@@ -943,7 +943,7 @@ class MyPlugin(NekoPluginBase):
 - 自动清理：超过最大文件数量限制的旧日志会自动删除
 - 同时输出：日志会同时输出到文件和控制台（终端）
 
-### 5.2 状态管理
+### 6.2 状态管理
 
 ```python
 @plugin_entry(id="long_task")
@@ -973,7 +973,7 @@ def long_task(self, **_):
     return {"completed": True}
 ```
 
-### 5.3 消息推送
+### 6.3 消息推送
 
 #### 5.3.1 文本消息
 
