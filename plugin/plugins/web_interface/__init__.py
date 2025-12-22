@@ -27,7 +27,7 @@ class WebInterfacePlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
         # 启用文件日志
-        self.file_logger = self.enable_file_logging(log_level=logging.INFO)
+        self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         
         # FastAPI 应用
@@ -76,7 +76,8 @@ class WebInterfacePlugin(NekoPluginBase):
                 host=self.host,
                 port=self.port,
                 log_level="info",
-                access_log=False  # 减少日志输出
+                log_config=None,  # 使用宿主进程配置的 loguru 拦截器
+                access_log=True
             )
             self.server = uvicorn.Server(self.server_config)
             
@@ -662,7 +663,7 @@ class WebInterfacePlugin(NekoPluginBase):
             kwargs,
         )
         self.logger.debug(
-            "[WebInterface] Parameter types: content_type=%s, source_type=%s",
+            "[WebInterface] Parameter types: content_type={}, source_type={}",
             type(content).__name__,
             type(source).__name__,
         )
@@ -671,11 +672,11 @@ class WebInterfacePlugin(NekoPluginBase):
         if not content and "message" in kwargs:
             content = kwargs.pop("message")
             self.logger.info(
-                "[WebInterface] Found 'message' in kwargs, using as content (length=%d)",
+                "[WebInterface] Found 'message' in kwargs, using as content (length={})",
                 len(content) if content else 0,
             )
             self.logger.debug(
-                "[WebInterface] Converted message to content: %s",
+                "[WebInterface] Converted message to content: {}",
                 content,
             )
         
@@ -687,13 +688,13 @@ class WebInterfacePlugin(NekoPluginBase):
             )
         else:
             self.logger.debug(
-                "[WebInterface] Using provided content: %s",
+                "[WebInterface] Using provided content: {}",
                 content,
             )
         
         # 最终参数使用 DEBUG
         self.logger.debug(
-            "[WebInterface] Final parameters: source=%s, content=%s, priority=%s",
+            "[WebInterface] Final parameters: source={}, content={}, priority={}",
             source,
             content,
             priority,
@@ -703,12 +704,12 @@ class WebInterfacePlugin(NekoPluginBase):
 
         # 记录消息添加成功，但不记录完整内容（避免泄露敏感信息）
         self.logger.info(
-            "[WebInterface] Added message via API: source=%s, priority=%s, content_length=%d",
+            "[WebInterface] Added message via API: source={}, priority={}, content_length={}",
             source,
             priority,
             len(content) if content else 0,
         )
-        self.logger.debug("[WebInterface] Added message content: %s", content)
+        self.logger.debug("[WebInterface] Added message content: {}", content)
         
         with self._messages_lock:
             msg_count = len(self.messages)

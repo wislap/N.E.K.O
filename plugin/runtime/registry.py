@@ -649,18 +649,27 @@ def _resolve_plugin_id_conflict(
                 existing_resolved = Path(existing_config_path).resolve()
                 current_resolved = Path(config_path).resolve()
                 logger.info(
-                    "Comparing paths for plugin_id=%s: existing='%s', current='%s', match=%s",
+                    "Comparing paths for plugin_id={}: existing='{}', current='{}', match={}",
                     plugin_id, existing_resolved, current_resolved, existing_resolved == current_resolved
                 )
                 if existing_resolved == current_resolved:
                     # 路径相同，但需要检查是否是同一个插件（避免自检测）
-                    # 如果 existing_info 中的 entry_point 与当前 entry_point 相同，说明是同一个插件
                     existing_entry_point = existing_info.get("entry_point")
-                    if existing_entry_point and entry_point and existing_entry_point == entry_point:
+                    
+                    if existing_entry_point is None:
+                        logger.warning(
+                            "Plugin ID conflict detected for '{}': Existing plugin info incomplete (missing entry_point). "
+                            "Config path matches '{}'. Treating as duplicate/conflict and skipping.",
+                            plugin_id, current_resolved
+                        )
+                        return None
+                    
+                    # 如果 existing_info 中的 entry_point 与当前 entry_point 相同，说明是同一个插件
+                    if entry_point and existing_entry_point == entry_point:
                         # 这是同一个插件，不是重复加载
                         # 可能是在 register_plugin 中调用时检测到自己
                         logger.debug(
-                            "Plugin '%s' with same config path and entry point detected, but this is the same plugin (not a duplicate)",
+                            "Plugin '{}' with same config path and entry point detected, but this is the same plugin (not a duplicate)",
                             plugin_id
                         )
                         # 返回原始ID，允许继续
@@ -668,7 +677,7 @@ def _resolve_plugin_id_conflict(
                     
                     # 路径相同但 entry_point 不同，说明是真正的重复加载
                     logger.warning(
-                        "Plugin ID conflict detected: '%s' already exists with same config path '%s'. "
+                        "Plugin ID conflict detected: '{}' already exists with same config path '{}'. "
                         "This appears to be a duplicate load of the same plugin. "
                         "Skipping duplicate load.",
                         plugin_id, current_resolved
@@ -677,14 +686,14 @@ def _resolve_plugin_id_conflict(
                     return None
                 else:
                     logger.warning(
-                        "Paths are different for plugin_id=%s: existing='%s' vs current='%s'",
+                        "Paths are different for plugin_id={}: existing='{}' vs current='{}'",
                         plugin_id, existing_resolved, current_resolved
                     )
             except (OSError, RuntimeError) as e:
-                logger.warning("Failed to resolve paths for comparison: %s", e)
+                logger.warning("Failed to resolve paths for comparison: {}", e)
         else:
             logger.warning(
-                "Existing plugin '%s' has no config_path, cannot compare paths. existing_info=%s",
+                "Existing plugin '{}' has no config_path, cannot compare paths. existing_info={}",
                 plugin_id, existing_info
             )
     
@@ -1027,7 +1036,7 @@ def load_plugins_from_toml(
                 try:
                     host_version_obj = Version(SDK_VERSION)
                 except InvalidVersion as e:
-                    logger.error("Invalid host SDK_VERSION %s: %s", SDK_VERSION, e)
+                    logger.error("Invalid host SDK_VERSION {}: {}", SDK_VERSION, e)
                     host_version_obj = None
 
             # Validate against ranges when possible
@@ -1053,20 +1062,20 @@ def load_plugins_from_toml(
 
                 if supported_spec and not (in_supported or in_untested):
                     logger.error(
-                        "Plugin %s requires SDK in %s (or untested %s) but host SDK is %s; skipping load",
+                        "Plugin {} requires SDK in {} (or untested {}) but host SDK is {}; skipping load",
                         pid, sdk_supported_str, sdk_untested_str, SDK_VERSION
                     )
                     continue
                 
                 # Warnings
                 if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
-                    logger.warning("Plugin %s: host SDK %s is outside recommended range %s", pid, SDK_VERSION, sdk_recommended_str)
+                    logger.warning("Plugin {}: host SDK {} is outside recommended range {}", pid, SDK_VERSION, sdk_recommended_str)
                 if in_untested and not in_supported:
-                    logger.warning("Plugin %s: host SDK %s is within untested range %s; proceed with caution", pid, SDK_VERSION, sdk_untested_str)
+                    logger.warning("Plugin {}: host SDK {} is within untested range {}; proceed with caution", pid, SDK_VERSION, sdk_untested_str)
             else:
                 # Fallback string comparison
                 if sdk_supported_str and sdk_supported_str != SDK_VERSION:
-                    logger.error("Plugin %s requires sdk_version %s but host SDK is %s; skipping load", pid, sdk_supported_str, SDK_VERSION)
+                    logger.error("Plugin {} requires sdk_version {} but host SDK is {}; skipping load", pid, sdk_supported_str, SDK_VERSION)
                     continue
 
             # 解析依赖
@@ -1113,20 +1122,6 @@ def load_plugins_from_toml(
                     logger.debug("Dependency edge: {} -> {}", pid, dep.id)
     
     # Kahn's Algorithm for Topological Sort
-    sorted_contexts = []
-    # 计算入度
-    in_degree = {pid: 0 for pid in graph}
-    for u in graph:
-        for v in graph[u]:
-            # v 是 u 的依赖，意味着 v 必须在 u 之前加载
-            # 在拓扑排序中，边通常表示顺序约束
-            # 如果我们要输出加载顺序：先加载无依赖的
-            # 这里的 graph[pid] 包含 pid 依赖的插件列表
-            # 意味着 graph[u] 中的节点必须在 u 之前
-            # 这实际上是依赖图的反向？不，这是 "Dependencies of U".
-            # 为了使用 Kahn 算法输出加载顺序，我们需要边 Dependency -> Dependent
-            pass
-            
     # 重新构建图以便于 Kahn 算法：Node = Plugin, Edge = Dependency -> Dependent
     # 即：如果 A 依赖 B，则有一条边 B -> A (B 必须先完成)
     adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
@@ -1394,7 +1389,7 @@ def load_plugins_from_toml(
                             import asyncio
                             # 如果是异步的，需要处理
                             if asyncio.iscoroutinefunction(existing_host.shutdown):
-                                logger.debug("Plugin %s host shutdown is async, skipping in sync context", pid)
+                                logger.debug("Plugin {} host shutdown is async, skipping in sync context", pid)
                             else:
                                 existing_host.shutdown(timeout=1.0)
                         elif hasattr(existing_host, 'process') and existing_host.process:

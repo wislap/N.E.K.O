@@ -95,37 +95,30 @@ async def startup() -> None:
     logger.info("Metrics collector started")
 
 
-async def shutdown() -> None:
-    """
-    服务器关闭时的清理
-    
-    1. 停止插件间通信路由器
-    2. 停止性能指标收集器
-    3. 关闭状态消费任务
-    4. 关闭所有插件的资源
-    5. 清理插件间通信资源（队列和响应映射）
-    """
-    logger.info("Shutting down all plugins...")
-    
-    # 停止插件间通信路由器
+async def _shutdown_internal() -> None:
+    """内部关闭逻辑"""
+    # 1. 停止插件间通信路由器
     try:
         await plugin_router.stop()
+        logger.debug("Plugin router stopped")
     except Exception:
         logger.exception("Error stopping plugin router")
     
-    # 停止性能指标收集器
+    # 2. 停止性能指标收集器
     try:
         await metrics_collector.stop()
+        logger.debug("Metrics collector stopped")
     except Exception:
         logger.exception("Error stopping metrics collector")
     
-    # 关闭状态消费任务
+    # 3. 关闭状态消费任务
     try:
         await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+        logger.debug("Status consumer stopped")
     except Exception:
         logger.exception("Error shutting down status consumer")
     
-    # 关闭所有插件的资源
+    # 4. 关闭所有插件的资源
     shutdown_tasks = []
     for plugin_id, host in state.plugin_hosts.items():
         shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
@@ -134,14 +127,38 @@ async def shutdown() -> None:
     if shutdown_tasks:
         await asyncio.gather(*shutdown_tasks, return_exceptions=True)
     
-    # 清理插件间通信资源（队列和响应映射）
+    # 5. 清理插件间通信资源（队列和响应映射）
     try:
         state.cleanup_plugin_comm_resources()
         logger.debug("Plugin communication resources cleaned up")
     except Exception:
         logger.exception("Error cleaning up plugin communication resources")
+
+async def shutdown() -> None:
+    """
+    服务器关闭时的清理
     
-    logger.info("All plugins have been gracefully shutdown.")
+    增加超时保护，防止关闭过程无限挂起
+    """
+    logger.info("Shutting down all plugins...")
+    
+    try:
+        # 给整个关闭过程 10 秒超时
+        await asyncio.wait_for(_shutdown_internal(), timeout=10.0)
+        logger.info("All plugins have been gracefully shutdown.")
+    except asyncio.TimeoutError:
+        logger.error("Plugin shutdown process timed out (10s), forcing cleanup")
+        # 尝试最后的清理
+        try:
+            state.cleanup_plugin_comm_resources()
+        except Exception:
+            pass
+        
+        # 强制退出，防止进程卡死
+        import os
+        os._exit(1)
+    except Exception:
+        logger.exception("Unexpected error during shutdown")
 
 
 def _log_startup_diagnostics() -> None:

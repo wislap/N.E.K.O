@@ -401,13 +401,48 @@ def main():
                 break
         
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，正在关闭...", flush=True)
+        print("\n\n收到中断信号，等待子进程退出...", flush=True)
+        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
+        start_wait = time.time()
+        while time.time() - start_wait < 3:
+            all_dead = True
+            for server in SERVERS:
+                if server.get('process') and server['process'].is_alive():
+                    all_dead = False
+                    break
+            if all_dead:
+                break
+            time.sleep(0.1)
+            
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)
     finally:
+        print("\n正在关闭所有进程...", flush=True)
+        
+        # 尝试优雅关闭
         cleanup_servers()
-        print("\n所有服务器已关闭", flush=True)
-        print("再见！\n", flush=True)
+        
+        print("\n确保所有进程已终止...", flush=True)
+        # 强制退出前，直接杀死整个进程组，这是最彻底的清理方式
+        import os
+        import signal
+        import time
+        
+        try:
+            if hasattr(os, 'killpg'):
+                pgid = os.getpgrp()
+                # 发送 SIGKILL 给整个进程组
+                # 注意：这会立即杀死当前进程，所以这行代码之后的内容可能不会执行
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                # Windows: 使用 taskkill 强制杀死进程树
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+            
+        os._exit(0)
     
     return 0
 

@@ -158,8 +158,9 @@ class PluginRuntimeState:
         # 清理插件间通信队列
         if self._plugin_comm_queue is not None:
             try:
+                self._plugin_comm_queue.cancel_join_thread()  # 防止卡住
                 self._plugin_comm_queue.close()
-                self._plugin_comm_queue.join_thread()
+                # self._plugin_comm_queue.join_thread() # 不需要 join，已经 cancel 了
                 logger = logging.getLogger("user_plugin_server")
                 logger.debug("Plugin communication queue closed")
             except Exception as e:

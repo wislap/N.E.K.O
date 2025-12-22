@@ -577,5 +577,39 @@ async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    import signal
+    
     host = "127.0.0.1"  # 默认只暴露本机
-    uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT, log_config=None)
+    
+    try:
+        uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT, log_config=None)
+    finally:
+        # 强制清理所有子进程
+        try:
+            # 尝试使用 psutil 清理子进程（更安全）
+            import psutil
+            parent = psutil.Process(os.getpid())
+            children = parent.children(recursive=True)
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            
+            # 等待一会
+            _, alive = psutil.wait_procs(children, timeout=3)
+            for p in alive:
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        except ImportError:
+            # 如果没有 psutil，尝试使用进程组清理（Linux/Mac）
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
+                except Exception:
+                    pass
+        except Exception:
+            pass

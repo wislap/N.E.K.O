@@ -79,6 +79,28 @@ def _plugin_process_runner(
         retention=10,
         encoding="utf-8",
     )
+    
+    # 拦截标准库 logging 并转发到 loguru
+    try:
+        import logging
+        
+        # 确保项目根目录在 path 中，以便能导入 utils
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            
+        from utils.logger_config import InterceptHandler
+            
+        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+        
+        # 显式设置 uvicorn logger，并禁止传播以避免重复
+        for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
+            logging_logger = logging.getLogger(logger_name)
+            logging_logger.handlers = [InterceptHandler()]
+            logging_logger.propagate = False
+        
+        logger.info("[Plugin Process] Standard logging intercepted and redirected to loguru")
+    except Exception as e:
+        logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
 
     try:
         # 设置 Python 路径，确保能够导入插件模块
@@ -299,7 +321,7 @@ def _plugin_process_runner(
                                     result_container["done"] = True
                                     event.set()
                             
-                            thread = threading.Thread(target=run_async, daemon=False)
+                            thread = threading.Thread(target=run_async, daemon=True)
                             thread.start()
                             
                             # 等待异步方法完成（允许超时）
@@ -531,7 +553,7 @@ class PluginProcessHost:
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
             args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue, message_queue, plugin_comm_queue),
-            daemon=False,
+            daemon=True,
         )
         self.process.start()
         
@@ -580,7 +602,15 @@ class PluginProcessHost:
         # 2. 关闭通信资源（包括后台任务）
         await self.comm_manager.shutdown(timeout=timeout)
         
-        # 3. 关闭进程
+        # 3. 取消队列等待（防止 atexit 阻塞）
+        # 必须在进程关闭前调用，告诉 multiprocessing 不要等待这些队列的后台线程
+        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
+            try:
+                q.cancel_join_thread()
+            except Exception:
+                pass
+
+        # 4. 关闭进程
         success = self._shutdown_process(timeout=timeout)
         
         if success:
@@ -611,6 +641,13 @@ class PluginProcessHost:
                 pass
         
         # 关闭进程
+        # 取消队列等待
+        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
+            try:
+                q.cancel_join_thread()
+            except Exception:
+                pass
+                
         self._shutdown_process(timeout=timeout)
     
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:

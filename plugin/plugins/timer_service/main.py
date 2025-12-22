@@ -24,7 +24,7 @@ class TimerServicePlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
         # 启用文件日志
-        self.file_logger = self.enable_file_logging(log_level=logging.INFO)
+        self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         
         # 定时器存储：{timer_id: {info, thread, stop_event}}

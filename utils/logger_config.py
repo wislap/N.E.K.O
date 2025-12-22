@@ -514,14 +514,11 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
     # 将 logging 模块的 handler 替换为 InterceptHandler
     intercept_handler = InterceptHandler()
     
-    # uvicorn
-    logging.getLogger("uvicorn").handlers = [intercept_handler]
-    logging.getLogger("uvicorn.access").handlers = [intercept_handler]
-    # uvicorn.error 默认会传播到 uvicorn，但为了保险起见也拦截
-    logging.getLogger("uvicorn.error").handlers = [intercept_handler]
-    
-    # fastapi
-    logging.getLogger("fastapi").handlers = [intercept_handler]
+    # uvicorn 和 fastapi
+    for logger_name in ("uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"):
+        logger = logging.getLogger(logger_name)
+        logger.handlers = [intercept_handler]
+        logger.propagate = False
     
     # 确保 loguru 能够捕获到标准库 logging 的日志
     # 设置 logging 根 logger 的级别，否则低于 WARNING 的日志可能不会被传递给 handler
