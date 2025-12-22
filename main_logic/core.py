@@ -129,6 +129,7 @@ class LLMSessionManager:
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
+        self.tts_restart_lock = asyncio.Lock()  # 避免并发重启TTS线程
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -154,11 +155,99 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
+    def _log_tts_state(self, context: str, extra: str = ""):
+        """调试用：输出当前TTS关键状态，便于排查打断/无声问题。"""
+        try:
+            req_qsize = self.tts_request_queue.qsize() if hasattr(self.tts_request_queue, "qsize") else "n/a"
+            resp_qsize = self.tts_response_queue.qsize() if hasattr(self.tts_response_queue, "qsize") else "n/a"
+            logger.debug(
+                f"[TTS][{self.lanlan_name}] {context} "
+                f"use_tts={self.use_tts}, ready={self.tts_ready}, "
+                f"thread_alive={(self.tts_thread.is_alive() if self.tts_thread else False)}, "
+                f"current_speech_id={self.current_speech_id}, "
+                f"req_qsize={req_qsize}, resp_qsize={resp_qsize}, "
+                f"pending_chunks={len(self.tts_pending_chunks)}, {extra}"
+            )
+        except Exception as e:
+            logger.debug(f"[TTS][{self.lanlan_name}] 日志失败: {e}")
+
+    async def _ensure_tts_alive(self, reason: str = "") -> bool:
+        """在需要下发TTS前确保TTS线程存活；若已退出则重启。"""
+        if not self.use_tts:
+            return False
+        if self.tts_thread and self.tts_thread.is_alive():
+            return True
+
+        async with self.tts_restart_lock:
+            # 双重检查，防止已被其他协程拉起
+            if self.tts_thread and self.tts_thread.is_alive():
+                return True
+
+            logger.warning(f"[{self.lanlan_name}] TTS线程不在运行，尝试重启。原因: {reason}")
+            # 清理旧handler
+            if self.tts_handler_task and not self.tts_handler_task.done():
+                self.tts_handler_task.cancel()
+                try:
+                    await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                self.tts_handler_task = None
+
+            # 重建队列与线程
+            has_custom_voice = bool(self.voice_id)
+            tts_worker = get_tts_worker(core_api_type=self.core_api_type, has_custom_voice=has_custom_voice)
+            if has_custom_voice:
+                tts_config = self._config_manager.get_model_api_config('tts_custom')
+            else:
+                tts_config = self._config_manager.get_model_api_config('tts_default')
+
+            self.tts_request_queue = Queue()
+            self.tts_response_queue = Queue()
+            self.tts_thread = Thread(
+                target=tts_worker,
+                args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+            )
+            self.tts_thread.daemon = True
+            self.tts_thread.start()
+
+            # 等待就绪信号
+            tts_ready = False
+            start_time = time.time()
+            timeout = 8.0
+            while time.time() - start_time < timeout:
+                try:
+                    if not self.tts_response_queue.empty():
+                        msg = self.tts_response_queue.get_nowait()
+                        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                            tts_ready = msg[1]
+                            break
+                        else:
+                            self.tts_response_queue.put(msg)
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+
+            async with self.tts_cache_lock:
+                self.tts_ready = tts_ready
+            if tts_ready:
+                self._log_tts_state("ensure-tts-alive-restarted")
+            else:
+                logger.error(f"[{self.lanlan_name}] TTS线程重启未在{timeout}s内就绪")
+
+            # 启动新的响应处理协程
+            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+            return tts_ready
+
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
+        # 打断上一条回复时，清空当前 speech_id，避免后续复用旧ID
+        async with self.lock:
+            self.current_speech_id = None
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            self._log_tts_state("handle_new_message-begin")
             # 清空响应队列中待发送的音频数据
             while not self.tts_response_queue.empty():
                 try:
@@ -181,6 +270,11 @@ class LLMSessionManager:
         """文本回调：处理文本显示和TTS（用于文本模式）"""
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
         if is_first_chunk and self.use_tts:
+            # 为新一轮回复生成新的 speech_id，避免继续使用被打断回复的ID
+            async with self.lock:
+                self.current_speech_id = str(uuid4())
+            self._log_tts_state("handle_text_data-first-chunk-new-speech-id")
+
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
             
@@ -198,11 +292,17 @@ class LLMSessionManager:
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
             async with self.tts_cache_lock:
+                # 确保线程活着，否则尝试重启
+                if not self.tts_thread or not self.tts_thread.is_alive():
+                    await self._ensure_tts_alive(reason="handle_text_data enqueue")
+
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
                         self.tts_request_queue.put((self.current_speech_id, text))
+                        if is_first_chunk:
+                            self._log_tts_state("handle_text_data-first-chunk-enqueue", extra=f"text_len={len(text)}")
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
@@ -210,6 +310,8 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
+                    if is_first_chunk:
+                        self._log_tts_state("handle_text_data-first-chunk-cache", extra=f"text_len={len(text)}")
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
@@ -340,11 +442,23 @@ class LLMSessionManager:
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
             async with self.tts_cache_lock:
+                if is_first_chunk:
+                    # 新一轮语音回复时更新 speech_id，确保打断后续播使用新ID
+                    async with self.lock:
+                        self.current_speech_id = str(uuid4())
+                    self._log_tts_state("handle_output_transcript-first-chunk-new-speech-id")
+
+                # 确保线程活着，否则尝试重启（与 handle_text_data 保持一致）
+                if not self.tts_thread or not self.tts_thread.is_alive():
+                    await self._ensure_tts_alive(reason="handle_output_transcript enqueue")
+
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
                         self.tts_request_queue.put((self.current_speech_id, text))
+                        if is_first_chunk:
+                            self._log_tts_state("handle_output_transcript-first-chunk-enqueue", extra=f"text_len={len(text)}")
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
@@ -352,6 +466,8 @@ class LLMSessionManager:
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
+                    if is_first_chunk:
+                        self._log_tts_state("handle_output_transcript-first-chunk-cache", extra=f"text_len={len(text)}")
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False):
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
@@ -762,6 +878,7 @@ class LLMSessionManager:
                                 tts_ready = msg[1]
                                 if tts_ready:
                                     logger.info(f"✅ TTS进程已就绪 (用时: {time.time() - start_time:.2f}秒)")
+                                    self._log_tts_state("tts-ready-signal")
                                 else:
                                     logger.error("❌ TTS进程初始化失败")
                                 break
@@ -1175,6 +1292,7 @@ class LLMSessionManager:
             if incremental_cache:
                 final_prime_text = self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
+                final_prime_text = ""  # Initialize to empty string to prevent NameError
                 logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
@@ -1418,6 +1536,12 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    # 文本模式下，用户新输入视为打断，主动清空上一轮TTS/音频
+                    try:
+                        await self.handle_new_message()
+                    except Exception as e:
+                        logger.warning(f"[{self.lanlan_name}] 文本打断清理失败: {e}")
+
                     # 为每次文本输入生成新的speech_id（用于TTS和lipsync）
                     async with self.lock:
                         self.current_speech_id = str(uuid4())
@@ -1839,6 +1963,8 @@ class LLMSessionManager:
                 if isinstance(data, tuple) and len(data) == 2 and data[0] == "__ready__":
                     # 这是就绪信号，不是音频数据，跳过
                     continue
+                # 调试：在有音频输出时记录当前状态（低频触发）
+                self._log_tts_state("tts_response_handler-audio")
                 await self.send_speech(data)
             await asyncio.sleep(0.01)
 
