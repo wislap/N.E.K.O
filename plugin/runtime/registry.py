@@ -1447,11 +1447,25 @@ def load_plugins_from_toml(
                                 continue
                         except (OSError, RuntimeError):
                             pass
+                # 注册 host
+                state.plugin_hosts[pid] = host
+                # 立即验证注册是否成功
+                registered_keys = list(state.plugin_hosts.keys())
+                logger.info(
+                    "Plugin {}: registered in plugin_hosts. Current plugin_hosts keys: {}",
+                    pid, registered_keys
+                )
+                # 在同一个锁内验证 host 是否还在（防止在注册后立即被其他代码移除）
+                if pid not in state.plugin_hosts:
+                    logger.error(
+                        "Plugin {} host was removed from plugin_hosts immediately after registration! "
+                        "This should not happen. Current plugin_hosts keys: {}. "
+                        "Re-registering host to continue...",
+                        pid, list(state.plugin_hosts.keys())
+                    )
+                    # 重新注册 host（可能是被意外清空了）
                     state.plugin_hosts[pid] = host
-            logger.info("Plugin {}: registered in plugin_hosts", pid)
-            
-            # 在注册后立即检查是否重复（通过 register_plugin 的冲突检测）
-            # 如果 register_plugin 检测到重复并返回 None，说明这是重复加载，应该移除刚注册的 host
+                    logger.info("Plugin {}: re-registered in plugin_hosts", pid)
         except (OSError, RuntimeError) as e:
             logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
             continue
