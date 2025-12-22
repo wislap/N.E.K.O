@@ -1,4 +1,3 @@
-import logging
 from plugin.sdk.base import NekoPluginBase
 
 

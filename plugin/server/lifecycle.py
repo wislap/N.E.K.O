@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from loguru import logger
@@ -18,9 +19,8 @@ from plugin.server.plugin_router import plugin_router
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT,
 )
-
-# logger = logging.getLogger("user_plugin_server")
 
 
 def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
@@ -37,7 +37,6 @@ async def startup() -> None:
     3. 启动状态消费任务
     """
     # 确保插件响应映射在主进程中提前初始化，避免子进程各自创建新的 Manager 字典
-    from plugin.core.state import state
     _ = state.plugin_response_map  # 预初始化共享响应映射
     
     # 清理旧的状态（防止重启时残留）
@@ -143,11 +142,11 @@ async def shutdown() -> None:
     logger.info("Shutting down all plugins...")
     
     try:
-        # 给整个关闭过程 10 秒超时
-        await asyncio.wait_for(_shutdown_internal(), timeout=10.0)
+        # 给整个关闭过程设置超时
+        await asyncio.wait_for(_shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         logger.info("All plugins have been gracefully shutdown.")
     except asyncio.TimeoutError:
-        logger.error("Plugin shutdown process timed out (10s), forcing cleanup")
+        logger.error(f"Plugin shutdown process timed out ({PLUGIN_SHUTDOWN_TOTAL_TIMEOUT}s), forcing cleanup")
         # 尝试最后的清理
         try:
             state.cleanup_plugin_comm_resources()
@@ -155,7 +154,6 @@ async def shutdown() -> None:
             pass
         
         # 强制退出，防止进程卡死
-        import os
         os._exit(1)
     except Exception:
         logger.exception("Unexpected error during shutdown")

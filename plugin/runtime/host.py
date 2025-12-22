@@ -427,7 +427,6 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
                         # 关键修复：在独立线程中运行异步方法，避免阻塞命令循环
                         # 这样命令循环可以继续处理其他命令（包括响应命令）
-                        import threading
                         result_container = {"result": None, "exception": None, "done": False}
                         event = threading.Event()
                         
@@ -440,7 +439,7 @@ def _plugin_process_runner(
                                 result_container["done"] = True
                                 event.set()
                         
-                        thread = threading.Thread(target=run_async, daemon=False)
+                        thread = threading.Thread(target=run_async, daemon=True)
                         thread.start()
                         
                         # 等待异步方法完成（允许超时）

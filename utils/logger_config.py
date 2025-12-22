@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 import shutil
 
 from loguru import logger as loguru_logger
-from loguru import _defaults
 
 from config import APP_NAME
 

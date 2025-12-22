@@ -53,6 +53,7 @@ class PluginCommunicationResourceManager:
     _shutdown_event: Optional[asyncio.Event] = None
     _executor: Optional[ThreadPoolExecutor] = None
     _message_target_queue: Optional[asyncio.Queue] = None  # 主进程的消息队列
+    _background_tasks: set[asyncio.Task] = field(default_factory=set)
     
     def __post_init__(self):
         """初始化异步资源"""
@@ -143,7 +144,50 @@ class PluginCommunicationResourceManager:
         self._pending_futures.clear()
         if count > 0:
             self.logger.debug(f"Cleaned up {count} pending futures for plugin {self.plugin_id}")
-    
+
+    async def _send_command_and_wait(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float,
+        error_context: str
+    ) -> Any:
+        """
+        通用的命令发送和等待逻辑
+        """
+        future = asyncio.Future()
+        self._pending_futures[req_id] = future
+        
+        self.cmd_queue.put(msg)
+        
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            if result["success"]:
+                return result["data"]
+            else:
+                raise PluginExecutionError(self.plugin_id, error_context, result.get("error", "Unknown error"))
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"Plugin {self.plugin_id} {error_context} timed out after {timeout}s, req_id={req_id}"
+            )
+            # 超时后不立即清理 Future，给响应一些时间到达
+            # 延迟清理，避免响应到达时找不到 Future
+            async def cleanup_after_delay():
+                await asyncio.sleep(2.0)  # 给响应2秒时间到达
+                if req_id in self._pending_futures:
+                    future = self._pending_futures.get(req_id)
+                    if future and future.done():
+                        self.logger.debug(
+                            f"Cleaning up completed Future for req_id={req_id} after timeout"
+                        )
+                    self._pending_futures.pop(req_id, None)
+            
+            cleanup_task = asyncio.create_task(cleanup_after_delay())
+            self._background_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(self._background_tasks.discard)
+            
+            raise TimeoutError(f"{error_context} execution timed out after {timeout}s") from None
+
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
         发送触发命令并等待结果
@@ -161,8 +205,6 @@ class PluginCommunicationResourceManager:
             Exception: 如果插件执行出错
         """
         req_id = str(uuid.uuid4())
-        future = asyncio.Future()
-        self._pending_futures[req_id] = future
         
         # 关键日志：记录发送触发命令
         self.logger.info(
@@ -179,7 +221,7 @@ class PluginCommunicationResourceManager:
             args,
         )
         
-        # 发送命令
+        # 构建命令消息
         trigger_msg = {
             "type": "TRIGGER",
             "req_id": req_id,
@@ -190,36 +232,9 @@ class PluginCommunicationResourceManager:
             "[CommManager] TRIGGER message: %s",
             trigger_msg,
         )
-        self.cmd_queue.put(trigger_msg)
         
-        # 等待结果（带超时）
-        try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-            if result["success"]:
-                return result["data"]
-            else:
-                raise PluginExecutionError(self.plugin_id, entry_id, result.get("error", "Unknown error"))
-        except asyncio.TimeoutError:
-            self.logger.error(
-                f"Plugin {self.plugin_id} entry {entry_id} timed out after {timeout}s, req_id={req_id}"
-            )
-            # 超时后不立即清理 Future，给响应一些时间到达
-            # 延迟清理，避免响应到达时找不到 Future
-            async def cleanup_after_delay():
-                await asyncio.sleep(2.0)  # 给响应2秒时间到达
-                if req_id in self._pending_futures:
-                    future = self._pending_futures.get(req_id)
-                    if future and future.done():
-                        self.logger.debug(
-                            f"Cleaning up completed Future for req_id={req_id} after timeout"
-                        )
-                    self._pending_futures.pop(req_id, None)
-            asyncio.create_task(cleanup_after_delay())
-            raise TimeoutError(f"Plugin execution timed out after {timeout}s") from None
-        # 注意：不在 finally 中清理 Future
-        # - 如果成功，Future 会在 _consume_results 中清理
-        # - 如果超时，延迟清理任务会处理
-        # 这样可以避免超时后立即清理，给延迟响应时间到达
+        # 发送命令并等待结果
+        return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"entry {entry_id}")
     
     async def trigger_custom_event(
         self, 
@@ -245,8 +260,6 @@ class PluginCommunicationResourceManager:
             PluginExecutionError: 如果事件执行出错
         """
         req_id = str(uuid.uuid4())
-        future = asyncio.Future()
-        self._pending_futures[req_id] = future
         
         self.logger.info(
             "[CommManager] Sending TRIGGER_CUSTOM command: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
@@ -256,7 +269,7 @@ class PluginCommunicationResourceManager:
             req_id,
         )
         
-        # 发送命令
+        # 构建命令消息
         trigger_msg = {
             "type": "TRIGGER_CUSTOM",
             "req_id": req_id,
@@ -264,40 +277,9 @@ class PluginCommunicationResourceManager:
             "event_id": event_id,
             "args": args
         }
-        self.cmd_queue.put(trigger_msg)
         
-        # 等待结果（带超时）
-        try:
-            result = await asyncio.wait_for(future, timeout=timeout)
-            if result["success"]:
-                return result["data"]
-            else:
-                raise PluginExecutionError(
-                    self.plugin_id, 
-                    f"{event_type}.{event_id}", 
-                    result.get("error", "Unknown error")
-                )
-        except asyncio.TimeoutError:
-            self.logger.error(
-                f"Plugin {self.plugin_id} custom event {event_type}.{event_id} timed out after {timeout}s, req_id={req_id}"
-            )
-            # 超时后不立即清理 Future，给响应一些时间到达
-            # 延迟清理，避免响应到达时找不到 Future
-            async def cleanup_after_delay():
-                await asyncio.sleep(2.0)  # 给响应2秒时间到达
-                if req_id in self._pending_futures:
-                    future = self._pending_futures.get(req_id)
-                    if future and future.done():
-                        self.logger.debug(
-                            f"Cleaning up completed Future for req_id={req_id} after timeout"
-                        )
-                    self._pending_futures.pop(req_id, None)
-            asyncio.create_task(cleanup_after_delay())
-            raise TimeoutError(f"Custom event execution timed out after {timeout}s") from None
-        # 注意：不在 finally 中清理 Future
-        # - 如果成功，Future 会在 _consume_results 中清理
-        # - 如果超时，延迟清理任务会处理
-        # 这样可以避免超时后立即清理，给延迟响应时间到达
+        # 发送命令并等待结果
+        return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"custom event {event_type}.{event_id}")
     
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""

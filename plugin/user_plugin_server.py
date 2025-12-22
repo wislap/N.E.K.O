@@ -95,7 +95,11 @@ async def available():
 
 @app.get("/server/info")
 async def server_info():
-    """返回服务器信息，包括SDK版本"""
+    """
+    返回服务器信息，包括SDK版本
+    
+    TODO: Consider hiding SDK version for security (version fingerprinting).
+    """
     from plugin.sdk.version import SDK_VERSION
     
     with state.plugins_lock:
@@ -302,6 +306,9 @@ async def start_plugin_endpoint(plugin_id: str):
     启动插件
     
     - POST /plugin/{plugin_id}/start
+    
+    TODO: Add authentication/authorization (e.g., API Key).
+    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
     """
     try:
         return await start_plugin(plugin_id)
@@ -318,6 +325,9 @@ async def stop_plugin_endpoint(plugin_id: str):
     停止插件
     
     - POST /plugin/{plugin_id}/stop
+    
+    TODO: Add authentication/authorization (e.g., API Key).
+    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
     """
     try:
         return await stop_plugin(plugin_id)
@@ -334,6 +344,9 @@ async def reload_plugin_endpoint(plugin_id: str):
     重载插件
     
     - POST /plugin/{plugin_id}/reload
+    
+    TODO: Add authentication/authorization (e.g., API Key).
+    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
     """
     try:
         return await reload_plugin(plugin_id)
@@ -352,6 +365,9 @@ async def get_all_plugin_metrics():
     获取所有插件的性能指标
     
     - GET /plugin/metrics
+    
+    TODO: Add authentication (e.g., Read-Only API Key).
+    SECURITY: This endpoint exposes system resource usage and should be protected.
     """
     try:
         metrics = metrics_collector.get_current_metrics()
@@ -489,6 +505,10 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
     更新插件配置
     
     - PUT /plugin/{plugin_id}/config
+    
+    TODO: Add authentication and authorization.
+    TODO: Implement strict schema validation for configuration updates.
+    SECURITY: This endpoint allows arbitrary configuration modification and must be protected.
     """
     try:
         return update_plugin_config(plugin_id, payload.config)
@@ -515,6 +535,9 @@ async def get_plugin_logs_endpoint(
     
     - GET /plugin/{plugin_id}/logs?lines=100&level=INFO&search=error
     - GET /plugin/_server/logs - 获取服务器日志
+    
+    TODO: Add authentication (e.g., Admin API Key).
+    SECURITY: Logs may contain sensitive information. Access must be restricted.
     """
     try:
         result = get_plugin_logs(
@@ -548,6 +571,9 @@ async def get_plugin_log_files_endpoint(plugin_id: str):
     
     - GET /plugin/{plugin_id}/logs/files
     - GET /plugin/_server/logs/files - 获取服务器日志文件列表
+    
+    TODO: Add authentication.
+    SECURITY: Exposing log file paths and contents can be a security risk.
     """
     try:
         files = get_plugin_log_files(plugin_id)
@@ -569,6 +595,9 @@ async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
     
     - WS /ws/logs/{plugin_id} - 实时接收插件日志
     - WS /ws/logs/_server - 实时接收服务器日志
+    
+    TODO: Implement WebSocket authentication (e.g., via query parameter or initial handshake).
+    SECURITY: Real-time log streaming allows monitoring system behavior and must be secured.
     """
     await log_stream_endpoint(websocket, plugin_id)
 

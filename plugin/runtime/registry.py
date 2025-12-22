@@ -174,6 +174,9 @@ def _check_plugin_dependency(
     """
     # 如果 conflicts 是 true，表示冲突（不允许）
     if dependency.conflicts is True:
+        if not dependency.id:
+            return False, "Dependency with conflicts=True requires 'id' field"
+
         if dependency.id:
             # 检查依赖插件是否存在
             with state.plugins_lock:
@@ -1100,7 +1103,7 @@ def load_plugins_from_toml(
         except (tomllib.TOMLDecodeError, OSError) as e:
             logger.error("Failed to parse plugin config {}: {}", toml_path, e)
             continue
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error processing config {}", toml_path)
             continue
 
@@ -1121,7 +1124,6 @@ def load_plugins_from_toml(
                     graph[pid].add(dep.id)
                     logger.debug("Dependency edge: {} -> {}", pid, dep.id)
     
-    # Kahn's Algorithm for Topological Sort
     # 重新构建图以便于 Kahn 算法：Node = Plugin, Edge = Dependency -> Dependent
     # 即：如果 A 依赖 B，则有一条边 B -> A (B 必须先完成)
     adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
@@ -1299,7 +1301,7 @@ def load_plugins_from_toml(
         except AttributeError as e:
             logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
             continue
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
             continue
 

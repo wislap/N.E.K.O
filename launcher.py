@@ -6,6 +6,7 @@ N.E.K.O. 统一启动器
 import sys
 import os
 import io
+import signal
 
 # 强制 UTF-8 编码
 if sys.platform == 'win32':
@@ -424,9 +425,6 @@ def main():
         
         print("\n确保所有进程已终止...", flush=True)
         # 强制退出前，直接杀死整个进程组，这是最彻底的清理方式
-        import os
-        import signal
-        import time
         
         try:
             if hasattr(os, 'killpg'):

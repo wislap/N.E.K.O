@@ -788,7 +788,7 @@ class WebInterfacePlugin(NekoPluginBase):
                         "loaded_plugins": []
                     }
         except Exception as e:
-            self.logger.exception(f"[WebInterface] 检查插件状态失败: {e}")
+            self.logger.exception("[WebInterface] 检查插件状态失败")
             return {
                 "success": False,
                 "error": str(e),
