@@ -658,18 +658,29 @@ def _resolve_plugin_id_conflict(
                     # 路径相同，但需要检查是否是同一个插件（避免自检测）
                     existing_entry_point = existing_info.get("entry_point")
                     
-                    if existing_entry_point is None:
-                        logger.warning(
-                            "Plugin ID conflict detected for '{}': Existing plugin info incomplete (missing entry_point). "
-                            "Config path matches '{}'. Treating as duplicate/conflict and skipping.",
+                    # 检查插件是否只在 plugin_hosts 中（不在 plugins 中）
+                    # 这种情况通常表示插件刚刚注册到 plugin_hosts，但还没有注册到 plugins
+                    # 这是自检测的情况，应该允许继续
+                    with state.plugins_lock:
+                        not_in_plugins = plugin_id not in state.plugins
+                    with state.plugin_hosts_lock:
+                        in_hosts = plugin_id in state.plugin_hosts
+                    
+                    # 如果插件在 plugin_hosts 中但不在 plugins 中，且 config_path 相同
+                    # 这很可能是自检测的情况（register_plugin 检测到刚注册的插件）
+                    if in_hosts and not_in_plugins:
+                        logger.debug(
+                            "Plugin '{}' detected in plugin_hosts but not in plugins with same config path '{}'. "
+                            "This is likely self-detection during registration. Allowing to continue.",
                             plugin_id, current_resolved
                         )
-                        return None
+                        # 返回原始ID，允许继续注册
+                        return plugin_id
                     
-                    # 如果 existing_info 中的 entry_point 与当前 entry_point 相同，说明是同一个插件
-                    if entry_point and existing_entry_point == entry_point:
+                    # 如果 existing_entry_point 与当前 entry_point 相同，说明是同一个插件
+                    # 无论插件在 plugins 还是 plugin_hosts 中，都应该允许继续
+                    if entry_point and existing_entry_point and existing_entry_point == entry_point:
                         # 这是同一个插件，不是重复加载
-                        # 可能是在 register_plugin 中调用时检测到自己
                         logger.debug(
                             "Plugin '{}' with same config path and entry point detected, but this is the same plugin (not a duplicate)",
                             plugin_id
@@ -677,12 +688,53 @@ def _resolve_plugin_id_conflict(
                         # 返回原始ID，允许继续
                         return plugin_id
                     
+                    # 如果 existing_entry_point 缺失，需要根据插件的位置判断
+                    if existing_entry_point is None:
+                        # 如果插件已经在 plugins 中，且 config_path 相同
+                        # 这应该是同一个插件的重复注册，应该允许继续（返回原始ID）
+                        if not not_in_plugins:
+                            logger.debug(
+                                "Plugin '{}' already exists in plugins registry with same config path '{}', "
+                                "but existing entry_point is missing. "
+                                "This is likely the same plugin being re-registered. Allowing to continue.",
+                                plugin_id, current_resolved
+                            )
+                            return plugin_id
+                        # 如果只在 plugin_hosts 中，允许继续（自检测）
+                        else:
+                            logger.debug(
+                                "Plugin '{}' in plugin_hosts with same config path but missing entry_point. "
+                                "Treating as self-detection, allowing to continue.",
+                                plugin_id
+                            )
+                            return plugin_id
+                    
+                    # 如果当前 entry_point 缺失，但 existing 有 entry_point
+                    if not entry_point and existing_entry_point:
+                        # 如果插件在 plugin_hosts 中但不在 plugins 中，允许继续（自检测）
+                        if in_hosts and not_in_plugins:
+                            logger.debug(
+                                "Plugin '{}' in plugin_hosts with same config path, current entry_point missing but existing has '{}'. "
+                                "Treating as self-detection, allowing to continue.",
+                                plugin_id, existing_entry_point
+                            )
+                            return plugin_id
+                        # 如果插件已经在 plugins 中，可能是信息不完整，允许继续
+                        else:
+                            logger.debug(
+                                "Plugin '{}' already exists in plugins with same config path, current entry_point missing but existing has '{}'. "
+                                "Allowing to continue.",
+                                plugin_id, existing_entry_point
+                            )
+                            return plugin_id
+                    
                     # 路径相同但 entry_point 不同，说明是真正的重复加载
                     logger.warning(
-                        "Plugin ID conflict detected: '{}' already exists with same config path '{}'. "
+                        "Plugin ID conflict detected: '{}' already exists with same config path '{}' but different entry_point. "
+                        "Existing entry_point: '{}', Current entry_point: '{}'. "
                         "This appears to be a duplicate load of the same plugin. "
                         "Skipping duplicate load.",
-                        plugin_id, current_resolved
+                        plugin_id, current_resolved, existing_entry_point, entry_point
                     )
                     # 返回 None 作为特殊标记，表示这是重复加载，应该跳过
                     return None
