@@ -248,8 +248,13 @@ def _final_log_flush() -> None:
         import sys
         sys.stdout.flush()
         sys.stderr.flush()
-    except Exception:
-        pass  # 忽略退出时的错误
+    except Exception as e:
+        # 最后的尝试：直接写到 stderr
+        try:
+            import sys
+            print(f"Failed to flush logs: {e}", file=sys.stderr, flush=True)
+        except:
+            pass  # 真的没办法了喵
 
 
 # 注册 atexit 处理器，确保进程退出时刷新日志

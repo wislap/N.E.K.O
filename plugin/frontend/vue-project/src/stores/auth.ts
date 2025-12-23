@@ -9,7 +9,11 @@ const AUTH_CODE_KEY = 'neko_admin_code'
 export const useAuthStore = defineStore('auth', () => {
   // 状态
   let storedCode: string | null = null
-  try { storedCode = localStorage.getItem(AUTH_CODE_KEY) } catch {}
+  try {
+    storedCode = localStorage.getItem(AUTH_CODE_KEY)
+  } catch (err) {
+    console.warn('Failed to load auth code from storage:', err)
+  }
   const authCode = ref<string | null>(storedCode)
   // 计算属性
   const isAuthenticated = computed(() => authCode.value !== null && authCode.value.length === 4)
@@ -20,7 +24,11 @@ export const useAuthStore = defineStore('auth', () => {
     const normalizedCode = code.trim().toUpperCase()
     if (normalizedCode.length === 4 && /^[A-Z]{4}$/.test(normalizedCode)) {
       authCode.value = normalizedCode
-      try { localStorage.setItem(AUTH_CODE_KEY, normalizedCode) } catch {}
+      try {
+        localStorage.setItem(AUTH_CODE_KEY, normalizedCode)
+      } catch (err) {
+        console.warn('Failed to save auth code to storage:', err)
+      }
       return true
     }
     return false

@@ -49,6 +49,9 @@ class PluginMetrics:
 class MetricsCollector:
     """性能指标收集器"""
     
+    # 每个插件保留的最大历史记录数
+    MAX_HISTORY_SIZE = 1000
+    
     def __init__(self, interval: float = 5.0):
         self.interval = interval
         self._metrics_history: Dict[str, List[PluginMetrics]] = {}
@@ -100,8 +103,8 @@ class MetricsCollector:
                                 if plugin_id not in self._metrics_history:
                                     self._metrics_history[plugin_id] = []
                                 self._metrics_history[plugin_id].append(metrics)
-                                # 只保留最近1000条记录
-                                if len(self._metrics_history[plugin_id]) > 1000:
+                                # 只保留最近 MAX_HISTORY_SIZE 条记录
+                                if len(self._metrics_history[plugin_id]) > self.MAX_HISTORY_SIZE:
                                     self._metrics_history[plugin_id].pop(0)
                                 logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
                         else:
@@ -161,7 +164,17 @@ class MetricsCollector:
             comm_manager = getattr(host, "comm_manager", None)
             pending_requests = 0
             if comm_manager:
-                pending_requests = len(getattr(comm_manager, "_pending_futures", {}))
+                # 使用公共方法获取待处理请求数，保持封装性
+                if hasattr(comm_manager, "get_pending_requests_count"):
+                    try:
+                        pending_requests = comm_manager.get_pending_requests_count()
+                    except Exception as e:
+                        logger.debug(f"Failed to get pending requests count for {plugin_id}: {e}")
+                        pending_requests = 0
+                else:
+                    # 向后兼容：如果方法不存在，使用防御性访问
+                    pending_futures = getattr(comm_manager, "_pending_futures", None)
+                    pending_requests = len(pending_futures) if pending_futures else 0
             
             return PluginMetrics(
                 plugin_id=plugin_id,
@@ -194,7 +207,7 @@ class MetricsCollector:
             else:
                 # 返回所有插件的最新指标
                 result = []
-                for pid, history in self._metrics_history.items():
+                for _plugin_id, history in self._metrics_history.items():
                     if history:
                         result.append(self._metrics_to_dict(history[-1]))
                 logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")

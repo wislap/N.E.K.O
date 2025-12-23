@@ -134,6 +134,15 @@ class PluginCommunicationResourceManager:
         
         self.logger.debug(f"Communication resources for plugin {self.plugin_id} shutdown complete")
     
+    def get_pending_requests_count(self) -> int:
+        """
+        获取待处理请求数量（公共方法）
+        
+        Returns:
+            待处理的请求数量
+        """
+        return len(self._pending_futures)
+    
     def _cleanup_pending_futures(self) -> None:
         """清理所有待处理的 Future"""
         count = len(self._pending_futures)

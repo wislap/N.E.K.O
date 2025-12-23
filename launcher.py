@@ -449,14 +449,18 @@ def main():
                     import subprocess
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+            except Exception as e:
+                # 强制终止失败，忽略错误（进程可能已经退出）
+                print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
         
         print("\n清理完成", flush=True)
         # 如果还有残留进程，使用非零退出码
+        # 注意：如果 has_alive 为 True，sys.exit(1) 会终止程序，不会执行 return 0
+        # 如果 has_alive 为 False，所有进程正常退出，继续执行 return 0
         if has_alive:
             sys.exit(1)
     
+    # 所有进程正常退出，返回成功退出码
     return 0
 
 if __name__ == "__main__":

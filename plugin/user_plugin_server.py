@@ -27,6 +27,7 @@ from plugin.api.models import (
 from plugin.runtime.registry import get_plugins as registry_get_plugins
 from plugin.runtime.status import status_manager
 from plugin.server.exceptions import register_exception_handlers
+from plugin.server.error_handler import handle_plugin_error, safe_execute
 from plugin.server.services import (
     build_plugin_list,
     trigger_plugin,
@@ -41,6 +42,7 @@ from plugin.server.config_service import load_plugin_config, update_plugin_confi
 from plugin.server.metrics_service import metrics_collector
 from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+from plugin.api.exceptions import PluginError
 
 
 @asynccontextmanager
@@ -152,9 +154,13 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
                 "plugins": status_manager.get_plugin_status(),
                 "time": now_iso(),
             }
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError) as e:
+        raise handle_plugin_error(e, "Failed to get plugin status", 500) from e
     except Exception as e:
-        logger.exception("Failed to get plugin status")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception("Failed to get plugin status: Unexpected error")
+        raise handle_plugin_error(e, "Failed to get plugin status", 500) from e
 
 
 # ========== 插件管理路由 ==========
@@ -181,9 +187,13 @@ async def list_plugins():
                 "plugins": [],
                 "message": "no plugins registered"
             }
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError) as e:
+        raise handle_plugin_error(e, "Failed to list plugins", 500) from e
     except Exception as e:
-        logger.exception("Failed to list plugins")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception("Failed to list plugins: Unexpected error")
+        raise handle_plugin_error(e, "Failed to list plugins", 500) from e
 
 
 @app.post("/plugin/trigger", response_model=PluginTriggerResponse)
@@ -239,9 +249,11 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
         )
     except HTTPException:
         raise
+    except (PluginError, TimeoutError, ConnectionError, OSError) as e:
+        raise handle_plugin_error(e, "plugin_trigger", 500) from e
     except Exception as e:
-        logger.exception("plugin_trigger: unexpected error")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception("plugin_trigger: Unexpected error type")
+        raise handle_plugin_error(e, "plugin_trigger", 500) from e
 
 
 # ========== 消息路由 ==========
@@ -272,9 +284,13 @@ async def get_plugin_messages(
             "count": len(messages),
             "time": now_iso(),
         }
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError) as e:
+        raise handle_plugin_error(e, "Failed to get plugin messages", 500) from e
     except Exception as e:
-        logger.exception("Failed to get plugin messages")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception("Failed to get plugin messages: Unexpected error type")
+        raise handle_plugin_error(e, "Failed to get plugin messages", 500) from e
 
 
 @app.post("/plugin/push", response_model=PluginPushMessageResponse)
@@ -314,9 +330,11 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
         )
     except HTTPException:
         raise
+    except (PluginError, ValueError, AttributeError, KeyError) as e:
+        raise handle_plugin_error(e, "plugin_push", 500) from e
     except Exception as e:
-        logger.exception("plugin_push: unexpected error")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception("plugin_push: Unexpected error type")
+        raise handle_plugin_error(e, "plugin_push", 500) from e
 
 
 # ========== 插件管理路由（扩展） ==========
@@ -333,9 +351,11 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin):
         return await start_plugin(plugin_id)
     except HTTPException:
         raise
+    except (PluginError, ValueError, AttributeError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to start plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to start plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to start plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to start plugin {plugin_id}", 500) from e
 
 
 @app.post("/plugin/{plugin_id}/stop")
@@ -350,9 +370,11 @@ async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin):
         return await stop_plugin(plugin_id)
     except HTTPException:
         raise
+    except (PluginError, OSError, TimeoutError) as e:
+        raise handle_plugin_error(e, f"Failed to stop plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to stop plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to stop plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to stop plugin {plugin_id}", 500) from e
 
 
 @app.post("/plugin/{plugin_id}/reload")
@@ -367,9 +389,11 @@ async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin):
         return await reload_plugin(plugin_id)
     except HTTPException:
         raise
+    except (PluginError, OSError, TimeoutError) as e:
+        raise handle_plugin_error(e, f"Failed to reload plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to reload plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to reload plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to reload plugin {plugin_id}", 500) from e
 
 
 # ========== 性能监控路由 ==========
@@ -416,8 +440,23 @@ async def get_all_plugin_metrics(_: str = require_admin):
             },
             "time": now_iso()
         }
-    except Exception:
-        logger.exception("Failed to get plugin metrics")
+    except (PluginError, ValueError, AttributeError) as e:
+        logger.warning(f"Failed to get plugin metrics: {e}")
+        # 返回空结果而不是抛出异常，避免前端显示错误
+        return {
+            "metrics": [],
+            "count": 0,
+            "global": {
+                "total_cpu_percent": 0.0,
+                "total_memory_mb": 0.0,
+                "total_memory_percent": 0.0,
+                "total_threads": 0,
+                "active_plugins": 0
+            },
+            "time": now_iso()
+        }
+    except Exception as e:
+        logger.exception("Failed to get plugin metrics: Unexpected error type")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
             "metrics": [],
@@ -522,9 +561,11 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
         }
     except HTTPException:
         raise
+    except (PluginError, ValueError, AttributeError, KeyError) as e:
+        raise handle_plugin_error(e, f"Failed to get metrics for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get metrics for plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to get metrics for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get metrics for plugin {plugin_id}", 500) from e
 
 
 @app.get("/plugin/metrics/{plugin_id}/history")
@@ -554,27 +595,34 @@ async def get_plugin_metrics_history(
             "count": len(history),
             "time": now_iso()
         }
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError) as e:
+        raise handle_plugin_error(e, f"Failed to get metrics history for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get metrics history for plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to get metrics history for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get metrics history for plugin {plugin_id}", 500) from e
 
 
 # ========== 配置管理路由 ==========
 
 @app.get("/plugin/{plugin_id}/config")
-async def get_plugin_config_endpoint(plugin_id: str):
+async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin):
     """
     获取插件配置
     
     - GET /plugin/{plugin_id}/config
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         return load_plugin_config(plugin_id)
     except HTTPException:
         raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get config for plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to get config for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get config for plugin {plugin_id}", 500) from e
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -804,9 +852,11 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
         return update_plugin_config(plugin_id, payload.config)
     except HTTPException:
         raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to update config for plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to update config for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
 
 
 # ========== 日志路由 ==========
@@ -841,15 +891,25 @@ async def get_plugin_logs_endpoint(
         if "error" in result:
             logger.warning(f"Error getting logs for {plugin_id}: {result.get('error')}")
         return result
-    except Exception as e:
-        logger.exception(f"Failed to get logs for plugin {plugin_id}")
+    except (PluginError, ValueError, AttributeError, OSError) as e:
+        logger.warning(f"Failed to get logs for plugin {plugin_id}: {e}")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
             "plugin_id": plugin_id,
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": str(e)
+            "error": "Failed to retrieve logs"
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get logs for plugin {plugin_id}: Unexpected error type")
+        # 返回空结果而不是抛出异常，避免前端显示错误
+        return {
+            "plugin_id": plugin_id,
+            "logs": [],
+            "total_lines": 0,
+            "returned_lines": 0,
+            "error": "Failed to retrieve logs"
         }
 
 
@@ -870,9 +930,13 @@ async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin):
             "count": len(files),
             "time": now_iso()
         }
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get log files for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get log files for plugin {plugin_id}")
-        raise HTTPException(status_code=500, detail="Internal server error") from e
+        logger.exception(f"Failed to get log files for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get log files for plugin {plugin_id}", 500) from e
 
 
 @app.websocket("/ws/logs/{plugin_id}")

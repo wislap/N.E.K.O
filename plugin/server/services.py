@@ -19,7 +19,10 @@ from plugin.api.models import (
 from plugin.api.exceptions import (
     PluginError,
     PluginTimeoutError,
+    PluginExecutionError,
+    PluginCommunicationError,
 )
+from plugin.server.error_handler import handle_plugin_error
 from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
@@ -221,7 +224,7 @@ async def trigger_plugin(
             "[plugin_trigger] Plugin response: %s",
             str(plugin_response)[:500] if plugin_response else None,
         )
-    except TimeoutError as e:
+    except (TimeoutError, asyncio.TimeoutError) as e:
         plugin_error = {"error": "Plugin execution timed out"}
         logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
     except PluginError as e:
@@ -229,10 +232,13 @@ async def trigger_plugin(
         plugin_error = {"error": str(e)}
     except (ConnectionError, OSError) as e:
         logger.error(f"Communication error with plugin {plugin_id}: {e}")
-        plugin_error = {"error": f"Communication error: {str(e)}"}
+        plugin_error = {"error": "Communication error with plugin"}
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.error(f"Invalid parameters for plugin {plugin_id} entry {entry_id}: {e}")
+        plugin_error = {"error": "Invalid request parameters"}
     except Exception as e:
-        logger.exception(f"plugin_trigger: unexpected error invoking plugin {plugin_id} via IPC")
-        plugin_error = {"error": f"Unexpected error: {str(e)}"}
+        logger.exception(f"plugin_trigger: Unexpected error type invoking plugin {plugin_id} via IPC")
+        plugin_error = {"error": "An internal error occurred"}
     
     return PluginTriggerResponse(
         success=plugin_error is None,
@@ -396,12 +402,22 @@ def push_message_to_queue(
             status_code=503,
             detail="Message queue is not available"
         ) from e
+    except Exception as e:
+        logger.exception(f"Unexpected error in push_message_to_queue: {type(e).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to enqueue message"
+        ) from e
     
     return message_id
 
 
 def _enqueue_event(event: Dict[str, Any]) -> None:
-    """将事件加入事件队列（非阻塞，失败不影响主流程）"""
+    """
+    将事件加入事件队列（非阻塞，失败不影响主流程）
+    
+    注意：此函数设计为静默失败，因为事件队列不是关键路径
+    """
     try:
         if state.event_queue:
             state.event_queue.put_nowait(event)
@@ -411,7 +427,12 @@ def _enqueue_event(event: Dict[str, Any]) -> None:
             state.event_queue.put_nowait(event)
             logger.debug("Event queue was full, dropped oldest event")
         except (asyncio.QueueEmpty, AttributeError) as e:
-            logger.warning(f"Event queue operation failed after queue full: {e}")
+            logger.debug(f"Event queue operation failed after queue full: {e}")
+        except Exception as e:
+            logger.debug(f"Event queue cleanup failed: {type(e).__name__}")
     except (AttributeError, RuntimeError) as e:
-        logger.warning(f"Event queue error, continuing without queueing: {e}")
+        logger.debug(f"Event queue error, continuing without queueing: {e}")
+    except Exception as e:
+        # 静默失败，不影响主流程
+        logger.debug(f"Event queue unexpected error: {type(e).__name__}")
 
