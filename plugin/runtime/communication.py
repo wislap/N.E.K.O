@@ -165,8 +165,20 @@ class PluginCommunicationResourceManager:
         """
         future = asyncio.Future()
         self._pending_futures[req_id] = future
-        
-        self.cmd_queue.put(msg)
+
+        # multiprocessing.Queue.put 可能在子进程异常/管道阻塞时卡住。
+        # 这里必须避免在事件循环线程中执行阻塞 put。
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put(msg, timeout=QUEUE_GET_TIMEOUT),
+            )
+        except Exception as e:
+            self._pending_futures.pop(req_id, None)
+            raise RuntimeError(
+                f"Failed to send command to plugin {self.plugin_id} ({error_context}): {e}"
+            ) from e
         
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
@@ -292,7 +304,11 @@ class PluginCommunicationResourceManager:
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
         try:
-            self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT),
+            )
             self.logger.debug(f"Sent STOP command to plugin {self.plugin_id}")
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command to plugin {self.plugin_id}: {e}")

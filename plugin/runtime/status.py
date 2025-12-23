@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-import threading
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
@@ -70,10 +70,38 @@ class PluginStatusManager:
         - plugin_id 为 None：返回 {plugin_id: status, ...}
         - 否则只返回该插件状态（可能为空 dict）
         """
+        from plugin.core.state import state
         with self._lock:
-            if plugin_id is None:
-                return {pid: s.copy() for pid, s in self._plugin_status.items()}
-            return self._plugin_status.get(plugin_id, {}).copy()
+            cached = {pid: s.copy() for pid, s in self._plugin_status.items()}
+
+        with state.plugin_hosts_lock:
+            plugin_hosts_snapshot = dict(state.plugin_hosts)
+        with state.plugins_lock:
+            registered_plugin_ids = list(state.plugins.keys())
+
+        def _build_synthetic(pid: str, status: str) -> Dict[str, Any]:
+            return {
+                "plugin_id": pid,
+                "status": {"status": status},
+                "updated_at": _now_iso(),
+                "source": "main_process_synthetic",
+            }
+
+        for pid in registered_plugin_ids:
+            if pid not in cached:
+                cached[pid] = _build_synthetic(pid, "stopped")
+
+        for pid, host in plugin_hosts_snapshot.items():
+            alive = False
+            try:
+                alive = bool(getattr(host, "is_alive") and host.is_alive())
+            except Exception:
+                alive = False
+            cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
+
+        if plugin_id is None:
+            return cached
+        return cached.get(plugin_id, _build_synthetic(plugin_id, "stopped"))
 
     async def start_status_consumer(self, plugin_hosts_getter: callable) -> None:
         """

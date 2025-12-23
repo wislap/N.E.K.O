@@ -6,6 +6,7 @@ Web Interface Plugin
 import asyncio
 import html
 import logging
+import socket
 import threading
 import time
 from typing import Any, Optional
@@ -38,7 +39,7 @@ class WebInterfacePlugin(NekoPluginBase):
         
         # 服务器配置
         self.host = "127.0.0.1"
-        self.port = 8888
+        self.port = int(os.getenv("NEKO_WEB_INTERFACE_PORT", "8888"))
         
         # 消息存储（使用锁保护并发访问）
         self.messages = []
@@ -69,6 +70,31 @@ class WebInterfacePlugin(NekoPluginBase):
             
             # 注册路由
             self._setup_routes()
+
+            def _find_available_port(start_port: int, max_tries: int = 50) -> int:
+                for p in range(start_port, start_port + max_tries):
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    try:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind((self.host, p))
+                        return p
+                    except OSError:
+                        continue
+                    finally:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                return start_port
+
+            selected_port = _find_available_port(self.port)
+            if selected_port != self.port:
+                self.logger.warning(
+                    "Web interface port {} is unavailable, switched to {}",
+                    self.port,
+                    selected_port,
+                )
+                self.port = selected_port
             
             # 在后台线程中启动服务器
             self.server_config = uvicorn.Config(

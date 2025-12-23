@@ -572,9 +572,22 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
             if isinstance(plugin_meta_raw, dict):
                 # 如果是字典，尝试构建 PluginMeta 对象或直接使用字典
                 result["plugin_meta"] = plugin_meta_raw
+                # 某些情况下插件已停止，plugin_hosts 中没有 host，只能从 plugins 元数据读取路径/入口信息
+                meta_config_path = plugin_meta_raw.get("config_path")
+                meta_entry_point = plugin_meta_raw.get("entry_point")
+                if meta_config_path and "config_path" not in result:
+                    result["config_path"] = meta_config_path
+                if meta_entry_point and "entry_point" not in result:
+                    result["entry_point"] = meta_entry_point
             else:
                 # 如果是对象，直接使用
                 result["plugin_meta"] = plugin_meta_raw
+                meta_config_path = getattr(plugin_meta_raw, "config_path", None)
+                meta_entry_point = getattr(plugin_meta_raw, "entry_point", None)
+                if meta_config_path and "config_path" not in result:
+                    result["config_path"] = meta_config_path
+                if meta_entry_point and "entry_point" not in result:
+                    result["entry_point"] = meta_entry_point
     
     # 如果获取到了任何信息，返回结果
     if result:
@@ -933,7 +946,12 @@ def register_plugin(
         )
     
     with state.plugins_lock:
-        state.plugins[resolved_id] = plugin.model_dump()
+        plugin_dump = plugin.model_dump()
+        if config_path is not None:
+            plugin_dump["config_path"] = str(config_path)
+        if entry_point is not None:
+            plugin_dump["entry_point"] = entry_point
+        state.plugins[resolved_id] = plugin_dump
     
     return resolved_id
 

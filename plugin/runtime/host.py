@@ -613,7 +613,7 @@ class PluginProcessHost:
                 pass
 
         # 4. 关闭进程
-        success = self._shutdown_process(timeout=timeout)
+        success = await asyncio.to_thread(self._shutdown_process, timeout)
         
         if success:
             self.logger.info(f"Plugin {self.plugin_id} shutdown successfully")

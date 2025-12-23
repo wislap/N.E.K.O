@@ -48,8 +48,59 @@ from plugin.api.exceptions import PluginError
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    import asyncio
+    import faulthandler
+    import signal
+    import threading
+    import time
+
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+    except Exception:
+        pass
+
+    stop_event = threading.Event()
+    last_heartbeat = {"t": time.monotonic()}
+
+    async def _heartbeat():
+        while not stop_event.is_set():
+            last_heartbeat["t"] = time.monotonic()
+            await asyncio.sleep(0.5)
+
+    def _watchdog():
+        threshold = 8.0
+        while not stop_event.is_set():
+            now = time.monotonic()
+            dt = now - last_heartbeat["t"]
+            if dt > threshold:
+                try:
+                    logger.error(
+                        "Event loop appears blocked (no heartbeat for {:.1f}s); dumping all thread tracebacks",
+                        dt,
+                    )
+                except Exception:
+                    pass
+                try:
+                    faulthandler.dump_traceback(all_threads=True)
+                except Exception:
+                    pass
+                last_heartbeat["t"] = now
+            time.sleep(1.0)
+
+    watchdog_thread = threading.Thread(target=_watchdog, daemon=True, name="event-loop-watchdog")
+    watchdog_thread.start()
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
     await startup()
     yield
+    stop_event.set()
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
     await shutdown()
 
 
@@ -144,11 +195,11 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
     """
     try:
         if plugin_id:
-            return {
-                "plugin_id": plugin_id,
-                "status": status_manager.get_plugin_status(plugin_id),
-                "time": now_iso(),
-            }
+            result = status_manager.get_plugin_status(plugin_id)
+            # 兼容字段：部分调用方可能依赖 time 字段
+            if isinstance(result, dict) and "time" not in result:
+                result["time"] = now_iso()
+            return result
         else:
             return {
                 "plugins": status_manager.get_plugin_status(),
@@ -966,11 +1017,40 @@ if __name__ == "__main__":
     import uvicorn
     import os
     import signal
+    import socket
     
     host = "127.0.0.1"  # 默认只暴露本机
+    base_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
+    
+    def _find_available_port(start_port: int, max_tries: int = 50) -> int:
+        for p in range(start_port, start_port + max_tries):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, p))
+                return p
+            except OSError:
+                continue
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        return start_port
+    
+    selected_port = _find_available_port(base_port)
+    os.environ["NEKO_USER_PLUGIN_SERVER_PORT"] = str(selected_port)
+    if selected_port != base_port:
+        logger.warning(
+            "User plugin server port {} is unavailable, switched to {}",
+            base_port,
+            selected_port,
+        )
+    else:
+        logger.info("User plugin server starting on {}:{}", host, selected_port)
     
     try:
-        uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT, log_config=None)
+        uvicorn.run(app, host=host, port=selected_port, log_config=None)
     finally:
         # 强制清理所有子进程
         try:
