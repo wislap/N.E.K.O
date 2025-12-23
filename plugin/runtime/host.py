@@ -156,12 +156,6 @@ def _plugin_process_runner(
                 etype = getattr(event_meta, "event_type", "plugin_entry")
                 events_by_type.setdefault(etype, {})
                 events_by_type[etype][eid] = member
-                
-                # 注册到 event_handlers（用于依赖检查）
-                # 格式：plugin_id:event_type:event_id
-                handler_obj = EventHandler(meta=event_meta, handler=member)
-                with state.event_handlers_lock:
-                    state.event_handlers[f"{plugin_id}:{etype}:{eid}"] = handler_obj
             else:
                 entry_map[name] = member
 

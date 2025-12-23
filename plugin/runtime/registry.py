@@ -966,13 +966,18 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
         if event_meta is None and hasattr(member, "__wrapped__"):
             event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
 
-        if event_meta and getattr(event_meta, "event_type", None) == "plugin_entry":
+        if event_meta:
+            etype = getattr(event_meta, "event_type", None) or "plugin_entry"
             eid = getattr(event_meta, "id", name)
             handler_obj = EventHandler(meta=event_meta, handler=member)
             with state.event_handlers_lock:
-                state.event_handlers[f"{pid}.{eid}"] = handler_obj
-                state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
-            plugin_entry_method_map[(pid, str(eid))] = name
+                if etype == "plugin_entry":
+                    state.event_handlers[f"{pid}.{eid}"] = handler_obj
+                    state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
+                else:
+                    state.event_handlers[f"{pid}:{etype}:{eid}"] = handler_obj
+            if etype == "plugin_entry":
+                plugin_entry_method_map[(pid, str(eid))] = name
 
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:

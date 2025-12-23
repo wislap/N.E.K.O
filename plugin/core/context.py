@@ -217,3 +217,123 @@ class PluginContext:
             f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
         )
 
+    def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "type": "PLUGIN_QUERY",
+            "from_plugin": self.plugin_id,
+            "request_id": request_id,
+            "filters": filters or {},
+            "timeout": timeout,
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+            self.logger.debug(
+                f"[PluginContext] Sent plugin query request: from={self.plugin_id}, req_id={request_id}"
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send plugin query request: {e}")
+            raise RuntimeError(f"Failed to send plugin query request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            if response is not None:
+                if response.get("error"):
+                    error_msg = response.get("error")
+                    self.logger.error(f"[PluginContext] Plugin query error: {error_msg}")
+                    raise RuntimeError(error_msg)
+                result = response.get("result")
+                return result if isinstance(result, dict) else {"result": result}
+            time.sleep(check_interval)
+
+        from plugin.core.state import state
+        _ = state.get_plugin_response(request_id)
+        raise TimeoutError(f"Plugin query timed out after {timeout}s")
+
+    def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "type": "PLUGIN_CONFIG_GET",
+            "from_plugin": self.plugin_id,
+            "plugin_id": self.plugin_id,
+            "request_id": request_id,
+            "timeout": timeout,
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send plugin config get request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            if response is not None:
+                if response.get("error"):
+                    raise RuntimeError(str(response.get("error")))
+                result = response.get("result")
+                return result if isinstance(result, dict) else {"result": result}
+            time.sleep(check_interval)
+
+        from plugin.core.state import state
+        _ = state.get_plugin_response(request_id)
+        raise TimeoutError(f"Plugin config get timed out after {timeout}s")
+
+    def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+        if not isinstance(updates, dict):
+            raise ValueError("updates must be a dict")
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "type": "PLUGIN_CONFIG_UPDATE",
+            "from_plugin": self.plugin_id,
+            "plugin_id": self.plugin_id,
+            "updates": updates,
+            "request_id": request_id,
+            "timeout": timeout,
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send plugin config update request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            if response is not None:
+                if response.get("error"):
+                    raise RuntimeError(str(response.get("error")))
+                result = response.get("result")
+                return result if isinstance(result, dict) else {"result": result}
+            time.sleep(check_interval)
+
+        from plugin.core.state import state
+        _ = state.get_plugin_response(request_id)
+        raise TimeoutError(f"Plugin config update timed out after {timeout}s")
+

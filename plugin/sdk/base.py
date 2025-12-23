@@ -204,3 +204,21 @@ class NekoPluginBase:
             timeout=timeout
         )
 
+    def get_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """通过主进程读取本插件的 plugin.toml 配置（推荐方式）。"""
+        if hasattr(self.ctx, "get_own_config"):
+            return self.ctx.get_own_config(timeout=timeout)
+        raise RuntimeError(
+            f"Plugin {self._plugin_id} ctx does not support config access. "
+            "Please update plugin runtime / PluginContext."
+        )
+
+    def update_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        """通过主进程更新本插件的 plugin.toml 配置（深度合并）。"""
+        if hasattr(self.ctx, "update_own_config"):
+            return self.ctx.update_own_config(updates=updates, timeout=timeout)
+        raise RuntimeError(
+            f"Plugin {self._plugin_id} ctx does not support config updates. "
+            "Please update plugin runtime / PluginContext."
+        )
+

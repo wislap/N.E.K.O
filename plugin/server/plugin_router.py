@@ -11,7 +11,7 @@ from queue import Empty
 from typing import Dict, Any, Optional
 
 from plugin.core.state import state
-from plugin.api.exceptions import PluginNotFoundError, PluginExecutionError
+from plugin.server.requests.registry import build_request_handlers
 
 logger = logging.getLogger("plugin.router")
 
@@ -25,6 +25,7 @@ class PluginRouter:
         self._pending_requests: Dict[str, asyncio.Future] = {}
         # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
+        self._handlers = build_request_handlers()
     
     def _ensure_shutdown_event(self) -> asyncio.Event:
         """确保 shutdown_event 已创建（延迟初始化，避免在模块导入时创建）"""
@@ -128,58 +129,13 @@ class PluginRouter:
     async def _handle_request(self, request: Dict[str, Any]) -> None:
         """处理插件间通信请求"""
         request_type = request.get("type")
-        
-        if request_type != "PLUGIN_TO_PLUGIN":
+
+        handler = self._handlers.get(str(request_type))
+        if handler is None:
             logger.warning(f"Unknown request type: {request_type}")
             return
-        
-        from_plugin = request.get("from_plugin")
-        to_plugin = request.get("to_plugin")
-        event_type = request.get("event_type")
-        event_id = request.get("event_id")
-        args = request.get("args", {})
-        request_id = request.get("request_id")
-        timeout = request.get("timeout", 10.0)  # 增加默认超时时间以应对命令循环可能的延迟
-        logger.info(
-            f"[PluginRouter] Routing request: {from_plugin} -> {to_plugin}, "
-            f"event={event_type}.{event_id}, req_id={request_id}"
-        )
-        
-        # 获取目标插件的宿主
-        host = state.plugin_hosts.get(to_plugin)
-        if not host:
-            error_msg = f"Plugin '{to_plugin}' not found"
-            logger.error(f"[PluginRouter] {error_msg}")
-            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-            return
-        
-        # 检查进程健康状态
-        try:
-            health = host.health_check()
-            if not health.alive:
-                error_msg = f"Plugin '{to_plugin}' process is not alive"
-                logger.error(f"[PluginRouter] {error_msg}")
-                self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-                return
-        except Exception as e:
-            error_msg = f"Health check failed for plugin '{to_plugin}': {e}"
-            logger.error(f"[PluginRouter] {error_msg}")
-            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
-            return
-        
-        # 触发目标插件的自定义事件
-        try:
-            result = await host.trigger_custom_event(
-                event_type=event_type,
-                event_id=event_id,
-                args=args,
-                timeout=timeout
-            )
-            self._send_response(from_plugin, request_id, result, None, timeout=timeout)
-        except Exception as e:
-            error_msg = str(e)
-            logger.exception(f"[PluginRouter] Error triggering custom event: {e}")
-            self._send_response(from_plugin, request_id, None, error_msg, timeout=timeout)
+
+        await handler(request, self._send_response)
     
     def _send_response(self, to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 10.0) -> None:
         """
