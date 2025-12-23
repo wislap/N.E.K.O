@@ -24,7 +24,7 @@ class PluginRouter:
         self._shutdown_event: Optional[asyncio.Event] = None  # 延迟初始化，在 start() 中创建
         self._pending_requests: Dict[str, asyncio.Future] = {}
         # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
+        self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
         self._handlers = build_request_handlers()
     
     def _ensure_shutdown_event(self) -> asyncio.Event:
@@ -32,12 +32,21 @@ class PluginRouter:
         if self._shutdown_event is None:
             self._shutdown_event = asyncio.Event()
         return self._shutdown_event
+
+    def _ensure_executor(self) -> ThreadPoolExecutor:
+        """确保 executor 可用（stop() 后会被 shutdown，需要在下次 start() 时重建）"""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plugin-router")
+        return self._executor
     
     async def start(self) -> None:
         """启动路由器任务"""
         if self._router_task is not None:
             logger.warning("Plugin router is already started")
             return
+
+        # 确保 executor 可用（允许 stop() 后再次 start()）
+        self._ensure_executor()
         
         # 确保 shutdown_event 已创建（延迟初始化）
         shutdown_event = self._ensure_shutdown_event()
@@ -61,7 +70,9 @@ class PluginRouter:
         finally:
             self._router_task = None
             # 关闭线程池执行器
-            self._executor.shutdown(wait=True)
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+                self._executor = None
             logger.info("Plugin router stopped")
     
     async def _router_loop(self) -> None:
@@ -111,12 +122,13 @@ class PluginRouter:
             # 使用 run_in_executor 在后台线程中执行阻塞操作
             loop = asyncio.get_running_loop()
             queue = state.plugin_comm_queue
+            executor = self._ensure_executor()
             
             # multiprocessing.Queue.get() 是阻塞的，需要在线程中执行
             # 使用共享的执行器，避免每次调用都创建新的线程池
             try:
                 request = await loop.run_in_executor(
-                    self._executor,
+                    executor,
                     lambda: queue.get(timeout=0.1)  # 短超时，避免阻塞太久
                 )
                 return request

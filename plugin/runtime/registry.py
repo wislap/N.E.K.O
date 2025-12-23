@@ -223,10 +223,20 @@ def _check_plugin_dependency(
             parts = entry_spec.split(":", 1)
             if len(parts) != 2:
                 return False, f"Invalid entry format: '{entry_spec}', expected 'plugin_id:entry_id' or 'entry_id'"
-            target_plugin_id, _target_entry_id = parts
+            target_plugin_id, target_entry_id = parts
+
             with state.plugins_lock:
                 if target_plugin_id not in state.plugins:
                     return False, f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' not found"
+
+            # 验证指定插件确实提供该入口（且是 @plugin_entry）
+            matching_plugins = _find_plugins_by_entry(target_entry_id)
+            if not any(pid == target_plugin_id for pid, _ in matching_plugins):
+                return False, (
+                    f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' does not provide entry '{target_entry_id}'"
+                )
+
+            with state.plugins_lock:
                 plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
         else:
             # 格式：entry_id（任意插件提供该入口）

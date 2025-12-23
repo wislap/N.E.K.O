@@ -6,52 +6,15 @@ version = "0.1.0"
 entry = "plugins.testPlugin:HelloPlugin"
 
 [plugin.author]
-# name = "Plugin Author Name"
-# email = "author@example.com"
 
 [plugin.sdk]
-# 推荐使用的 SDK 版本范围
 recommended = ">=0.1.0,<0.2.0"
-# 完全支持的 SDK 版本范围（必须满足或落在 untested）
 supported = ">=0.1.0,<0.3.0"
-# 未经过完整测试但允许加载的范围
 untested = ">=0.3.0,<0.4.0"
-# 明确冲突的版本范围，命中即拒绝加载
-conflicts = ["<0.1.0", ">=0.4.0"]
+conflicts = [
+    "<0.1.0",
+    ">=0.4.0",
+]
 
-# 插件依赖配置（可选）
-# 支持三种依赖方式：
-# 1. 依赖特定插件ID：id = "plugin_id"
-# 2. 依赖特定入口点：entry = "entry_id" 或 entry = "plugin_id:entry_id"（任意插件提供该入口即可）
-# 3. 依赖多个候选插件：providers = ["plugin1", "plugin2"]（任一满足即可）
-# 注意：如果使用依赖配置，untested 字段是必须的（简化格式除外）
-
-# 方式1：依赖特定插件ID
-# [[plugin.dependency]]
-# id = "timer_service"
-# recommended = ">=1.0.0,<2.0.0"
-# supported = ">=1.0.0,<3.0.0"
-# untested = ">=3.0.0,<4.0.0"  # 必须字段
-# conflicts = ["<1.0.0", ">=4.0.0"]
-
-# 方式2：依赖特定入口点（任意插件提供该入口即可）
-# [[plugin.dependency]]
-# entry = "start_timer"  # 任意插件提供 start_timer 入口即可
-# untested = ">=1.0.0,<2.0.0"
-# supported = ">=1.0.0,<3.0.0"
-
-# 方式2变体：依赖特定插件的特定入口
-# [[plugin.dependency]]
-# entry = "timer_service:start_timer"  # timer_service 插件必须提供 start_timer 入口
-# untested = ">=1.0.0,<2.0.0"
-
-# 方式3：依赖多个候选插件（任一满足即可）
-# [[plugin.dependency]]
-# providers = ["timer_service", "timer_service_v2"]  # 任一插件满足即可
-# untested = ">=1.0.0,<2.0.0"
-# supported = ">=1.0.0,<3.0.0"
-
-# 简化格式示例（表示与某个插件冲突）
-# [[plugin.dependency]]
-# id = "conflicting_plugin"
-# conflicts = true
+[debug]
+enable = false

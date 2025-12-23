@@ -1,6 +1,10 @@
+from datetime import datetime, timezone
+
 from plugin.sdk.base import NekoPluginBase
+from plugin.sdk.decorators import lifecycle, neko_plugin
 
 
+@neko_plugin
 class HelloPlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)  # 传递 ctx 给基类
@@ -9,6 +13,29 @@ class HelloPlugin(NekoPluginBase):
         self.logger = self.file_logger  # 使用file_logger作为主要logger
         self.plugin_id = ctx.plugin_id  # 使用 plugin_id
         self.file_logger.info("HelloPlugin initialized with file logging enabled")
+
+    @lifecycle(id="startup")
+    def startup(self, **_):
+        cfg = self.get_config()
+        enabled = False
+        try:
+            enabled = bool((cfg.get("config") or {}).get("debug", {}).get("enable", False))
+        except Exception:
+            enabled = False
+
+        if not enabled:
+            self.file_logger.info("Debug disabled (debug.enable=false), skipping startup debug actions")
+            return {"debug": "disabled"}
+
+        self.file_logger.info(f"Current config: {cfg}")
+
+        plugins = self.ctx.query_plugins({"include_events": False})
+        self.file_logger.info(f"Current plugins: {plugins}")
+
+        loaded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        updated = self.update_config({"debug": {"loaded_at": loaded_at}})
+        self.file_logger.info(f"Config updated with loaded_at: {updated}")
+        return {"loaded_at": loaded_at}
 
     def run(self, message: str | None = None, **kwargs):
         # 简单返回一个字典结构
