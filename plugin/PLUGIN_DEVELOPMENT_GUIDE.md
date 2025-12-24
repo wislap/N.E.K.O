@@ -2281,7 +2281,7 @@ A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pym
 
 A: 在 `plugin.toml` 中使用 `[[plugin.dependency]]` 配置依赖。支持三种方式：
 
-**方式1：依赖特定插件ID**
+#### 方式1：依赖特定插件ID
 ```toml
 [[plugin.dependency]]
 id = "timer_service"
@@ -2290,7 +2290,7 @@ supported = ">=1.0.0,<3.0.0"
 ```
 **适用场景**：需要依赖整个插件，包括其所有 `plugin_entry` 和 `custom_event`。
 
-**方式2：依赖特定入口点（更灵活）**
+#### 方式2：依赖特定入口点（更灵活）
 ```toml
 # 任意插件提供 start_timer 入口即可
 [[plugin.dependency]]
@@ -2306,7 +2306,7 @@ untested = ">=1.0.0,<2.0.0"
 - `entry` 字段**只能引用 `@plugin_entry` 装饰器定义的入口点ID**
 - `entry` 和 `custom_event` **互斥**（不能同时使用）
 
-**方式3：依赖特定自定义事件（新功能）**
+#### 方式3：依赖特定自定义事件（新功能）
 ```toml
 # 任意插件提供 timer_tick.on_tick 事件即可
 [[plugin.dependency]]
@@ -2323,7 +2323,7 @@ untested = ">=1.0.0,<2.0.0"
 - 格式：`event_type:event_id` 或 `plugin_id:event_type:event_id`
 - `entry` 和 `custom_event` **互斥**（不能同时使用）
 
-**方式4：依赖多个候选插件（任一满足即可）**
+#### 方式4：依赖多个候选插件（任一满足即可）
 ```toml
 [[plugin.dependency]]
 providers = ["timer_service", "timer_service_v2"]
@@ -2655,7 +2655,7 @@ conflicts = true
 | 字段/概念 | 定义方式 | 依赖配置中的使用 | 说明 |
 |---------|---------|----------------|------|
 | `entry` | `@plugin_entry` 装饰器 | ✅ 支持，使用 `entry` 字段 | 用户调用插件的入口（对外服务） |
-| `custom_event` | `@custom_event` 装饰器 | ✅ 支持，使用 `custom_event` 字段 | 插件间功能复用的机制（内部调用） |
+| `custom_event` | `@custom_event` 装饰器 | ✅ 支持，使用 `custom_event` 字段 | 用于插件间的功能复用（内部调用） |
 
 **重要限制**：
 - `entry` 和 `custom_event` **互斥**（不能在同一依赖配置中同时使用）

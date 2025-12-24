@@ -4,6 +4,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
+const BACKEND_TARGET = process.env.VITE_BACKEND_URL || 'http://localhost:48916'
+
 // https://vite.dev/config/
 export default defineConfig({
   base: '/ui/',
@@ -26,7 +28,7 @@ export default defineConfig({
     proxy: {
       // 代理所有插件服务器 API 请求
       '/plugin/': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false
       },
@@ -34,14 +36,16 @@ export default defineConfig({
       // 使用 bypass 函数区分 API 请求和前端路由
       // 只代理带有 Accept: application/json 的请求（API 请求）
       '^/plugins$': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
         bypass(req, res, options) {
           // 检查是否是 API 请求（通过 Accept 头判断）
           const acceptHeader = req.headers.accept || ''
+          const method = req.method || 'GET'
           // 如果是 API 请求（包含 application/json），则代理
-          if (acceptHeader.includes('application/json')) {
+          // 或者是非 GET 请求（POST/PUT/DELETE 通常是 API 调用）
+          if (acceptHeader.includes('application/json') || (method !== 'GET' && method !== 'HEAD')) {
             return null // 继续代理
           }
           // 否则返回原路径，让 Vite 处理（前端路由）
@@ -49,27 +53,28 @@ export default defineConfig({
         }
       },
       '/server': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false
       },
       '/health': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false
       },
       '/available': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false
       },
       // WebSocket 代理
       '/ws': {
-        target: 'http://localhost:48916',
+        target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false,
         ws: true, // 启用 WebSocket 代理
         configure: (proxy, _options) => {
+          let suppressedErrorCount = 0
           // 处理 WebSocket 代理错误，避免在连接关闭后继续写入
           proxy.on('error', (err, _req, _res) => {
             // 忽略常见的 WebSocket 关闭错误
@@ -78,7 +83,13 @@ export default defineConfig({
               err.message.includes('ECONNRESET') ||
               err.message.includes('EPIPE')
             )) {
-              // 这些是正常的连接关闭错误，不需要记录
+              suppressedErrorCount++
+              if (process.env.DEBUG || suppressedErrorCount % 10 === 0) {
+                console.debug(
+                  `[Vite] WebSocket connection closed (suppressed ${suppressedErrorCount} times):`,
+                  err.message
+                )
+              }
               return
             }
             console.error('[Vite] WebSocket proxy error:', err.message)

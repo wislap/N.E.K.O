@@ -9,6 +9,17 @@ set "FRONTEND_DIR=%PROJECT_ROOT%\frontend\vue-project"
 set "DIST_DIR=%FRONTEND_DIR%\dist"
 set "EXPORT_DIR=%PROJECT_ROOT%\frontend\exported"
 
+echo %EXPORT_DIR% | findstr /I /C:"%PROJECT_ROOT%" >nul
+if errorlevel 1 (
+  echo [export_frontend] EXPORT_DIR outside project: %EXPORT_DIR%
+  exit /b 1
+)
+
+if "%EXPORT_DIR%"=="%SystemDrive%\" (
+  echo [export_frontend] EXPORT_DIR points to protected location
+  exit /b 1
+)
+
 if not exist "%FRONTEND_DIR%" (
   echo [export_frontend] frontend dir not found: %FRONTEND_DIR%
   exit /b 1
@@ -30,7 +41,18 @@ if not exist "%DIST_DIR%" (
 )
 
 echo [export_frontend] exporting dist -^> %EXPORT_DIR%
-if exist "%EXPORT_DIR%" rmdir /s /q "%EXPORT_DIR%"
+if "%EXPORT_DIR%"=="" (
+  echo [export_frontend] EXPORT_DIR is empty, refusing to delete
+  exit /b 1
+)
+
+if exist "%EXPORT_DIR%" (
+  rmdir /s /q "%EXPORT_DIR%"
+  if errorlevel 1 (
+    echo [export_frontend] failed to remove old export directory
+    exit /b 1
+  )
+)
 mkdir "%EXPORT_DIR%" >nul 2>&1
 
 rem Copy dist contents into exported\ (robocopy returns codes > 0 for success too)

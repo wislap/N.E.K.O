@@ -7,6 +7,24 @@ FRONTEND_DIR="$PROJECT_ROOT/frontend/vue-project"
 DIST_DIR="$FRONTEND_DIR/dist"
 EXPORT_DIR="$PROJECT_ROOT/frontend/exported"
 
+if [ -z "$EXPORT_DIR" ]; then
+  echo "[export_frontend] EXPORT_DIR is empty, refusing to delete" >&2
+  exit 1
+fi
+
+case "$EXPORT_DIR" in
+  "$PROJECT_ROOT"/*) ;;
+  *)
+    echo "[export_frontend] EXPORT_DIR outside project: $EXPORT_DIR" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$EXPORT_DIR" = "/" ] || [ "$EXPORT_DIR" = "$HOME" ]; then
+  echo "[export_frontend] EXPORT_DIR points to protected location: $EXPORT_DIR" >&2
+  exit 1
+fi
+
 if [ ! -d "$FRONTEND_DIR" ]; then
   echo "[export_frontend] frontend dir not found: $FRONTEND_DIR" >&2
   exit 1
@@ -24,7 +42,14 @@ if [ ! -d "$DIST_DIR" ]; then
 fi
 
 echo "[export_frontend] exporting dist -> $EXPORT_DIR"
-rm -rf "$EXPORT_DIR"
+if [ -z "$EXPORT_DIR" ]; then
+  echo "[export_frontend] EXPORT_DIR is empty, refusing to rm -rf" >&2
+  exit 1
+fi
+
+if [ -d "$EXPORT_DIR" ]; then
+  rm -rf "$EXPORT_DIR"
+fi
 mkdir -p "$EXPORT_DIR"
 
 # Copy dist contents into exported/
