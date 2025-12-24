@@ -65,6 +65,19 @@ class PluginConfig:
 
     ctx: Any
 
+    def _unwrap(self, value: Any, *, operation: str) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            raise PluginConfigError(f"Invalid config type: {type(value)}", operation=operation)
+        # The runtime returns a wrapper like:
+        # {"success": ..., "plugin_id": ..., "config": <toml_root>, ...}
+        # SDK exposes only the toml root to plugin authors.
+        inner = value.get("config")
+        if inner is None:
+            return value
+        if not isinstance(inner, dict):
+            raise PluginConfigError(f"Invalid config inner type: {type(inner)}", operation=operation)
+        return inner
+
     def dump(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         if not hasattr(self.ctx, "get_own_config"):
             raise PluginConfigError("ctx.get_own_config is not available", operation="dump")
@@ -72,9 +85,7 @@ class PluginConfig:
             cfg = self.ctx.get_own_config(timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to read config: {e}", operation="dump") from e
-        if not isinstance(cfg, dict):
-            raise PluginConfigError(f"Invalid config type: {type(cfg)}", operation="dump")
-        return cfg
+        return self._unwrap(cfg, operation="dump")
 
     def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
         cfg = self.dump(timeout=timeout)
@@ -98,9 +109,7 @@ class PluginConfig:
             updated = self.ctx.update_own_config(updates=patch, timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to update config: {e}", operation="update") from e
-        if not isinstance(updated, dict):
-            raise PluginConfigError(f"Invalid updated config type: {type(updated)}", operation="update")
-        return updated
+        return self._unwrap(updated, operation="update")
 
     def set(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
         patch: Dict[str, Any] = {}

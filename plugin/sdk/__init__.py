@@ -18,6 +18,7 @@ from .decorators import (
 )
 from .base import NekoPluginBase, PluginMeta
 from .config import PluginConfig
+from .plugins import Plugins
 from .events import EventMeta, EventHandler
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "NekoPluginBase",
     "PluginMeta",
     "PluginConfig",
+    "Plugins",
     "EventMeta",
     "EventHandler",
 ]

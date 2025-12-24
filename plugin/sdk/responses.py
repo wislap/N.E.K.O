@@ -10,6 +10,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def now_iso() -> str:
+    return _now_iso()
+
+
 def ok(
     data: Any = None,
     *,

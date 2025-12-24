@@ -223,12 +223,10 @@ class WebInterfacePlugin(NekoPluginBase):
             try:
                 # 使用 Queue 机制调用 timer_service 插件（异步包装同步调用）
                 result = await asyncio.to_thread(
-                    self.call_plugin,
-                    plugin_id="timer_service",
-                    event_type="plugin_entry",
-                    event_id="list_timers",
-                    args={},
-                    timeout=5.0
+                    self.plugins.call_entry,
+                    "timer_service:list_timers",
+                    {},
+                    timeout=5.0,
                 )
                 if result.get("success"):
                     return result
@@ -850,11 +848,9 @@ class WebInterfacePlugin(NekoPluginBase):
             
             # 使用 Queue 机制调用 timer_service 插件（异步包装同步调用）
             result = await asyncio.to_thread(
-                self.call_plugin,
-                plugin_id="timer_service",
-                event_type="plugin_entry",
-                event_id="start_timer",
-                args={
+                self.plugins.call_entry,
+                "timer_service:start_timer",
+                {
                     "timer_id": timer_id,
                     "interval": interval,
                     "immediate": True,
@@ -863,10 +859,10 @@ class WebInterfacePlugin(NekoPluginBase):
                     "callback_args": {
                         "timer_id": timer_id,
                         "max_count": count,
-                        "current_count": 0
-                    }
+                        "current_count": 0,
+                    },
                 },
-                timeout=5.0
+                timeout=5.0,
             )
             
             if result.get("success"):

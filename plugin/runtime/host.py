@@ -280,7 +280,7 @@ def _plugin_process_runner(
                 req_id = msg.get("req_id", "unknown")
                 
                 logger.info(
-                    "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
+                    "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id={}, event_type={}, event_id={}, req_id={}",
                     plugin_id,
                     event_type,
                     event_id,
@@ -703,12 +703,7 @@ class PluginProcessHost:
         Raises:
             PluginError: 如果事件不存在或执行失败
         """
-        self.logger.info(
-            "[PluginHost] Trigger custom event: plugin_id=%s, event_type=%s, event_id=%s",
-            self.plugin_id,
-            event_type,
-            event_id,
-        )
+        self.logger.info("[PluginHost] Trigger custom event: plugin_id=%s, event_type=%s, event_id=%s" % (self.plugin_id, event_type, event_id))
         return await self.comm_manager.trigger_custom_event(event_type, event_id, args, timeout)
     
     def is_alive(self) -> bool:

@@ -141,12 +141,10 @@ class TimerServicePlugin(NekoPluginBase):
         """触发回调插件的入口点（使用 Queue 机制，单线程处理）"""
         try:
             # 使用 Queue 机制调用其他插件（和 plugin_entry 一样，在单线程中处理）
-            result = self.call_plugin(
-                plugin_id=plugin_id,
-                event_type="plugin_entry",  # 调用 plugin_entry
-                event_id=entry_id,
+            result = self.plugins.call_entry(
+                f"{plugin_id}:{entry_id}",
                 args=args,
-                timeout=5.0
+                timeout=10.0,
             )
             self.logger.debug(
                 f"[TimerService] 成功触发回调: {plugin_id}.{entry_id}, result={result}"
