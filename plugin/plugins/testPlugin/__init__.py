@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin
+from plugin.sdk import ok
 
 
 @neko_plugin
@@ -16,14 +17,12 @@ class HelloPlugin(NekoPluginBase):
 
     @lifecycle(id="startup")
     def startup(self, **_):
-        cfg = self.get_config()
-        config_section = cfg.get("config") if isinstance(cfg, dict) else {}
-        debug_section = config_section.get("debug", {}) if isinstance(config_section, dict) else {}
-        enabled = bool(debug_section.get("enable", False)) if isinstance(debug_section, dict) else False
+        cfg = self.config.dump()
+        enabled = bool(self.config.get("config.debug.enable", default=False))
 
         if not enabled:
             self.file_logger.info("Debug disabled (debug.enable=false), skipping startup debug actions")
-            return {"status": "disabled", "loaded_at": None}
+            return ok(data={"status": "disabled", "loaded_at": None})
 
         self.file_logger.info(f"Current config: {cfg}")
 
@@ -31,9 +30,9 @@ class HelloPlugin(NekoPluginBase):
         self.file_logger.info(f"Current plugins: {plugins}")
 
         loaded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        updated = self.update_config({"debug": {"loaded_at": loaded_at}})
+        updated = self.config.set("debug.loaded_at", loaded_at)
         self.file_logger.info(f"Config updated with loaded_at: {updated}")
-        return {"status": "enabled", "loaded_at": loaded_at}
+        return ok(data={"status": "enabled", "loaded_at": loaded_at})
 
     def run(self, message: str | None = None, **kwargs):
         # 简单返回一个字典结构

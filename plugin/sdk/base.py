@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
+from .config import PluginConfig
 from .version import SDK_VERSION
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
@@ -38,6 +39,7 @@ class NekoPluginBase:
     def __init__(self, ctx: Any):
         self.ctx = ctx
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
+        self.config = PluginConfig(ctx)
 
     def get_input_schema(self) -> Dict[str, Any]:
         """默认从类属性 input_schema 取."""
@@ -71,7 +73,7 @@ class NekoPluginBase:
         通过 ctx.update_status 把状态发回主进程。
         """
         if hasattr(self.ctx, "update_status"):
-            # ✅ 这里只传原始 status，由 Context 负责打包成队列消息
+            # 这里只传原始 status，由 Context 负责打包成队列消息
             self.ctx.update_status(status)
         else:
             logger = getattr(self.ctx, "logger", None)
@@ -203,22 +205,3 @@ class NekoPluginBase:
             args=args,
             timeout=timeout
         )
-
-    def get_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """通过主进程读取本插件的 plugin.toml 配置（推荐方式）。"""
-        if hasattr(self.ctx, "get_own_config"):
-            return self.ctx.get_own_config(timeout=timeout)
-        raise RuntimeError(
-            f"Plugin {self._plugin_id} ctx does not support config access. "
-            "Please update plugin runtime / PluginContext."
-        )
-
-    def update_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
-        """通过主进程更新本插件的 plugin.toml 配置（深度合并）。"""
-        if hasattr(self.ctx, "update_own_config"):
-            return self.ctx.update_own_config(updates=updates, timeout=timeout)
-        raise RuntimeError(
-            f"Plugin {self._plugin_id} ctx does not support config updates. "
-            "Please update plugin runtime / PluginContext."
-        )
-

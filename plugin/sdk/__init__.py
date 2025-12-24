@@ -5,6 +5,8 @@ Plugin SDK 模块
 """
 
 from .version import SDK_VERSION
+from .errors import ErrorCode
+from .responses import ok, fail
 from .decorators import (
     neko_plugin,
     on_event,
@@ -15,10 +17,14 @@ from .decorators import (
     custom_event,  # 新增：自定义事件装饰器
 )
 from .base import NekoPluginBase, PluginMeta
+from .config import PluginConfig
 from .events import EventMeta, EventHandler
 
 __all__ = [
     "SDK_VERSION",
+    "ErrorCode",
+    "ok",
+    "fail",
     # 装饰器
     "neko_plugin",
     "on_event",
@@ -30,6 +36,7 @@ __all__ = [
     # 基类和元数据
     "NekoPluginBase",
     "PluginMeta",
+    "PluginConfig",
     "EventMeta",
     "EventHandler",
 ]

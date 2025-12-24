@@ -17,4 +17,5 @@ conflicts = [
 ]
 
 [debug]
-enable = false
+enable = true
+loaded_at = "2025-12-24T09:03:44.283970Z"

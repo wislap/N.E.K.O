@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Dict, Any, Optional
 from plugin.sdk.base import NekoPluginBase
+from plugin.sdk import ok, fail, ErrorCode
 from plugin.sdk.decorators import (
     neko_plugin,
     lifecycle,
@@ -40,7 +41,7 @@ class TimerServicePlugin(NekoPluginBase):
             "status": "running",
             "timer_count": len(self._timers)
         })
-        return {"status": "ready"}
+        return ok(data={"status": "ready"})
     
     @lifecycle(id="shutdown")
     def shutdown(self, **_):
@@ -53,7 +54,7 @@ class TimerServicePlugin(NekoPluginBase):
             self._stop_timer_internal(timer_id)
         
         self.logger.info(f"已停止 {len(timer_ids)} 个定时器")
-        return {"status": "stopped"}
+        return ok(data={"status": "stopped"})
     
     @custom_event(
         event_type="timer_tick",
@@ -247,19 +248,13 @@ class TimerServicePlugin(NekoPluginBase):
         if timer_id is None:
             timer_id = kwargs.get("timer_id")
         if timer_id is None:
-            return {
-                "success": False,
-                "error": "缺少必需参数: timer_id"
-            }
+            return fail(ErrorCode.VALIDATION_ERROR, "Missing required parameter: timer_id")
         
         # interval 参数处理（支持 interval 和 interval_seconds 别名）
         if interval is None:
             interval = interval_seconds or kwargs.get("interval") or kwargs.get("interval_seconds")
         if interval is None:
-            return {
-                "success": False,
-                "error": "缺少必需参数: interval 或 interval_seconds"
-            }
+            return fail(ErrorCode.VALIDATION_ERROR, "Missing required parameter: interval")
         
         # callback_plugin_id 参数处理（支持 callback_plugin 别名）
         if callback_plugin_id is None:
@@ -279,10 +274,7 @@ class TimerServicePlugin(NekoPluginBase):
         
         with self._timer_lock:
             if timer_id in self._timers:
-                return {
-                    "success": False,
-                    "error": f"定时器 '{timer_id}' 已存在"
-                }
+                return fail(ErrorCode.VALIDATION_ERROR, f"Timer '{timer_id}' already exists")
             
             # 创建停止事件
             stop_event = threading.Event()
@@ -331,12 +323,7 @@ class TimerServicePlugin(NekoPluginBase):
             "timers": list(self._timers.keys())
         })
         
-        return {
-            "success": True,
-            "timer_id": timer_id,
-            "interval": interval,
-            "immediate": immediate
-        }
+        return ok(data={"timer_id": timer_id, "interval": interval, "immediate": immediate})
     
     @plugin_entry(
         id="stop_timer",
@@ -362,10 +349,7 @@ class TimerServicePlugin(NekoPluginBase):
         # 在锁内获取定时器信息和统计信息，然后立即释放锁
         with self._timer_lock:
             if timer_id not in self._timers:
-                return {
-                    "success": False,
-                    "error": f"定时器 '{timer_id}' 不存在"
-                }
+                return fail(ErrorCode.NOT_FOUND, f"Timer '{timer_id}' not found")
             
             timer_info = self._timers[timer_id]
             stop_event = timer_info["stop_event"]
@@ -410,12 +394,7 @@ class TimerServicePlugin(NekoPluginBase):
             "timers": timer_ids
         })
         
-        return {
-            "success": True,
-            "timer_id": timer_id,
-            "tick_count": tick_count,
-            "elapsed": elapsed
-        }
+        return ok(data={"timer_id": timer_id, "tick_count": tick_count, "elapsed": elapsed})
     
     @plugin_entry(
         id="stop_all_timers",
@@ -434,11 +413,7 @@ class TimerServicePlugin(NekoPluginBase):
         
         self.logger.info(f"[TimerService] 已停止 {len(results)} 个定时器")
         
-        return {
-            "success": True,
-            "stopped_count": len(results),
-            "results": results
-        }
+        return ok(data={"stopped_count": len(results), "results": results})
     
     @plugin_entry(
         id="get_timer_info",
@@ -459,25 +434,23 @@ class TimerServicePlugin(NekoPluginBase):
         """获取定时器信息"""
         with self._timer_lock:
             if timer_id not in self._timers:
-                return {
-                    "success": False,
-                    "error": f"定时器 '{timer_id}' 不存在"
-                }
+                return fail(ErrorCode.NOT_FOUND, f"Timer '{timer_id}' not found")
             
             timer_info = self._timers[timer_id]
             thread = timer_info.get("thread")
             
-            return {
-                "success": True,
-                "timer_id": timer_id,
-                "interval": timer_info["interval"],
-                "started_at": timer_info["started_at"],
-                "tick_count": timer_info.get("tick_count", 0),
-                "last_tick_time": timer_info.get("last_tick_time"),
-                "running": thread.is_alive() if thread else False,
-                "callback_plugin_id": timer_info.get("callback_plugin_id"),
-                "callback_entry_id": timer_info.get("callback_entry_id")
-            }
+            return ok(
+                data={
+                    "timer_id": timer_id,
+                    "interval": timer_info["interval"],
+                    "started_at": timer_info["started_at"],
+                    "tick_count": timer_info.get("tick_count", 0),
+                    "last_tick_time": timer_info.get("last_tick_time"),
+                    "running": thread.is_alive() if thread else False,
+                    "callback_plugin_id": timer_info.get("callback_plugin_id"),
+                    "callback_entry_id": timer_info.get("callback_entry_id"),
+                }
+            )
     
     @plugin_entry(
         id="list_timers",
@@ -501,9 +474,5 @@ class TimerServicePlugin(NekoPluginBase):
                     "callback_entry_id": timer_info.get("callback_entry_id")
                 })
         
-        return {
-            "success": True,
-            "timer_count": len(timers),
-            "timers": timers
-        }
+        return ok(data={"timer_count": len(timers), "timers": timers})
 

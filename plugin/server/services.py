@@ -28,6 +28,8 @@ from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
 )
+from plugin.sdk.errors import ErrorCode
+from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
 
@@ -152,6 +154,7 @@ async def trigger_plugin(
     )
     
     # 记录事件到队列
+    trace_id = str(uuid.uuid4())
     event = {
         "type": "plugin_triggered",
         "plugin_id": plugin_id,
@@ -160,6 +163,7 @@ async def trigger_plugin(
         "task_id": task_id,
         "client": client_host,
         "received_at": now_iso(),
+        "trace_id": trace_id,
     }
     _enqueue_event(event)
     
@@ -181,36 +185,75 @@ async def trigger_plugin(
         )
         # 插件未运行，检查是否已注册
         if plugin_registered:
-            # 插件已注册但未运行，返回 503（服务不可用）而不是 404（未找到）
-            raise HTTPException(
-                status_code=503,
-                detail=f"Plugin '{plugin_id}' is registered but not running. Please start the plugin first via POST /plugin/{plugin_id}/start"
+            plugin_response = fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' is registered but not running",
+                details={
+                    "hint": f"Start the plugin via POST /plugin/{plugin_id}/start",
+                    "running_plugins": all_running_plugin_ids,
+                },
+                retriable=True,
+                trace_id=trace_id,
             )
         else:
-            # 插件未注册，返回 404
-            raise HTTPException(
-                status_code=404,
-                detail=f"Plugin '{plugin_id}' is not found/registered"
+            plugin_response = fail(
+                ErrorCode.NOT_FOUND,
+                f"Plugin '{plugin_id}' is not found/registered",
+                details={"known_plugins": list(state.plugins.keys()) if state.plugins else []},
+                trace_id=trace_id,
             )
+
+        return PluginTriggerResponse(
+            success=False,
+            plugin_id=plugin_id,
+            executed_entry=entry_id,
+            args=args,
+            plugin_response=plugin_response,
+            received_at=event["received_at"],
+            plugin_forward_error=None,
+        )
     
     # 检查进程健康状态
     try:
         health = host.health_check()
         if not health.alive:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Plugin '{plugin_id}' process is not alive (status: {health.status})"
+            plugin_response = fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' process is not alive (status: {health.status})",
+                details={"status": health.status, "pid": health.pid, "exitcode": health.exitcode},
+                retriable=True,
+                trace_id=trace_id,
+            )
+            return PluginTriggerResponse(
+                success=False,
+                plugin_id=plugin_id,
+                executed_entry=entry_id,
+                args=args,
+                plugin_response=plugin_response,
+                received_at=event["received_at"],
+                plugin_forward_error=None,
             )
     except (AttributeError, RuntimeError) as e:
         logger.error(f"Failed to check health for plugin {plugin_id}: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Plugin '{plugin_id}' health check failed"
-        ) from e
+        plugin_response = fail(
+            ErrorCode.NOT_READY,
+            f"Plugin '{plugin_id}' health check failed",
+            details={"error": str(e)},
+            retriable=True,
+            trace_id=trace_id,
+        )
+        return PluginTriggerResponse(
+            success=False,
+            plugin_id=plugin_id,
+            executed_entry=entry_id,
+            args=args,
+            plugin_response=plugin_response,
+            received_at=event["received_at"],
+            plugin_forward_error=None,
+        )
     
     # 执行插件
     plugin_response: Any = None
-    plugin_error: Optional[Dict[str, Any]] = None
     
     logger.debug(
         "[plugin_trigger] Calling host.trigger: entry_id=%s, args=%s",
@@ -225,29 +268,72 @@ async def trigger_plugin(
             str(plugin_response)[:500] if plugin_response else None,
         )
     except (TimeoutError, asyncio.TimeoutError) as e:
-        plugin_error = {"error": "Plugin execution timed out"}
         logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
+        plugin_response = fail(
+            ErrorCode.TIMEOUT,
+            "Plugin execution timed out",
+            details={"plugin_id": plugin_id, "entry_id": entry_id},
+            retriable=True,
+            trace_id=trace_id,
+        )
     except PluginError as e:
         logger.warning(f"Plugin {plugin_id} entry {entry_id} error: {e}")
-        plugin_error = {"error": str(e)}
+        plugin_response = fail(
+            ErrorCode.INTERNAL,
+            str(e),
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
+            trace_id=trace_id,
+        )
     except (ConnectionError, OSError) as e:
         logger.error(f"Communication error with plugin {plugin_id}: {e}")
-        plugin_error = {"error": "Communication error with plugin"}
+        plugin_response = fail(
+            ErrorCode.NOT_READY,
+            "Communication error with plugin",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
+            retriable=True,
+            trace_id=trace_id,
+        )
     except (ValueError, TypeError, AttributeError) as e:
         logger.error(f"Invalid parameters for plugin {plugin_id} entry {entry_id}: {e}")
-        plugin_error = {"error": "Invalid request parameters"}
+        plugin_response = fail(
+            ErrorCode.VALIDATION_ERROR,
+            "Invalid request parameters",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
+            trace_id=trace_id,
+        )
     except Exception as e:
         logger.exception(f"plugin_trigger: Unexpected error type invoking plugin {plugin_id} via IPC")
-        plugin_error = {"error": "An internal error occurred"}
+        plugin_response = fail(
+            ErrorCode.INTERNAL,
+            "An internal error occurred",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
+            trace_id=trace_id,
+        )
+
+    if not is_envelope(plugin_response):
+        plugin_response = fail(
+            ErrorCode.INVALID_RESPONSE,
+            "Plugin returned an invalid response shape (expected SDK envelope)",
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(plugin_response).__name__,
+            },
+            trace_id=trace_id,
+        )
+    else:
+        if plugin_response.get("trace_id") is None:
+            plugin_response = dict(plugin_response)
+            plugin_response["trace_id"] = trace_id
     
     return PluginTriggerResponse(
-        success=plugin_error is None,
+        success=bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
         plugin_id=plugin_id,
         executed_entry=entry_id,
         args=args,
         plugin_response=plugin_response,
         received_at=event["received_at"],
-        plugin_forward_error=plugin_error,
+        plugin_forward_error=None,
     )
 
 

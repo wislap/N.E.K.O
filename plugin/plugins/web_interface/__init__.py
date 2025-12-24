@@ -17,6 +17,7 @@ import uvicorn
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import neko_plugin, lifecycle, plugin_entry
+from plugin.sdk import ok, fail, ErrorCode
 import os
 
 
@@ -140,12 +141,14 @@ class WebInterfacePlugin(NekoPluginBase):
             
             self.logger.info(f"Web server started at http://{self.host}:{self.port}")
             
-            return {
-                "status": "ready",
-                "host": self.host,
-                "port": self.port,
-                "url": f"http://{self.host}:{self.port}"
-            }
+            return ok(
+                data={
+                    "status": "ready",
+                    "host": self.host,
+                    "port": self.port,
+                    "url": f"http://{self.host}:{self.port}",
+                }
+            )
             
         except Exception as e:
             self.logger.exception("Failed to start web server")
@@ -153,10 +156,7 @@ class WebInterfacePlugin(NekoPluginBase):
                 "status": "error",
                 "error": str(e)
             })
-            return {
-                "status": "error",
-                "error": str(e)
-            }
+            return fail(ErrorCode.INTERNAL, "Failed to start web server", details={"error": str(e)})
     
     def _run_server(self):
         """在后台线程中运行服务器"""
@@ -630,11 +630,11 @@ class WebInterfacePlugin(NekoPluginBase):
             
             self.logger.info("Web Interface Plugin shut down successfully")
             
-            return {"status": "stopped"}
+            return ok(data={"status": "stopped"})
             
         except Exception as e:
             self.logger.exception("Error during shutdown")
-            return {"status": "error", "error": str(e)}
+            return fail(ErrorCode.INTERNAL, "Error during shutdown", details={"error": str(e)})
     
     @plugin_entry(
         id="add_message",
@@ -739,15 +739,16 @@ class WebInterfacePlugin(NekoPluginBase):
         with self._messages_lock:
             msg_count = len(self.messages)
         
-        return {
-            "success": True,
-            "message_count": msg_count,
-            "message": {
-                "source": source,
-                "content": content,
-                "priority": priority
+        return ok(
+            data={
+                "message_count": msg_count,
+                "message": {
+                    "source": source,
+                    "content": content,
+                    "priority": priority,
+                },
             }
-        }
+        )
     
     @plugin_entry(
         id="get_status",
@@ -761,14 +762,16 @@ class WebInterfacePlugin(NekoPluginBase):
         
         thread_alive = self.server_thread.is_alive() if self.server_thread else False
         
-        return {
-            "status": "running" if self.server and thread_alive else "stopped",
-            "host": self.host,
-            "port": self.port,
-            "url": f"http://{self.host}:{self.port}",
-            "message_count": msg_count,
-            "thread_alive": thread_alive
-        }
+        return ok(
+            data={
+                "status": "running" if self.server and thread_alive else "stopped",
+                "host": self.host,
+                "port": self.port,
+                "url": f"http://{self.host}:{self.port}",
+                "message_count": msg_count,
+                "thread_alive": thread_alive,
+            }
+        )
     
     @plugin_entry(
         id="check_plugins",
@@ -805,20 +808,17 @@ class WebInterfacePlugin(NekoPluginBase):
                         result["suggestion"] = "请检查 timer_service 插件的配置和日志"
                     
                     self.logger.info(f"[WebInterface] 插件状态检查: {result}")
-                    return result
+                    return ok(data=result)
                 else:
-                    return {
-                        "success": False,
-                        "error": f"无法获取插件列表，HTTP {response.status_code}",
-                        "loaded_plugins": []
-                    }
+                    return fail(
+                        ErrorCode.NOT_READY,
+                        f"Failed to fetch plugins list, HTTP {response.status_code}",
+                        details={"loaded_plugins": []},
+                        retriable=True,
+                    )
         except Exception as e:
             self.logger.exception("[WebInterface] 检查插件状态失败")
-            return {
-                "success": False,
-                "error": str(e),
-                "loaded_plugins": []
-            }
+            return fail(ErrorCode.INTERNAL, "Check plugins failed", details={"error": str(e)})
     
     @plugin_entry(
         id="test_timer",
@@ -875,26 +875,14 @@ class WebInterfacePlugin(NekoPluginBase):
                     f"定时器已启动: {timer_id}，间隔 {interval} 秒，最多执行 {count} 次",
                     priority=7
                 )
-                return {
-                    "success": True,
-                    "timer_id": timer_id,
-                    "interval": interval,
-                    "result": result
-                }
+                return ok(data={"timer_id": timer_id, "interval": interval, "result": result})
             else:
                 error_msg = result.get("error", "未知错误")
                 self.logger.warning(f"[WebInterface] 定时器启动失败: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "result": result
-                }
+                return fail(ErrorCode.INTERNAL, error_msg, details={"result": result})
         except Exception as e:
             self.logger.exception("[WebInterface] 测试定时器失败")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return fail(ErrorCode.INTERNAL, "Test timer failed", details={"error": str(e)})
     
     @plugin_entry(
         id="on_timer_tick",
@@ -934,10 +922,5 @@ class WebInterfacePlugin(NekoPluginBase):
                 priority=6
             )
         
-        return {
-            "success": True,
-            "timer_id": timer_id,
-            "count": current_count,
-            "max_count": max_count
-        }
+        return ok(data={"timer_id": timer_id, "count": current_count, "max_count": max_count})
 
