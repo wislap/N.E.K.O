@@ -124,6 +124,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 
 interface Props {
   modelValue: any
@@ -323,6 +324,7 @@ function confirmAddKey() {
 
   const next = { ...(props.modelValue || {}) }
   if (Object.prototype.hasOwnProperty.call(next, key)) {
+    ElMessage.warning(t('plugins.duplicateFieldKey'))
     addKeyDialog.value = false
     return
   }

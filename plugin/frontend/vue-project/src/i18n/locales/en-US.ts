@@ -112,6 +112,7 @@ export default {
     addItem: 'Add Item',
     fieldName: 'Field Name',
     fieldType: 'Field Type',
+    duplicateFieldKey: 'Field name already exists. Please choose another one.',
     diffPreview: 'Diff Preview'
   },
   metrics: {

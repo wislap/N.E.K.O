@@ -217,8 +217,8 @@ async function save() {
         await pluginStore.reload(props.pluginId)
         ElMessage.success(t('messages.pluginReloaded'))
       } catch (e: any) {
-        if (e !== 'cancel') {
-          // ignore
+        if (e !== 'cancel' && e !== 'close') {
+          ElMessage.error(e?.message || t('messages.reloadFailed'))
         }
       }
     }

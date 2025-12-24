@@ -112,6 +112,7 @@ export default {
     addItem: '新增项',
     fieldName: '字段名',
     fieldType: '字段类型',
+    duplicateFieldKey: '字段名已存在，请换一个',
     diffPreview: '差异预览'
   },
   metrics: {

@@ -360,7 +360,7 @@ def read_log_file_tail(log_file: Path, lines: int = 100) -> List[Dict[str, Any]]
             
             return parsed_logs
     except Exception as e:
-        logger.exception(f"Failed to read log file {log_file}: {e}")
+        logger.exception(f"Failed to read log file {log_file}")
         return []
 
 
@@ -455,13 +455,13 @@ def get_plugin_logs(
             reverse=True
         )
     except Exception as e:
-        logger.exception(f"Failed to find log files in {log_dir} with pattern {pattern}: {e}")
+        logger.exception(f"Failed to find log files in {log_dir} with pattern {pattern}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to find log files: {str(e)}"
+            "error": f"Failed to find log files"
         }
     
     if not log_files:
@@ -479,13 +479,13 @@ def get_plugin_logs(
     try:
         logs = read_log_file_tail(latest_log, lines)
     except Exception as e:
-        logger.exception(f"Failed to read log file {latest_log}: {e}")
+        logger.exception(f"Failed to read log file {latest_log}")
         return {
             "plugin_id": plugin_id,
             "logs": [],
             "total_lines": 0,
             "returned_lines": 0,
-            "error": f"Failed to read log file: {str(e)}"
+            "error": f"Failed to read log file"
         }
     
     # 过滤
@@ -540,7 +540,7 @@ def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[List[
             
             return new_logs, new_position
     except Exception as e:
-        logger.exception(f"Failed to read incremental log from {log_file}: {e}")
+        logger.exception(f"Failed to read incremental log from {log_file}")
         return [], last_position
 
 
@@ -627,7 +627,7 @@ class LogFileWatcher:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.exception(f"Error in log watcher loop for {self.plugin_id}: {e}")
+                logger.exception(f"Error in log watcher loop for {self.plugin_id}")
                 await asyncio.sleep(1)
     
     async def _broadcast_logs(self, logs: List[Dict[str, Any]]):
@@ -691,7 +691,7 @@ class LogFileWatcher:
                 # 获取文件当前大小作为起始位置
                 self.last_position = self.current_log_file.stat().st_size
         except Exception as e:
-            logger.exception(f"Failed to send initial logs: {e}")
+            logger.exception("Failed to send initial logs")
 
 
 async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
