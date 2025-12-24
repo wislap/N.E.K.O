@@ -117,11 +117,7 @@ const configPath = ref<string | undefined>(undefined)
 const lastModified = ref<string | undefined>(undefined)
 
 function deepClone<T>(v: T): T {
-  try {
-    return JSON.parse(JSON.stringify(toRaw(v))) as T
-  } catch {
-    return JSON.parse(JSON.stringify(v)) as T
-  }
+  return JSON.parse(JSON.stringify(toRaw(v))) as T
 }
 
 function sanitizeConfigForUpdate(cfg: Record<string, any>) {
@@ -176,7 +172,6 @@ const hasChanges = computed(() => {
 
 async function syncToFormDraft() {
   const res = await parsePluginConfigToml(props.pluginId, draftToml.value || '')
-  baselineConfig.value = baselineConfig.value || {}
   draftConfig.value = (res.config || {}) as Record<string, any>
 }
 
