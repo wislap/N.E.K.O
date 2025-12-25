@@ -43,7 +43,7 @@ from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
 from plugin.server.management import start_plugin, stop_plugin, reload_plugin
 from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint
-from plugin.server.config_service import load_plugin_config, update_plugin_config
+from plugin.server.config_service import load_plugin_config, update_plugin_config, replace_plugin_config
 from plugin.server.metrics_service import metrics_collector
 from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
@@ -1034,7 +1034,7 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
         validate_config_updates(plugin_id, payload.config)
         
         # 执行更新
-        return update_plugin_config(plugin_id, payload.config)
+        return replace_plugin_config(plugin_id, payload.config)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:

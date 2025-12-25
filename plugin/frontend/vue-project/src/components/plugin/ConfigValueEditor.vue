@@ -340,12 +340,23 @@ function confirmAddKey() {
   width: 100%;
 }
 
+.obj,
+.arr {
+  border-left: 2px solid rgba(0, 0, 0, 0.08);
+  padding-left: 14px;
+  margin: 6px 0 12px;
+}
+
 .row {
   display: flex;
   gap: 10px;
   align-items: flex-start;
   flex-wrap: nowrap;
-  padding: 6px 0;
+  padding: 10px 0;
+}
+
+.row + .row {
+  border-top: 1px dashed rgba(0, 0, 0, 0.08);
 }
 
 .k {
@@ -371,7 +382,7 @@ function confirmAddKey() {
 }
 
 .add {
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .diff-added {

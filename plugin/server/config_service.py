@@ -241,6 +241,100 @@ def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    使用传入的新配置覆盖写入插件配置。
+
+    注意：为兼容前端表单更新逻辑，允许 new_config 不包含 plugin.id / plugin.entry，
+    后端会从现有配置中补回这两个受保护字段。
+    """
+    if tomllib is None or tomli_w is None:
+        raise HTTPException(
+            status_code=500,
+            detail="TOML library not available"
+        )
+
+    if not isinstance(new_config, dict):
+        raise HTTPException(status_code=400, detail="config must be an object")
+
+    with _config_update_locks_lock:
+        if plugin_id not in _config_update_locks:
+            _config_update_locks[plugin_id] = threading.Lock()
+        lock = _config_update_locks[plugin_id]
+
+    with lock:
+        config_path = get_plugin_config_path(plugin_id)
+
+        try:
+            with open(config_path, 'r+b') as f:
+                with file_lock(f):
+                    current_config = tomllib.load(f)
+
+                    plugin_section = new_config.get("plugin") if isinstance(new_config.get("plugin"), dict) else None
+                    if plugin_section is None:
+                        plugin_section = {}
+                        new_config = {**new_config, "plugin": plugin_section}
+
+                    current_plugin_section = (
+                        current_config.get("plugin") if isinstance(current_config.get("plugin"), dict) else {}
+                    )
+
+                    if "id" not in plugin_section and "id" in current_plugin_section:
+                        plugin_section["id"] = current_plugin_section.get("id")
+                    if "entry" not in plugin_section and "entry" in current_plugin_section:
+                        plugin_section["entry"] = current_plugin_section.get("entry")
+
+                    config_dir = config_path.parent
+                    temp_fd, temp_path = tempfile.mkstemp(
+                        suffix='.toml',
+                        prefix='.plugin_config_',
+                        dir=config_dir
+                    )
+
+                    try:
+                        with os.fdopen(temp_fd, 'wb') as temp_file:
+                            tomli_w.dump(new_config, temp_file)
+                            temp_file.flush()
+                            os.fsync(temp_file.fileno())
+
+                        os.replace(temp_path, config_path)
+
+                        try:
+                            config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                            try:
+                                os.fsync(config_dir_fd)
+                            finally:
+                                os.close(config_dir_fd)
+                        except (AttributeError, OSError):
+                            pass
+                    except Exception:
+                        try:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                        except Exception:
+                            pass
+                        raise
+
+            updated = load_plugin_config(plugin_id)
+
+            logger.info(f"Replaced config for plugin {plugin_id}")
+            return {
+                "success": True,
+                "plugin_id": plugin_id,
+                "config": updated["config"],
+                "requires_reload": True,
+                "message": "Config updated successfully"
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Failed to replace config for plugin {plugin_id}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to update config: {str(e)}"
+            ) from e
+
+
 def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     """
     更新插件配置

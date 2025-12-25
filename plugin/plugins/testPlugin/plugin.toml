@@ -1,8 +1,8 @@
 [plugin]
-id = "testPlugin"
 name = "Test Plugin"
 description = "Minimal plugin used for local testing, no required input"
 version = "0.1.0"
+id = "testPlugin"
 entry = "plugins.testPlugin:HelloPlugin"
 
 [plugin.author]
@@ -18,7 +18,7 @@ conflicts = [
 
 [debug]
 enable = true
-loaded_at = "2025-12-24T16:57:58.099140Z"
+loaded_at = "2025-12-25T09:00:23.303010Z"
 interval_seconds = 3
 burst_size = 2
 max_count = 5
