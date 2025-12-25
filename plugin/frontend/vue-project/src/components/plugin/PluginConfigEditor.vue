@@ -153,7 +153,10 @@ const sourceTextareaRef = ref<HTMLTextAreaElement | null>(null)
 const gutterScrollRef = ref<HTMLDivElement | null>(null)
 
 function deepClone<T>(v: T): T {
-  return JSON.parse(JSON.stringify(toRaw(v))) as T
+  const raw = toRaw(v) as any
+  const sc = (globalThis as any).structuredClone
+  if (typeof sc === 'function') return sc(raw) as T
+  return JSON.parse(JSON.stringify(raw)) as T
 }
 
 function sanitizeConfigForUpdate(cfg: Record<string, any>) {
@@ -290,17 +293,15 @@ function gutterLineClass(n: number) {
 }
 
 async function resetDraft() {
-  saving.value = true
   error.value = null
+  suppressSourceDirty.value = true
   try {
-    suppressSourceDirty.value = true
     draftToml.value = baselineToml.value
     draftConfig.value = deepClone(baselineConfig.value || {})
     sourceDirty.value = false
     await syncGutterToTextarea()
-    suppressSourceDirty.value = false
   } finally {
-    saving.value = false
+    suppressSourceDirty.value = false
   }
 }
 

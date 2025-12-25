@@ -458,8 +458,11 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> Dict[str, Any]:
     with lock:
         config_path = get_plugin_config_path(plugin_id)
 
+        if toml_text is None:
+            raise HTTPException(status_code=400, detail="toml_text cannot be None")
+
         try:
-            parsed_new = tomllib.loads(toml_text or "")
+            parsed_new = tomllib.loads(toml_text)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(e)}") from e
 
@@ -572,8 +575,11 @@ def parse_toml_to_config(plugin_id: str, toml_text: str) -> Dict[str, Any]:
     if tomllib is None:
         raise HTTPException(status_code=500, detail="TOML library not available")
 
+    if toml_text is None:
+        raise HTTPException(status_code=400, detail="toml_text cannot be None")
+
     try:
-        parsed = tomllib.loads(toml_text or "")
+        parsed = tomllib.loads(toml_text)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(e)}") from e
 
