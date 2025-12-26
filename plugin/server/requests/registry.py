@@ -11,10 +11,12 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         handle_plugin_config_get,
         handle_plugin_config_update,
     )
+    from plugin.server.requests.system_config import handle_plugin_system_config_get
 
     return {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
         "PLUGIN_QUERY": handle_plugin_query,
         "PLUGIN_CONFIG_GET": handle_plugin_config_get,
         "PLUGIN_CONFIG_UPDATE": handle_plugin_config_update,
+        "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
     }

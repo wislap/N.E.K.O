@@ -60,6 +60,7 @@ from plugin.sdk.decorators import (
     message,
     timer_interval,
 )
+from plugin.sdk.system_info import SystemInfo
 
 __all__ = [
     # Core
@@ -112,6 +113,7 @@ __all__ = [
     'lifecycle',
     'message',
     'timer_interval',
+    'SystemInfo',
     # Logger
     'PluginFileLogger',
     'enable_plugin_file_logging',

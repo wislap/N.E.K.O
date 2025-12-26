@@ -20,6 +20,7 @@ from .base import NekoPluginBase, PluginMeta
 from .config import PluginConfig
 from .plugins import Plugins
 from .events import EventMeta, EventHandler
+from .system_info import SystemInfo
 
 __all__ = [
     "SDK_VERSION",
@@ -41,4 +42,5 @@ __all__ = [
     "Plugins",
     "EventMeta",
     "EventHandler",
+    "SystemInfo",
 ]
