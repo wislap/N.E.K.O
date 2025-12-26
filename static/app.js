@@ -734,7 +734,7 @@ function init_app() {
 
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
-        function isRealisticOutputEnabled() {
+        function isMergeMessagesEnabled() {
             return typeof window.realisticOutputEnabled !== 'undefined'
                 ? window.realisticOutputEnabled
                 : realisticOutputEnabled;
@@ -804,8 +804,8 @@ function init_app() {
             });
         }
 
-        if (sender === 'gemini' && isRealisticOutputEnabled()) {
-            // 拟真输出：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
+        if (sender === 'gemini' && !isMergeMessagesEnabled()) {
+            // 拟真输出（合并消息关闭）：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
             if (isNewMessage) {
                 window._realisticGeminiBuffer = '';
             }
@@ -815,7 +815,23 @@ function init_app() {
             window._realisticGeminiBuffer = rest;
 
             sentences.forEach(s => createGeminiBubble(s));
-        } else if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage &&
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+            // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
+            window._realisticGeminiBuffer = '';
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'gemini');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
+            chatContainer.appendChild(messageDiv);
+            window.currentGeminiMessage = messageDiv;
+
+            checkAndShowSubtitlePrompt(text);
+
+            if (isFirstAIResponse) {
+                isFirstAIResponse = false;
+                console.log('检测到AI第一次回复');
+                checkAndUnlockFirstDialogueAchievement();
+            }
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && !isNewMessage && window.currentGeminiMessage &&
             window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
             window.currentGeminiMessage.isConnected) {
             // 追加到现有消息（使用 textContent 避免 XSS 风险）
