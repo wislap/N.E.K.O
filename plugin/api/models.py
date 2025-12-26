@@ -7,7 +7,7 @@ import base64
 from datetime import datetime
 from typing import Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 from plugin.sdk.version import SDK_VERSION
 
 
@@ -17,7 +17,7 @@ class PluginTriggerRequest(BaseModel):
     plugin_id: str
     entry_id: str
     args: Dict[str, Any] = {}
-    lanlan_name: Optional[str] = None
+    lanlan_name: Optional[str] = Field(default=None, description="触发插件的猫娘角色名称")
     task_id: Optional[str] = None
 
 
@@ -61,6 +61,16 @@ class PluginDependency(BaseModel):
     supported: Optional[str] = None
     untested: Optional[str] = None  # 如果使用依赖配置，此字段是必须的
     conflicts: Optional[Union[List[str], bool]] = None  # 可以是版本范围列表，或 true（表示冲突）
+
+    @model_validator(mode="after")
+    def validate_dependency_constraints(self) -> "PluginDependency":
+        if not any([self.id, self.entry, self.custom_event, self.providers]):
+            raise ValueError("至少需要提供 id、entry、custom_event 或 providers 中的一个")
+
+        if self.entry is not None and self.custom_event is not None:
+            raise ValueError("entry 和 custom_event 不能同时使用")
+
+        return self
 
 
 class PluginMeta(BaseModel):

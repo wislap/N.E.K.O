@@ -16,7 +16,7 @@ class HelloPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger  # 使用file_logger作为主要logger
         self.plugin_id = ctx.plugin_id  # 使用 plugin_id
-        self._debug_executor = ThreadPoolExecutor(max_workers=32)
+        self._debug_executor = ThreadPoolExecutor(max_workers=8)
         self.file_logger.info("HelloPlugin initialized with file logging enabled")
 
     def _read_local_toml(self) -> dict:
@@ -105,8 +105,8 @@ class HelloPlugin(NekoPluginBase):
             result = self.config_debug(include_values=include_values)
             try:
                 self.file_logger.info("[testPlugin.config_debug] {}", result)
-            except Exception:
-                pass
+            except Exception as log_err:
+                self.file_logger.warning("Failed to log config_debug result: {}", log_err)
             self.ctx.push_message(
                 source="testPlugin.debug.config",
                 message_type="text",
@@ -177,6 +177,13 @@ class HelloPlugin(NekoPluginBase):
                 "memory": memory_enabled,
             }
         )
+
+    @lifecycle(id="shutdown")
+    def shutdown(self, **_):
+        if getattr(self, "_debug_executor", None) is not None:
+            self._debug_executor.shutdown(wait=False)
+            self.file_logger.info("Debug executor shutdown completed")
+        return ok(data={"status": "shutdown"})
 
     @plugin_entry(id="on_debug_tick")
     def on_debug_tick(

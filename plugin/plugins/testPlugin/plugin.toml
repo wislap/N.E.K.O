@@ -27,7 +27,7 @@ enable = false
 include_values = false
 
 [debug.memory]
-enable = true
+enable = false
 lanlan_name = "test"
 query = "hello"
 timeout = 5.0

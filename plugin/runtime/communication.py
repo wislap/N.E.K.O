@@ -236,7 +236,7 @@ class PluginCommunicationResourceManager:
             self._background_tasks.add(cleanup_task)
             cleanup_task.add_done_callback(self._background_tasks.discard)
             
-            raise TimeoutError(f"%s execution timed out after %ss" % (error_context, timeout)) from None
+            raise TimeoutError("%s execution timed out after %ss" % (error_context, timeout)) from None
 
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
