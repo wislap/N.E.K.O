@@ -67,7 +67,7 @@ Live2DManager.prototype.createPopup = function (buttonId) {
 Live2DManager.prototype._createSettingsPopupContent = function (popup) {
     // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面）
     const settingsToggles = [
-        { id: 'realistic-output', label: window.t ? window.t('settings.toggles.realisticOutput') : '拟真输出', labelKey: 'settings.toggles.realisticOutput' },
+        { id: 'realistic-output', label: window.t ? window.t('settings.toggles.realisticOutput') : '合并消息', labelKey: 'settings.toggles.realisticOutput' },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled' },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled' }

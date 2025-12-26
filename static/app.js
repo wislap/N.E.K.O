@@ -579,6 +579,9 @@ function init_app() {
                                 });
                                 messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
                                 chatContainer.appendChild(messageDiv);
+                                try {
+                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                } catch (_) { }
                                 window.currentGeminiMessage = messageDiv;
                                 window._realisticGeminiBuffer = '';
 
