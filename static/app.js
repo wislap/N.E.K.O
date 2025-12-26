@@ -560,12 +560,44 @@ function init_app() {
                     }
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log('收到turn end事件，开始情感分析和翻译');
+                    // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
+                    try {
+                        const mergeEnabled = typeof window.realisticOutputEnabled !== 'undefined'
+                            ? window.realisticOutputEnabled
+                            : false;
+                        if (!mergeEnabled) {
+                            const rest = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
+                            const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                            if (trimmed) {
+                                const messageDiv = document.createElement('div');
+                                messageDiv.classList.add('message', 'gemini');
+                                const timeStr = new Date().toLocaleTimeString('en-US', {
+                                    hour12: false,
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit'
+                                });
+                                messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
+                                chatContainer.appendChild(messageDiv);
+                                window.currentGeminiMessage = messageDiv;
+                                window._realisticGeminiBuffer = '';
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('turn end flush realistic buffer failed:', e);
+                    }
                     // 消息完成时进行情感分析和翻译
-                    if (window.currentGeminiMessage &&
-                        window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                        window.currentGeminiMessage.isConnected &&
-                        typeof window.currentGeminiMessage.textContent === 'string') {
-                        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                    {
+                        const bufferedFullText = typeof window._geminiTurnFullText === 'string'
+                            ? window._geminiTurnFullText
+                            : '';
+                        const fallbackFromBubble = (window.currentGeminiMessage &&
+                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                            window.currentGeminiMessage.isConnected &&
+                            typeof window.currentGeminiMessage.textContent === 'string')
+                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '')
+                            : '';
+                        const fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
                         
                         if (!fullText || !fullText.trim()) {
                             return;
@@ -802,6 +834,15 @@ function init_app() {
                 minute: '2-digit',
                 second: '2-digit'
             });
+        }
+
+        // 维护“本轮 AI 回复”的完整文本（用于 turn end 时整段翻译/情感分析）
+        if (sender === 'gemini') {
+            if (isNewMessage) {
+                window._geminiTurnFullText = '';
+            }
+            const prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+            window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
         }
 
         if (sender === 'gemini' && !isMergeMessagesEnabled()) {
