@@ -329,6 +329,35 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
         )
         
         trigger_args = payload.args if isinstance(payload.args, dict) else {}
+
+        try:
+            ctx_obj = trigger_args.get("_ctx")
+            if not isinstance(ctx_obj, dict):
+                ctx_obj = {}
+
+            bucket_id = None
+            for k in ("session_id", "conversation_id", "chat_id", "user_id", "lanlan_name"):
+                v = ctx_obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    bucket_id = v.strip()
+                    break
+
+            if bucket_id is None:
+                bucket_id = "default"
+
+            state.add_user_context_event(
+                bucket_id=bucket_id,
+                event={
+                    "type": "PLUGIN_TRIGGER",
+                    "plugin_id": payload.plugin_id,
+                    "entry_id": payload.entry_id,
+                    "task_id": payload.task_id,
+                    "client_host": client_host,
+                    "args": trigger_args,
+                },
+            )
+        except Exception:
+            pass
         # Merge lanlan_name into a reserved context field for plugin authors.
         # Priority: explicit payload.lanlan_name > args['_ctx']['lanlan_name'] (if present)
         try:

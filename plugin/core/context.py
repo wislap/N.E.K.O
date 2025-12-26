@@ -271,6 +271,66 @@ class PluginContext:
             f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
         )
 
+    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
+        self._enforce_sync_call_policy("get_user_context")
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        if not isinstance(bucket_id, str) or not bucket_id:
+            raise ValueError("bucket_id is required")
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "type": "USER_CONTEXT_GET",
+            "from_plugin": self.plugin_id,
+            "request_id": request_id,
+            "bucket_id": bucket_id,
+            "limit": int(limit),
+            "timeout": float(timeout),
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            if response is None:
+                time.sleep(check_interval)
+                continue
+
+            if not isinstance(response, dict):
+                continue
+
+            if response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+
+            result = response.get("result")
+            if isinstance(result, dict):
+                return result
+            return {"bucket_id": bucket_id, "history": result}
+
+        orphan_response = None
+        try:
+            from plugin.core.state import state
+            orphan_response = state.get_plugin_response(request_id)
+        except Exception:
+            orphan_response = None
+        if orphan_response is not None:
+            self.logger.warning(
+                f"[PluginContext] Timeout reached, but response was found (likely delayed). "
+                f"Cleaned up orphan response for req_id={request_id}"
+            )
+
+        raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
+
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         self._enforce_sync_call_policy("query_plugins")
         if self._plugin_comm_queue is None:

@@ -6,7 +6,9 @@
 import asyncio
 import logging
 import threading
-from typing import Any, Dict, Optional
+import time
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
@@ -32,6 +34,11 @@ class PluginRuntimeState:
         self._plugin_response_map_manager: Optional[Any] = None
         # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
+
+        self._user_context_lock = threading.Lock()
+        self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
+        self._user_context_default_maxlen: int = 200
+        self._user_context_ttl_seconds: float = 60.0 * 60.0
 
     @property
     def event_queue(self) -> asyncio.Queue:
@@ -179,6 +186,50 @@ class PluginRuntimeState:
             except Exception as e:
                 logger = logging.getLogger("user_plugin_server")
                 logger.warning(f"Error shutting down plugin response map manager: {e}")
+
+    def add_user_context_event(self, bucket_id: str, event: Dict[str, Any]) -> None:
+        if not isinstance(bucket_id, str) or not bucket_id:
+            bucket_id = "default"
+
+        now = time.time()
+        payload = dict(event) if isinstance(event, dict) else {"event": event}
+        payload.setdefault("_ts", now)
+
+        with self._user_context_lock:
+            dq = self._user_context_store.get(bucket_id)
+            if dq is None:
+                dq = deque(maxlen=self._user_context_default_maxlen)
+                self._user_context_store[bucket_id] = dq
+            dq.append(payload)
+
+            ttl = self._user_context_ttl_seconds
+            if ttl > 0 and dq:
+                cutoff = now - ttl
+                while dq and float((dq[0] or {}).get("_ts", 0.0)) < cutoff:
+                    dq.popleft()
+
+    def get_user_context(self, bucket_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not isinstance(bucket_id, str) or not bucket_id:
+            bucket_id = "default"
+
+        n = int(limit) if isinstance(limit, int) else 20
+        if n <= 0:
+            return []
+
+        now = time.time()
+        with self._user_context_lock:
+            dq = self._user_context_store.get(bucket_id)
+            if not dq:
+                return []
+
+            ttl = self._user_context_ttl_seconds
+            if ttl > 0 and dq:
+                cutoff = now - ttl
+                while dq and float((dq[0] or {}).get("_ts", 0.0)) < cutoff:
+                    dq.popleft()
+
+            items = list(dq)[-n:]
+            return [dict(x) for x in items if isinstance(x, dict)]
 
 
 # 全局状态实例
