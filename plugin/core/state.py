@@ -242,15 +242,14 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._deleted_event_ids.add(event_id)
             removed = False
-            for idx, rec in enumerate(list(self._event_store)):
+            new_store = deque(maxlen=self._event_store.maxlen)
+            for rec in self._event_store:
                 rid = rec.get("event_id") or rec.get("trace_id") if isinstance(rec, dict) else None
                 if rid == event_id:
-                    try:
-                        del self._event_store[idx]
-                        removed = True
-                        break
-                    except Exception:
-                        break
+                    removed = True
+                else:
+                    new_store.append(rec)
+            self._event_store = new_store
             if removed:
                 try:
                     self.bus_change_hub.emit("events", "del", {"event_id": event_id})
@@ -264,15 +263,14 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._deleted_lifecycle_ids.add(lifecycle_id)
             removed = False
-            for idx, rec in enumerate(list(self._lifecycle_store)):
+            new_store = deque(maxlen=self._lifecycle_store.maxlen)
+            for rec in self._lifecycle_store:
                 rid = rec.get("lifecycle_id") or rec.get("trace_id") if isinstance(rec, dict) else None
                 if rid == lifecycle_id:
-                    try:
-                        del self._lifecycle_store[idx]
-                        removed = True
-                        break
-                    except Exception:
-                        break
+                    removed = True
+                else:
+                    new_store.append(rec)
+            self._lifecycle_store = new_store
             if removed:
                 try:
                     self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id})

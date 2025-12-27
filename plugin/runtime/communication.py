@@ -130,8 +130,8 @@ class PluginCommunicationResourceManager:
         
         # 关闭线程池
         if self._executor:
-            # 必须等待线程退出，否则非 daemon 线程会阻止主进程退出。
-            # 这里投递到 executor 的 queue.get/put 都带超时（QUEUE_GET_TIMEOUT），因此可在可控时间内退出。
+            # 必须等待线程退出, 否则非 daemon 线程会阻止主进程退出.
+            # 这里投递到 executor 的 queue.get/put 都带超时(QUEUE_GET_TIMEOUT), 因此可在可控时间内退出.
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         
@@ -139,7 +139,7 @@ class PluginCommunicationResourceManager:
     
     def get_pending_requests_count(self) -> int:
         """
-        获取待处理请求数量（公共方法）
+        获取待处理请求数量(公共方法)
         
         Returns:
             待处理的请求数量
@@ -193,8 +193,8 @@ class PluginCommunicationResourceManager:
             self.logger.error(
                 f"Plugin {self.plugin_id} {error_context} timed out after {timeout}s, req_id={req_id}"
             )
-            # 超时后不立即清理 Future，给响应一些时间到达
-            # 延迟清理，避免响应到达时找不到 Future
+            # 超时后不立即清理 Future, 给响应一些时间到达
+            # 延迟清理, 避免响应到达时找不到 Future
             async def cleanup_after_delay():
                 await asyncio.sleep(2.0)  # 给响应2秒时间到达
                 if req_id in self._pending_futures:
@@ -218,7 +218,7 @@ class PluginCommunicationResourceManager:
         Args:
             entry_id: 入口 ID
             args: 参数
-            timeout: 超时时间（秒）
+            timeout: 超时时间(秒)
         
         Returns:
             插件返回的结果
@@ -270,10 +270,10 @@ class PluginCommunicationResourceManager:
         触发自定义事件执行
         
         Args:
-            event_type: 自定义事件类型（例如 "file_change", "user_action"）
+            event_type: 自定义事件类型(例如 "file_change", "user_action")
             event_id: 事件ID
             args: 参数字典
-            timeout: 超时时间（秒）
+            timeout: 超时时间(秒)
         
         Returns:
             事件处理器返回的结果
@@ -448,8 +448,15 @@ class PluginCommunicationResourceManager:
                                     msg["time"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                                 msg["_bus_stored"] = True
                                 state.append_message_record(msg)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                try:
+                                    self.logger.debug(
+                                        "Failed to store message to bus for plugin %s: %s",
+                                        self.plugin_id,
+                                        e,
+                                    )
+                                except Exception:
+                                    pass
 
                         await self._message_target_queue.put(msg)
                         self.logger.info(

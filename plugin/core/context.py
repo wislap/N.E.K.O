@@ -92,7 +92,7 @@ class PluginContext:
         hub = getattr(self, "_bus_hub", None)
         if hub is None:
             hub = _BusHub(self)
-            setattr(self, "_bus_hub", hub)
+            object.__setattr__(self, "_bus_hub", hub)
         return hub
 
     def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
@@ -348,10 +348,10 @@ class PluginContext:
                     "Cleaned up orphan response for req_id={request_id}"
                 ),
             )
-        except TimeoutError:
+        except TimeoutError as e:
             raise TimeoutError(
                 f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
-            )
+            ) from e
 
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         try:
@@ -364,8 +364,8 @@ class PluginContext:
                 send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
                 error_log_template="Failed to send plugin query request: {error}",
             )
-        except TimeoutError:
-            raise TimeoutError(f"Plugin query timed out after {timeout}s")
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
 
     def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
@@ -377,8 +377,8 @@ class PluginContext:
                 wrap_result=True,
                 error_log_template=None,
             )
-        except TimeoutError:
-            raise TimeoutError(f"Plugin config get timed out after {timeout}s")
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
     def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
@@ -390,8 +390,8 @@ class PluginContext:
                 wrap_result=True,
                 error_log_template=None,
             )
-        except TimeoutError:
-            raise TimeoutError(f"System config get timed out after {timeout}s")
+        except TimeoutError as e:
+            raise TimeoutError(f"System config get timed out after {timeout}s") from e
 
     def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
         try:
@@ -406,8 +406,8 @@ class PluginContext:
                 wrap_result=True,
                 error_log_template=None,
             )
-        except TimeoutError:
-            raise TimeoutError(f"Memory query timed out after {timeout}s")
+        except TimeoutError as e:
+            raise TimeoutError(f"Memory query timed out after {timeout}s") from e
 
     def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
@@ -424,6 +424,6 @@ class PluginContext:
                 wrap_result=True,
                 error_log_template=None,
             )
-        except TimeoutError:
-            raise TimeoutError(f"Plugin config update timed out after {timeout}s")
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin config update timed out after {timeout}s") from e
 
