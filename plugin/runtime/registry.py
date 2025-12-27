@@ -1619,3 +1619,10 @@ def load_plugins_from_toml(
             pid = resolved_id
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))
+        try:
+            from plugin.server.services import _enqueue_lifecycle
+            from plugin.server.utils import now_iso
+
+            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+        except Exception:
+            pass

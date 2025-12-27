@@ -19,6 +19,8 @@ from plugin.runtime.status import status_manager
 from plugin.server.metrics_service import metrics_collector
 from plugin.server.plugin_router import plugin_router
 from plugin.server.auth import generate_admin_code, set_admin_code
+from plugin.server.services import _enqueue_lifecycle
+from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
@@ -43,6 +45,7 @@ async def startup() -> None:
     _ = state.plugin_response_map  # 预初始化共享响应映射
     
     # 清理旧的状态（防止重启时残留）
+    _enqueue_lifecycle({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
     with state.plugin_hosts_lock:
         # 关闭所有旧的插件进程
         for plugin_id, host in list(state.plugin_hosts.items()):
@@ -65,6 +68,10 @@ async def startup() -> None:
     
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
+
+    with state.plugin_hosts_lock:
+        for pid in list(state.plugin_hosts.keys()):
+            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
     
     # 立即检查 plugin_hosts 状态（诊断日志，使用 debug 级别）
     with state.plugin_hosts_lock:
@@ -103,6 +110,7 @@ async def startup() -> None:
     # 启动插件间通信路由器
     await plugin_router.start()
     logger.info("Plugin router started")
+    _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
     
     # 启动所有插件的通信资源管理器
     with state.plugin_hosts_lock:
@@ -154,6 +162,7 @@ async def startup() -> None:
 async def _shutdown_internal() -> None:
     """内部关闭逻辑"""
     t0 = time.time()
+    _enqueue_lifecycle({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
     # 1. 停止插件间通信路由器
     try:
         step_t0 = time.time()
@@ -182,6 +191,7 @@ async def _shutdown_internal() -> None:
     step_t0 = time.time()
     shutdown_tasks = []
     for plugin_id, host in state.plugin_hosts.items():
+        _enqueue_lifecycle({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
         shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
     
     # 并发关闭所有插件
@@ -198,6 +208,7 @@ async def _shutdown_internal() -> None:
         logger.exception("Error cleaning up plugin communication resources")
 
     logger.debug("Shutdown internal completed (total_cost={:.3f}s)", time.time() - t0)
+    _enqueue_lifecycle({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
 
 def _log_shutdown_diagnostics() -> None:
     """记录关闭时的诊断信息，用于排查超时问题"""
