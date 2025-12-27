@@ -31,3 +31,12 @@ enable = false
 lanlan_name = "test"
 query = "hello"
 timeout = 5.0
+
+[debug.messages]
+enable = true
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+priority_min = 0
+source = ""
+timeout = 5.0

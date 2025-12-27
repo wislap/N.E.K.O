@@ -25,6 +25,29 @@ from plugin.settings import EVENT_META_ATTR
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 
+class _BusHub:
+    def __init__(self, ctx: "PluginContext"):
+        self._ctx = ctx
+        self._memory: Optional[Any] = None
+        self._messages: Optional[Any] = None
+
+    @property
+    def memory(self) -> Any:
+        if self._memory is None:
+            from plugin.sdk.bus.memory import MemoryClient
+
+            self._memory = MemoryClient(self._ctx)
+        return self._memory
+
+    @property
+    def messages(self) -> Any:
+        if self._messages is None:
+            from plugin.sdk.bus.messages import MessageClient
+
+            self._messages = MessageClient(self._ctx)
+        return self._messages
+
+
 @dataclass
 class PluginContext:
     """插件运行时上下文"""
@@ -39,6 +62,20 @@ class PluginContext:
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
+
+    @property
+    def bus(self) -> _BusHub:
+        hub = getattr(self, "_bus_hub", None)
+        if hub is None:
+            hub = _BusHub(self)
+            setattr(self, "_bus_hub", hub)
+        return hub
+
+    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
+        raise RuntimeError(
+            "PluginContext.get_user_context() is no longer supported. "
+            "Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."
+        )
 
     def _get_sync_call_in_handler_policy(self) -> str:
         try:
@@ -270,66 +307,6 @@ class PluginContext:
         raise TimeoutError(
             f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
         )
-
-    def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
-        self._enforce_sync_call_policy("get_user_context")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        if not isinstance(bucket_id, str) or not bucket_id:
-            raise ValueError("bucket_id is required")
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "USER_CONTEXT_GET",
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "bucket_id": bucket_id,
-            "limit": int(limit),
-            "timeout": float(timeout),
-        }
-
-        try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            from plugin.core.state import state
-            response = state.get_plugin_response(request_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
-
-            if not isinstance(response, dict):
-                continue
-
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
-
-            result = response.get("result")
-            if isinstance(result, dict):
-                return result
-            return {"bucket_id": bucket_id, "history": result}
-
-        orphan_response = None
-        try:
-            from plugin.core.state import state
-            orphan_response = state.get_plugin_response(request_id)
-        except Exception:
-            orphan_response = None
-        if orphan_response is not None:
-            self.logger.warning(
-                f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                f"Cleaned up orphan response for req_id={request_id}"
-            )
-
-        raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
 
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         self._enforce_sync_call_policy("query_plugins")

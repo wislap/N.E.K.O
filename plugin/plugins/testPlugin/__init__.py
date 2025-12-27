@@ -5,7 +5,7 @@ import time
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
-from plugin.sdk import ok, SystemInfo, MemoryClient
+from plugin.sdk import ok, SystemInfo
 
 
 @neko_plugin
@@ -146,6 +146,55 @@ class HelloPlugin(NekoPluginBase):
         except Exception as e:
             self.file_logger.exception("Memory debug failed: {}", e)
 
+    def _startup_messages_debug(self) -> None:
+        time.sleep(0.8)
+        try:
+            cfg = self._read_local_toml()
+            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+            msg_cfg = debug_cfg.get("messages") if isinstance(debug_cfg.get("messages"), dict) else {}
+            enabled = bool(msg_cfg.get("enable", False))
+            if not enabled:
+                return
+
+            delay_seconds = float(msg_cfg.get("delay_seconds", 1.0))
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            plugin_id = str(msg_cfg.get("plugin_id", "")).strip()
+            max_count = int(msg_cfg.get("max_count", 50))
+            priority_min = int(msg_cfg.get("priority_min", 0))
+            timeout = float(msg_cfg.get("timeout", 5.0))
+            source = str(msg_cfg.get("source", "")).strip()
+
+            pri_opt = priority_min if priority_min > 0 else None
+            msg_list = self.ctx.bus.messages.get(
+                plugin_id=plugin_id or None,
+                max_count=max_count,
+                priority_min=pri_opt,
+                timeout=timeout,
+            )
+
+            filtered = msg_list
+            if source:
+                filtered = filtered.filter(source=source)
+            filtered = filtered.limit(10)
+
+            payload = {
+                "plugin_id": plugin_id or self.ctx.plugin_id,
+                "count": len(msg_list),
+                "messages": msg_list.dump(),
+                "filtered": filtered.dump(),
+            }
+            self.ctx.push_message(
+                source="testPlugin.debug.messages",
+                message_type="text",
+                description="messages bus debug result",
+                priority=1,
+                content=str(payload)[:2000] + ("...(truncated)" if len(str(payload)) > 2000 else ""),
+            )
+        except Exception as e:
+            self.file_logger.exception("Messages debug failed: {}", e)
+
     @lifecycle(id="startup")
     def startup(self, **_):
         cfg = self._read_local_toml()
@@ -153,12 +202,14 @@ class HelloPlugin(NekoPluginBase):
         timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
         config_cfg = debug_cfg.get("config") if isinstance(debug_cfg.get("config"), dict) else {}
         mem_cfg = debug_cfg.get("memory") if isinstance(debug_cfg.get("memory"), dict) else {}
+        msg_cfg = debug_cfg.get("messages") if isinstance(debug_cfg.get("messages"), dict) else {}
 
         timer_enabled = bool(timer_cfg.get("enable")) if "enable" in timer_cfg else bool(debug_cfg.get("enable", False))
         config_enabled = bool(config_cfg.get("enable", False))
         memory_enabled = bool(mem_cfg.get("enable", False))
+        messages_enabled = bool(msg_cfg.get("enable", False))
 
-        if not timer_enabled and not config_enabled and not memory_enabled:
+        if not timer_enabled and not config_enabled and not memory_enabled and not messages_enabled:
             self.file_logger.info("Debug disabled, skipping startup debug actions")
             return ok(data={"status": "disabled"})
 
@@ -168,6 +219,8 @@ class HelloPlugin(NekoPluginBase):
             threading.Thread(target=self._startup_config_debug, daemon=True, name="testPlugin-debug-config").start()
         if memory_enabled:
             threading.Thread(target=self._startup_memory_debug, daemon=True, name="testPlugin-debug-memory").start()
+        if messages_enabled:
+            threading.Thread(target=self._startup_messages_debug, daemon=True, name="testPlugin-debug-messages").start()
 
         return ok(
             data={
@@ -175,6 +228,7 @@ class HelloPlugin(NekoPluginBase):
                 "timer": timer_enabled,
                 "config": config_enabled,
                 "memory": memory_enabled,
+                "messages": messages_enabled,
             }
         )
 
@@ -271,7 +325,7 @@ class HelloPlugin(NekoPluginBase):
     @plugin_entry(
         id="memory_debug",
         name="Memory Debug",
-        description="Debug memory: query memory_server via IPC using current lanlan_name",
+        description="Debug memory: query ctx.bus.memory using current lanlan_name as bucket_id",
         input_schema={
             "type": "object",
             "properties": {
@@ -297,8 +351,69 @@ class HelloPlugin(NekoPluginBase):
                 }
             )
 
-        result = MemoryClient(self.ctx).query(ln, query, timeout=timeout)
-        return ok(data={"lanlan_name": ln, "query": query, "result": result})
+        memory_list = self.ctx.bus.memory.get(bucket_id=ln, limit=20, timeout=timeout)
+        filtered = memory_list.filter(type="PLUGIN_TRIGGER").limit(10)
+        return ok(
+            data={
+                "bucket_id": ln,
+                "query": query,
+                "count": len(memory_list),
+                "history": memory_list.dump(),
+                "filtered": filtered.dump(),
+            }
+        )
+
+    @plugin_entry(
+        id="messages_debug",
+        name="Messages Debug",
+        description="Debug message bus: query ctx.bus.messages for pushed messages",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "plugin_id": {"type": "string", "description": "Target plugin_id (optional)", "default": ""},
+                "max_count": {"type": "integer", "description": "Max messages to fetch", "default": 50},
+                "priority_min": {"type": "integer", "description": "Min priority (optional)", "default": 0},
+                "timeout": {"type": "number", "description": "Timeout seconds", "default": 5.0},
+                "source": {"type": "string", "description": "Filter by source (optional)", "default": ""},
+            },
+            "required": [],
+        },
+    )
+    def messages_debug(
+        self,
+        plugin_id: str = "",
+        max_count: int = 50,
+        priority_min: int = 0,
+        timeout: float = 5.0,
+        source: str = "",
+        **_,
+    ):
+        pid = str(plugin_id).strip() if plugin_id is not None else ""
+        pri = int(priority_min) if priority_min is not None else 0
+        pri_opt = pri if pri > 0 else None
+
+        msg_list = self.ctx.bus.messages.get(
+            plugin_id=pid or None,
+            max_count=int(max_count),
+            priority_min=pri_opt,
+            timeout=float(timeout),
+        )
+
+        src = str(source).strip() if source is not None else ""
+        filtered = msg_list
+        if src:
+            filtered = filtered.filter(source=src)
+
+        filtered = filtered.limit(10)
+
+        return ok(
+            data={
+                "plugin_id": pid or self.ctx.plugin_id,
+                "count": len(msg_list),
+                "messages": msg_list.dump(),
+                "filtered": filtered.dump(),
+            }
+        )
 
     def run(self, message: str | None = None, **kwargs):
         # 简单返回一个字典结构
