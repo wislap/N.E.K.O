@@ -6,6 +6,32 @@ import re
 import time
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
 
+_WATCHER_REGISTRY: Dict[str, "BusListWatcher[Any]"] = {}
+_WATCHER_REGISTRY_LOCK = None
+try:
+    import threading
+
+    _WATCHER_REGISTRY_LOCK = threading.Lock()
+except Exception:
+    _WATCHER_REGISTRY_LOCK = None
+
+
+def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[str, Any]] = None) -> None:
+    sid = str(sub_id).strip()
+    if not sid:
+        return
+    if _WATCHER_REGISTRY_LOCK is not None:
+        with _WATCHER_REGISTRY_LOCK:
+            w = _WATCHER_REGISTRY.get(sid)
+    else:
+        w = _WATCHER_REGISTRY.get(sid)
+    if w is None:
+        return
+    try:
+        w._on_remote_change(bus=str(bus), op=str(op), delta=dict(delta or {}))
+    except Exception:
+        return
+
 
 TRecord = TypeVar("TRecord", bound="BusRecord")
 
@@ -837,3 +863,199 @@ class BusList(Generic[TRecord]):
                 pass
 
         return self
+
+    def watch(self, ctx: Any, *, bus: Optional[str] = None) -> "BusListWatcher[TRecord]":
+        return BusListWatcher(self, ctx, bus=bus)
+
+
+@dataclass(frozen=True)
+class BusListDelta(Generic[TRecord]):
+    kind: str
+    added: Tuple[TRecord, ...]
+    removed: Tuple[Any, ...]
+    current: BusList[TRecord]
+
+
+class BusListWatcher(Generic[TRecord]):
+    def __init__(self, lst: BusList[TRecord], ctx: Any, *, bus: Optional[str] = None):
+        self._list = lst
+        self._ctx = ctx
+
+        if self._list._plan is None:
+            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/where_*/sort(by=...)")
+
+        self._bus = str(bus).strip() if isinstance(bus, str) and bus.strip() else self._infer_bus(self._list._plan)
+        if self._bus not in ("messages", "events", "lifecycle"):
+            raise NonReplayableTraceError(f"watcher cannot infer bus type from plan: {self._bus!r}")
+
+        self._lock = None
+        try:
+            import threading
+
+            self._lock = threading.Lock()
+        except Exception:
+            self._lock = None
+
+        self._callbacks: List[Tuple[Callable[[BusListDelta[TRecord]], None], Tuple[str, ...]]] = []
+        self._unsub: Optional[Callable[[], None]] = None
+        self._sub_id: Optional[str] = None
+        self._last_keys: set[Tuple[str, Any]] = {self._list._dedupe_key(x) for x in self._list.dump_records()}
+
+    def _infer_bus(self, plan: TraceNode) -> str:
+        if isinstance(plan, GetNode):
+            return str(plan.params.get("bus") or "").strip()
+        if isinstance(plan, UnaryNode):
+            return self._infer_bus(plan.child)
+        if isinstance(plan, BinaryNode):
+            # prefer left branch
+            return self._infer_bus(plan.left)
+        return ""
+
+    def subscribe(self, *, on: Union[str, Sequence[str]] = ("add",)) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
+        if isinstance(on, str):
+            rules = (on,)
+        else:
+            rules = tuple(str(x) for x in on)
+
+        def _decorator(fn: Callable[[BusListDelta[TRecord]], None]) -> Callable[[BusListDelta[TRecord]], None]:
+            if self._lock is not None:
+                with self._lock:
+                    self._callbacks.append((fn, rules))
+            else:
+                self._callbacks.append((fn, rules))
+            return fn
+
+        return _decorator
+
+    def start(self) -> "BusListWatcher[TRecord]":
+        if self._unsub is not None or self._sub_id is not None:
+            return self
+
+        # Plugin process: register with server via IPC and wait for BUS change push.
+        if getattr(self._ctx, "_plugin_comm_queue", None) is not None and hasattr(self._ctx, "_send_request_and_wait"):
+            res = self._ctx._send_request_and_wait(
+                method_name="bus_subscribe",
+                request_type="BUS_SUBSCRIBE",
+                request_data={
+                    "bus": self._bus,
+                    "rules": ["add", "del", "change"],
+                    "deliver": "delta",
+                    "plan": self._list.trace_tree_dump(),
+                },
+                timeout=5.0,
+                wrap_result=True,
+            )
+            sub_id = None
+            if isinstance(res, dict):
+                sub_id = res.get("sub_id")
+            if not isinstance(sub_id, str) or not sub_id:
+                raise RuntimeError("BUS_SUBSCRIBE failed: missing sub_id")
+            self._sub_id = sub_id
+            if _WATCHER_REGISTRY_LOCK is not None:
+                with _WATCHER_REGISTRY_LOCK:
+                    _WATCHER_REGISTRY[sub_id] = self  # type: ignore[assignment]
+            else:
+                _WATCHER_REGISTRY[sub_id] = self  # type: ignore[assignment]
+            return self
+
+        # In-process fallback: subscribe to core state hub.
+        from plugin.core.state import state
+
+        def _on_event(_op: str, _payload: Dict[str, Any]) -> None:
+            try:
+                self._tick(_op)
+            except Exception:
+                return
+
+        self._unsub = state.bus_change_hub.subscribe(self._bus, _on_event)
+        return self
+
+    def stop(self) -> None:
+        if self._sub_id is not None:
+            sid = self._sub_id
+            self._sub_id = None
+            if _WATCHER_REGISTRY_LOCK is not None:
+                with _WATCHER_REGISTRY_LOCK:
+                    _WATCHER_REGISTRY.pop(sid, None)
+            else:
+                _WATCHER_REGISTRY.pop(sid, None)
+
+            try:
+                if getattr(self._ctx, "_plugin_comm_queue", None) is not None and hasattr(self._ctx, "_send_request_and_wait"):
+                    self._ctx._send_request_and_wait(
+                        method_name="bus_unsubscribe",
+                        request_type="BUS_UNSUBSCRIBE",
+                        request_data={"bus": self._bus, "sub_id": sid},
+                        timeout=3.0,
+                        wrap_result=True,
+                    )
+            except Exception:
+                pass
+            return
+
+        if self._unsub is None:
+            return
+        try:
+            self._unsub()
+        finally:
+            self._unsub = None
+
+    def _on_remote_change(self, *, bus: str, op: str, delta: Dict[str, Any]) -> None:
+        # Server push arrived in plugin process; use reload+diff as source of truth.
+        _ = (bus, delta)
+        try:
+            self._tick(op)
+        except Exception:
+            return
+
+    def _tick(self, op: str) -> None:
+        refreshed = self._list.reload(self._ctx)
+        new_items = refreshed.dump_records()
+        new_keys = {self._list._dedupe_key(x) for x in new_items}
+
+        added_items: List[TRecord] = []
+        for x in new_items:
+            k = self._list._dedupe_key(x)
+            if k not in self._last_keys:
+                added_items.append(x)
+
+        removed_keys = tuple(k for k in self._last_keys if k not in new_keys)
+
+        fired: List[str] = []
+        if added_items:
+            fired.append("add")
+        if removed_keys:
+            fired.append("del")
+        if added_items or removed_keys:
+            fired.append("change")
+
+        if not fired:
+            self._last_keys = new_keys
+            self._list = refreshed
+            return
+
+        delta = BusListDelta(kind=op, added=tuple(added_items), removed=removed_keys, current=refreshed)
+
+        if self._lock is not None:
+            with self._lock:
+                callbacks = list(self._callbacks)
+        else:
+            callbacks = list(self._callbacks)
+
+        for fn, rules in callbacks:
+            if any(r in fired for r in rules):
+                try:
+                    fn(delta)
+                except Exception:
+                    continue
+
+        self._last_keys = new_keys
+        self._list = refreshed
+
+
+def list_Subscription(
+    watcher: BusListWatcher[Any],
+    *,
+    on: Union[str, Sequence[str]] = ("add",),
+) -> Callable[[Callable[[BusListDelta[Any]], None]], Callable[[BusListDelta[Any]], None]]:
+    return watcher.subscribe(on=on)

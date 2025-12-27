@@ -2,9 +2,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import threading
 import time
+from typing import Any, Dict
 
 from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry
+from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event
 from plugin.sdk import ok, SystemInfo
 
 
@@ -251,8 +252,69 @@ class HelloPlugin(NekoPluginBase):
                 i_nums,
                 len(inter_ab),
             )
+
+            watch_source = "testPlugin.watch.demo"
+            watch_list = self.ctx.bus.messages.get(
+                plugin_id=plugin_id or None,
+                max_count=max_count,
+                priority_min=pri_opt,
+                timeout=timeout,
+            ).filter(source=watch_source, strict=True)
+
+            watcher = watch_list.watch(self.ctx).start()
+            try:
+                self.file_logger.info("[messages_watch] watcher started: source={}", watch_source)
+            except Exception:
+                pass
+
+            @watcher.subscribe(on="add")
+            def _on_new_message(delta) -> None:
+                try:
+                    self.file_logger.info(
+                        "[messages_watch] bus={} op={} added_count={}",
+                        watch_source,
+                        getattr(delta, "kind", ""),
+                        len(getattr(delta, "added", []) or []),
+                    )
+                except Exception:
+                    return
+
+            def _delayed_push() -> None:
+                try:
+                    time.sleep(3.0)
+                    self.ctx.push_message(
+                        source=watch_source,
+                        message_type="text",
+                        description="watcher demo message",
+                        priority=1,
+                        content=str(int(time.time())),
+                    )
+                except Exception:
+                    return
+
+            threading.Thread(target=_delayed_push, daemon=True).start()
         except Exception:
             self.file_logger.exception("Messages debug failed")
+
+    @custom_event(event_type="bus", id="change", trigger_method="command")
+    def _on_bus_change(self, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
+        try:
+            from plugin.sdk.bus.types import dispatch_bus_change
+
+            try:
+                self.file_logger.info(
+                    "[bus_change.recv] sub_id={} bus={} op={} has_delta={}",
+                    sub_id,
+                    bus,
+                    op,
+                    bool(delta),
+                )
+            except Exception:
+                pass
+
+            dispatch_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
+        except Exception:
+            return
 
     def _startup_events_debug(self) -> None:
         time.sleep(0.8)

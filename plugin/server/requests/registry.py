@@ -22,6 +22,10 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         handle_lifecycle_del,
         handle_message_del,
     )
+    from plugin.server.requests.bus_subscribe import (
+        handle_bus_subscribe,
+        handle_bus_unsubscribe,
+    )
 
     return {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
@@ -37,4 +41,6 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         "MESSAGE_DEL": handle_message_del,
         "EVENT_DEL": handle_event_del,
         "LIFECYCLE_DEL": handle_lifecycle_del,
+        "BUS_SUBSCRIBE": handle_bus_subscribe,
+        "BUS_UNSUBSCRIBE": handle_bus_unsubscribe,
     }

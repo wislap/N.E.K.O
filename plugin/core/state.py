@@ -8,10 +8,48 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Set
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
+
+
+class BusChangeHub:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_id = 1
+        self._subs: Dict[str, Dict[int, Callable[[str, Dict[str, Any]], None]]] = {
+            "messages": {},
+            "events": {},
+            "lifecycle": {},
+        }
+
+    def subscribe(self, bus: str, callback: Callable[[str, Dict[str, Any]], None]) -> Callable[[], None]:
+        b = str(bus).strip()
+        if b not in self._subs:
+            raise ValueError(f"Unknown bus: {bus!r}")
+        with self._lock:
+            sid = self._next_id
+            self._next_id += 1
+            self._subs[b][sid] = callback
+
+        def _unsub() -> None:
+            with self._lock:
+                self._subs.get(b, {}).pop(sid, None)
+
+        return _unsub
+
+    def emit(self, bus: str, op: str, payload: Dict[str, Any]) -> None:
+        b = str(bus).strip()
+        if b not in self._subs:
+            return
+        with self._lock:
+            callbacks = list(self._subs[b].values())
+        for cb in callbacks:
+            try:
+                cb(str(op), dict(payload) if isinstance(payload, dict) else {})
+            except Exception:
+                continue
 
 
 class PluginRuntimeState:
@@ -43,6 +81,15 @@ class PluginRuntimeState:
         self._deleted_message_ids: Set[str] = set()
         self._deleted_event_ids: Set[str] = set()
         self._deleted_lifecycle_ids: Set[str] = set()
+
+        self.bus_change_hub = BusChangeHub()
+
+        self._bus_subscriptions_lock = threading.Lock()
+        self._bus_subscriptions: Dict[str, Dict[str, Dict[str, Any]]] = {
+            "messages": {},
+            "events": {},
+            "lifecycle": {},
+        }
 
         self._user_context_lock = threading.Lock()
         self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
@@ -99,6 +146,10 @@ class PluginRuntimeState:
             return
         with self._bus_store_lock:
             self._message_store.append(record)
+        try:
+            self.bus_change_hub.emit("messages", "add", {"record": dict(record)})
+        except Exception:
+            pass
 
     def append_event_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -108,6 +159,10 @@ class PluginRuntimeState:
             return
         with self._bus_store_lock:
             self._event_store.append(record)
+        try:
+            self.bus_change_hub.emit("events", "add", {"record": dict(record)})
+        except Exception:
+            pass
 
     def append_lifecycle_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -117,6 +172,10 @@ class PluginRuntimeState:
             return
         with self._bus_store_lock:
             self._lifecycle_store.append(record)
+        try:
+            self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record)})
+        except Exception:
+            pass
 
     def list_message_records(self) -> List[Dict[str, Any]]:
         with self._bus_store_lock:
@@ -144,7 +203,38 @@ class PluginRuntimeState:
                         break
                     except Exception:
                         break
+            if removed:
+                try:
+                    self.bus_change_hub.emit("messages", "del", {"message_id": message_id})
+                except Exception:
+                    pass
             return removed
+
+    def add_bus_subscription(self, bus: str, sub_id: str, info: Dict[str, Any]) -> None:
+        b = str(bus).strip()
+        if b not in self._bus_subscriptions:
+            raise ValueError(f"Unknown bus: {bus!r}")
+        sid = str(sub_id).strip()
+        if not sid:
+            raise ValueError("sub_id is required")
+        payload = dict(info) if isinstance(info, dict) else {}
+        with self._bus_subscriptions_lock:
+            self._bus_subscriptions[b][sid] = payload
+
+    def remove_bus_subscription(self, bus: str, sub_id: str) -> bool:
+        b = str(bus).strip()
+        sid = str(sub_id).strip()
+        if b not in self._bus_subscriptions or not sid:
+            return False
+        with self._bus_subscriptions_lock:
+            return self._bus_subscriptions[b].pop(sid, None) is not None
+
+    def get_bus_subscriptions(self, bus: str) -> Dict[str, Dict[str, Any]]:
+        b = str(bus).strip()
+        if b not in self._bus_subscriptions:
+            return {}
+        with self._bus_subscriptions_lock:
+            return {k: dict(v) for k, v in self._bus_subscriptions[b].items()}
 
     def delete_event(self, event_id: str) -> bool:
         if not isinstance(event_id, str) or not event_id:
@@ -161,6 +251,11 @@ class PluginRuntimeState:
                         break
                     except Exception:
                         break
+            if removed:
+                try:
+                    self.bus_change_hub.emit("events", "del", {"event_id": event_id})
+                except Exception:
+                    pass
             return removed
 
     def delete_lifecycle(self, lifecycle_id: str) -> bool:
@@ -178,6 +273,11 @@ class PluginRuntimeState:
                         break
                     except Exception:
                         break
+            if removed:
+                try:
+                    self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id})
+                except Exception:
+                    pass
             return removed
     
     def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:

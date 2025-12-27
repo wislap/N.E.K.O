@@ -18,6 +18,7 @@ from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
 from plugin.server.metrics_service import metrics_collector
 from plugin.server.plugin_router import plugin_router
+from plugin.server.bus_subscriptions import bus_subscription_manager
 from plugin.server.auth import generate_admin_code, set_admin_code
 from plugin.server.services import _enqueue_lifecycle
 from plugin.server.utils import now_iso
@@ -110,6 +111,9 @@ async def startup() -> None:
     # 启动插件间通信路由器
     await plugin_router.start()
     logger.info("Plugin router started")
+
+    await bus_subscription_manager.start()
+    logger.info("Bus subscription manager started")
     _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
     
     # 启动所有插件的通信资源管理器
@@ -166,6 +170,10 @@ async def _shutdown_internal() -> None:
     # 1. 停止插件间通信路由器
     try:
         step_t0 = time.time()
+        try:
+            await bus_subscription_manager.stop()
+        except Exception:
+            logger.exception("Error stopping bus subscription manager")
         await plugin_router.stop()
         logger.debug("Plugin router stopped (cost={:.3f}s)", time.time() - step_t0)
     except Exception:

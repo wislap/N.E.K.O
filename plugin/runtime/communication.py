@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from queue import Empty
@@ -464,6 +465,20 @@ class PluginCommunicationResourceManager:
                 # 转发消息到主进程的消息队列
                 try:
                     if self._message_target_queue:
+                        if isinstance(msg, dict) and not msg.get("_bus_stored"):
+                            try:
+                                from plugin.core.state import state
+
+                                msg = dict(msg)
+                                if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+                                    msg["message_id"] = str(uuid.uuid4())
+                                if not isinstance(msg.get("time"), str) or not msg.get("time"):
+                                    msg["time"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                                msg["_bus_stored"] = True
+                                state.append_message_record(msg)
+                            except Exception:
+                                pass
+
                         await self._message_target_queue.put(msg)
                         self.logger.info(
                             f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "

@@ -397,6 +397,10 @@ def get_messages_from_queue(
         if not isinstance(msg, dict):
             continue
 
+        # If message has been stored already by runtime forwarding path, skip re-appending.
+        if msg.get("_bus_stored") is True:
+            continue
+
         # Ensure stable message_id
         if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
             msg = dict(msg)
