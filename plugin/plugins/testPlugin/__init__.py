@@ -490,12 +490,7 @@ class HelloPlugin(NekoPluginBase):
             }
         )
 
-    @lifecycle(id="shutdown")
-    def shutdown(self, **_):
-        if getattr(self, "_debug_executor", None) is not None:
-            self._debug_executor.shutdown(wait=False)
-            self.file_logger.info("Debug executor shutdown completed")
-        return ok(data={"status": "shutdown"})
+
 
     @plugin_entry(id="on_debug_tick")
     def on_debug_tick(

@@ -323,8 +323,8 @@ def _plugin_process_runner(
                         op=str(msg.get("op") or ""),
                         delta=msg.get("delta") if isinstance(msg.get("delta"), dict) else None,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to dispatch bus change: {}", e)  
                 continue
 
             if msg["type"] == "TRIGGER_CUSTOM":
