@@ -97,8 +97,6 @@ class EventList(BusList[EventRecord]):
     def merge(self, other: "EventList") -> "EventList":
         merged = super().merge(other)
         pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        if getattr(merged, "plugin_id", None) == pid:
-            return merged
         return EventList(
             merged.dump_records(),
             plugin_id=pid,

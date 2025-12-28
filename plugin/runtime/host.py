@@ -50,9 +50,32 @@ def _plugin_process_runner(
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
     """
     # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
-    # config_path.parent.parent.parent 只能得到 ./plugin 目录
-    # 需要再往上一级才能得到项目根目录（包含 plugin/ 目录的那一层）
-    project_root = config_path.parent.parent.parent.parent.resolve()
+    # 由于部署/启动方式可能改变工作目录与 sys.path，使用“向上探测”确保能找到仓库根。
+    def _find_project_root(p: Path) -> Path:
+        cur = p.resolve()
+        try:
+            if cur.is_file():
+                cur = cur.parent
+        except Exception:
+            pass
+        for _ in range(10):
+            try:
+                candidate = cur
+                # Repo root should contain both plugin/ and utils/.
+                if (candidate / "plugin").is_dir() and (candidate / "utils").is_dir():
+                    return candidate
+            except Exception:
+                pass
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+        # Fallback: assume layout plugin/plugins/<id>/plugin.toml
+        try:
+            return p.parent.parent.parent.parent.resolve()
+        except Exception:
+            return p.parent.resolve()
+
+    project_root = _find_project_root(config_path)
     
     # 配置loguru logger for plugin process
     from loguru import logger
@@ -88,10 +111,28 @@ def _plugin_process_runner(
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
             
-        from utils.logger_config import InterceptHandler
-            
+        logger.info("[Plugin Process] Resolved project_root: {}", project_root)
+        logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
+
+        try:
+            from utils.logger_config import InterceptHandler
+        except ModuleNotFoundError:
+            import importlib.util
+
+            _p = project_root / "utils" / "logger_config.py"
+            if not _p.is_file():
+                raise ModuleNotFoundError(
+                    f"utils.logger_config not found; expected file={_p} project_root={project_root} sys.path_head={sys.path[:3]}"
+                )
+            spec = importlib.util.spec_from_file_location("utils.logger_config", _p)
+            if spec is None or spec.loader is None:
+                raise
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            InterceptHandler = getattr(mod, "InterceptHandler")
+
         logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-        
+
         # 显式设置 uvicorn logger，并禁止传播以避免重复
         for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
             logging_logger = logging.getLogger(logger_name)

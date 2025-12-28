@@ -194,10 +194,6 @@ class LifecycleClient:
         }
         trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
         plan = GetNode(op="get", params={"bus": "lifecycle", "params": dict(get_params)}, at=time.time())
-        if pid_norm == "*":
-            effective_plugin_id = "*"
-        else:
-            effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
         return LifecycleList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
     def delete(self, lifecycle_id: str, timeout: float = 5.0) -> bool:

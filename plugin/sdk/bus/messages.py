@@ -268,5 +268,13 @@ class MessageClient:
                 return bool(result.get("deleted"))
             return False
 
-        _ = state.get_plugin_response(req_id)
+        orphan_response = state.get_plugin_response(req_id)
+        if orphan_response is not None and hasattr(self.ctx, "logger"):
+            try:
+                self.ctx.logger.warning(
+                    f"[PluginContext] Timeout reached for MESSAGE_DEL, but response was found (likely delayed). "
+                    f"Cleaned up orphan response for req_id={req_id}"
+                )
+            except Exception:
+                pass
         raise TimeoutError(f"MESSAGE_DEL timed out after {timeout}s")

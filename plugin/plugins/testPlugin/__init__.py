@@ -18,6 +18,8 @@ class HelloPlugin(NekoPluginBase):
         self.logger = self.file_logger  # 使用file_logger作为主要logger
         self.plugin_id = ctx.plugin_id  # 使用 plugin_id
         self._debug_executor = ThreadPoolExecutor(max_workers=8)
+        self._active_watchers = []
+        self._stop_events = []
         self.file_logger.info("HelloPlugin initialized with file logging enabled")
 
     def _read_local_toml(self) -> dict:
@@ -262,10 +264,14 @@ class HelloPlugin(NekoPluginBase):
             ).filter(source=watch_source, strict=True)
             watcher = watch_list.watch(self.ctx).start()
             try:
+                self._active_watchers.append(watcher)
+            except Exception:
+                pass
+            try:
                 self.file_logger.info("[messages_watch] watcher started: source={}", watch_source)
             except Exception:
                 pass
-            @watcher.subscribe(on="delete")
+            @watcher.subscribe(on="del")
             @watcher.subscribe(on="add")
             def _on_new_message(delta) -> None:
                 try:
@@ -280,7 +286,14 @@ class HelloPlugin(NekoPluginBase):
 
             def _delayed_push() -> None:
                 try:
-                    time.sleep(3.0)
+                    e = threading.Event()
+                    try:
+                        self._stop_events.append(e)
+                    except Exception:
+                        pass
+
+                    if e.wait(timeout=3.0):
+                        return
                     self.ctx.push_message(
                         source=watch_source,
                         message_type="text",
@@ -288,12 +301,53 @@ class HelloPlugin(NekoPluginBase):
                         priority=1,
                         content=str(int(time.time())),
                     )
-                except Exception:
-                    return
+                except Exception as e:
+                    try:
+                        self.file_logger.warning("Failed to push watcher demo message: {}", e)
+                    except Exception:
+                        pass
 
-            threading.Thread(target=_delayed_push, daemon=True).start()
+            try:
+                self._debug_executor.submit(_delayed_push)
+            except Exception as e:
+                try:
+                    self.file_logger.warning("Failed to schedule watcher demo message: {}", e)
+                except Exception:
+                    pass
         except Exception:
             self.file_logger.exception("Messages debug failed")
+
+    @lifecycle(id="shutdown")
+    def shutdown(self, **_) -> Any:
+        for w in list(getattr(self, "_active_watchers", []) or []):
+            try:
+                w.stop()
+            except Exception as e:
+                try:
+                    self.file_logger.warning("Failed to stop watcher: {}", e)
+                except Exception:
+                    pass
+        try:
+            self._active_watchers.clear()
+        except Exception:
+            pass
+
+        for e in list(getattr(self, "_stop_events", []) or []):
+            try:
+                e.set()
+            except Exception:
+                pass
+        try:
+            self._stop_events.clear()
+        except Exception:
+            pass
+
+        if getattr(self, "_debug_executor", None) is not None:
+            try:
+                self._debug_executor.shutdown(wait=False)
+            except Exception:
+                pass
+        return ok(data={"status": "shutdown"})
 
     def _startup_events_debug(self) -> None:
         time.sleep(0.8)
