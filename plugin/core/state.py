@@ -287,7 +287,6 @@ class PluginRuntimeState:
             response: 响应数据
             timeout: 超时时间（秒），用于计算过期时间
         """
-        import time
         # 存储响应和过期时间（当前时间 + timeout + 缓冲时间）
         # 缓冲时间用于处理网络延迟等情况
         expire_time = time.time() + timeout + 1.0  # 额外1秒缓冲
@@ -305,7 +304,6 @@ class PluginRuntimeState:
         Returns:
             响应数据，如果不存在或已过期则返回 None
         """
-        import time
         current_time = time.time()
         
         # 先查看响应是否存在（不删除）
@@ -325,6 +323,27 @@ class PluginRuntimeState:
         self.plugin_response_map.pop(request_id, None)
         # 返回实际的响应数据
         return response_data.get("response")
+
+    def peek_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """获取但不删除插件响应（插件进程调用）
+
+        与 get_plugin_response() 类似，但不会 pop。
+        主要用于超时场景下判断响应是否已经到达（孤儿响应检测）。
+
+        Returns:
+            响应数据，如果不存在或已过期则返回 None
+        """
+        current_time = time.time()
+        response_data = self.plugin_response_map.get(request_id, None)
+        if response_data is None:
+            return None
+
+        expire_time = response_data.get("expire_time", 0)
+        if current_time > expire_time:
+            self.plugin_response_map.pop(request_id, None)
+            return None
+
+        return response_data.get("response")
     
     def cleanup_expired_responses(self) -> int:
         """
@@ -333,7 +352,6 @@ class PluginRuntimeState:
         Returns:
             清理的响应数量
         """
-        import time
         current_time = time.time()
         expired_ids = []
         

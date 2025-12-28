@@ -5,6 +5,7 @@
 """
 import contextlib
 import contextvars
+import asyncio
 import inspect
 import time
 import tomllib
@@ -231,6 +232,40 @@ class PluginContext:
         orphan_warning_template: Optional[str] = None,
     ) -> Any:
         self._enforce_sync_call_policy(method_name)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(
+                self._send_request_and_wait_async(
+                    method_name=method_name,
+                    request_type=request_type,
+                    request_data=request_data,
+                    timeout=timeout,
+                    wrap_result=wrap_result,
+                    send_log_template=send_log_template,
+                    error_log_template=error_log_template,
+                    warn_on_orphan_response=warn_on_orphan_response,
+                    orphan_warning_template=orphan_warning_template,
+                )
+            )
+        raise RuntimeError(
+            f"Sync call '{method_name}' cannot be used inside a running event loop. "
+            "Use _send_request_and_wait_async(...) instead."
+        )
+
+    async def _send_request_and_wait_async(
+        self,
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: Dict[str, Any],
+        timeout: float,
+        wrap_result: bool = True,
+        send_log_template: Optional[str] = None,
+        error_log_template: Optional[str] = None,
+        warn_on_orphan_response: bool = False,
+        orphan_warning_template: Optional[str] = None,
+    ) -> Any:
         if self._plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "
@@ -247,7 +282,11 @@ class PluginContext:
         }
 
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._plugin_comm_queue.put(request, timeout=timeout),
+            )
             if send_log_template:
                 self.logger.debug(
                     send_log_template.format(
@@ -261,15 +300,12 @@ class PluginContext:
                 self.logger.error(error_log_template.format(error=e))
             raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
 
-        start_time = time.time()
+        deadline = time.time() + timeout
         check_interval = 0.01
-        while time.time() - start_time < timeout:
+        while time.time() < deadline:
             response = state.get_plugin_response(request_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
             if not isinstance(response, dict):
-                time.sleep(check_interval)
+                await asyncio.sleep(check_interval)
                 continue
 
             if response.get("error"):
@@ -282,10 +318,14 @@ class PluginContext:
 
         orphan_response = None
         try:
-            orphan_response = state.get_plugin_response(request_id)
+            orphan_response = state.peek_plugin_response(request_id)
         except Exception:
             orphan_response = None
         if warn_on_orphan_response and orphan_response is not None:
+            try:
+                state.get_plugin_response(request_id)
+            except Exception:
+                pass
             if orphan_warning_template:
                 self.logger.warning(
                     orphan_warning_template.format(

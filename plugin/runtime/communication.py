@@ -470,15 +470,12 @@ class PluginCommunicationResourceManager:
                                     msg["time"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                                 msg["_bus_stored"] = True
                                 state.append_message_record(msg)
-                            except Exception as e:
-                                try:
-                                    self.logger.debug(
-                                        "Failed to store message to bus for plugin %s: %s",
-                                        self.plugin_id,
-                                        e,
-                                    )
-                                except Exception:
-                                    pass
+                            except Exception:
+                                self.logger.debug(
+                                    "Failed to store message to bus for plugin %s",
+                                    self.plugin_id,
+                                    exc_info=True,
+                                )
 
                         await self._message_target_queue.put(msg)
                         self.logger.info(

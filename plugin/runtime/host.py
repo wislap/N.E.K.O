@@ -323,7 +323,7 @@ def _plugin_process_runner(
                             result_container = {"result": None, "exception": None, "done": False}
                             event = threading.Event()
                             
-                            def run_async(method=method, args=args, result_container=result_container, event=event):
+                            def run_async(method=method, args=args, result_container=result_container, event=event, event_type=event_type, event_id=event_id):
                                 try:
                                     with ctx._handler_scope(f"{event_type}.{event_id}"):
                                         result_container["result"] = asyncio.run(method(**args))
@@ -443,7 +443,7 @@ def _plugin_process_runner(
                         result_container = {"result": None, "exception": None, "done": False}
                         event = threading.Event()
                         
-                        def run_async(method=method, args=args, result_container=result_container, event=event):
+                        def run_async(method=method, args=args, result_container=result_container, event=event, entry_id=entry_id):
                             try:
                                 with ctx._handler_scope(f"plugin_entry.{entry_id}"):
                                     result_container["result"] = asyncio.run(method(**args))
