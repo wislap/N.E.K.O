@@ -20,7 +20,7 @@ from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
 from plugin.core.state import state
-from plugin.settings import EVENT_META_ATTR
+from plugin.settings import EVENT_META_ATTR, PLUGIN_LOG_SYNC_CALL_WARNINGS, SYNC_CALL_IN_HANDLER_POLICY
 
 if TYPE_CHECKING:
     from plugin.sdk.bus.events import EventClient
@@ -103,6 +103,10 @@ class PluginContext:
         )
 
     def _get_sync_call_in_handler_policy(self) -> str:
+        """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
+
+        有效值："warn" / "reject"。任何非法值都会回退到全局策略。
+        """
         try:
             st = self.config_path.stat()
             cache_mtime = getattr(self, "_a1_policy_mtime", None)
@@ -115,15 +119,15 @@ class PluginContext:
             policy = (
                 conf.get("plugin", {})
                 .get("safety", {})
-                .get("sync_call_in_handler", "warn")
+                .get("sync_call_in_handler")
             )
             if policy not in ("warn", "reject"):
-                policy = "warn"
+                policy = SYNC_CALL_IN_HANDLER_POLICY
             setattr(self, "_a1_policy_mtime", st.st_mtime)
             setattr(self, "_a1_policy_value", policy)
             return policy
         except Exception:
-            return "warn"
+            return SYNC_CALL_IN_HANDLER_POLICY
 
     def _enforce_sync_call_policy(self, method_name: str) -> None:
         handler_ctx = _IN_HANDLER.get()
@@ -136,7 +140,8 @@ class PluginContext:
         )
         if policy == "reject":
             raise RuntimeError(msg)
-        self.logger.warning(msg)
+        if PLUGIN_LOG_SYNC_CALL_WARNINGS:
+            self.logger.warning(msg)
 
     @contextlib.contextmanager
     def _handler_scope(self, handler_ctx: str):

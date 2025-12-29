@@ -24,6 +24,7 @@ from plugin.settings import (
     QUEUE_GET_TIMEOUT,
     MESSAGE_CONSUMER_SLEEP_INTERVAL,
     RESULT_CONSUMER_SLEEP_INTERVAL,
+    PLUGIN_LOG_MESSAGE_FORWARD,
 )
 from plugin.api.exceptions import PluginExecutionError
 from plugin.utils.logging import format_log_text as _format_log_text
@@ -478,7 +479,8 @@ class PluginCommunicationResourceManager:
                                 )
 
                         await self._message_target_queue.put(msg)
-                        self.logger.info(
+                        if PLUGIN_LOG_MESSAGE_FORWARD:
+                            self.logger.info(
                             f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
                             f"Source: {msg.get('source', 'unknown')} | "
                             f"Priority: {msg.get('priority', 0)} | "

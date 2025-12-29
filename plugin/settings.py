@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Dict, Any
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in ("true", "1", "yes", "on")
+
+
 # ========== 路径配置 ==========
 
 def get_plugin_config_root() -> Path:
@@ -117,6 +124,16 @@ MESSAGE_CONSUMER_SLEEP_INTERVAL = 0.1
 # 结果消费任务的休眠间隔（秒）
 RESULT_CONSUMER_SLEEP_INTERVAL = 0.1
 
+# 是否打印插件消息转发日志（[MESSAGE FORWARD]）
+PLUGIN_LOG_MESSAGE_FORWARD = _get_bool_env("NEKO_PLUGIN_LOG_MESSAGE_FORWARD", True)
+# 是否打印插件同步调用告警（Sync call '... may block ...'）
+PLUGIN_LOG_SYNC_CALL_WARNINGS = _get_bool_env("NEKO_PLUGIN_LOG_SYNC_CALL_WARNINGS", True)
+
+# 同步调用在 handler 中的全局策略（warn / reject）
+_sync_policy = os.getenv("NEKO_PLUGIN_SYNC_CALL_POLICY", "warn").lower()
+if _sync_policy not in ("warn", "reject"):
+    _sync_policy = "warn"
+SYNC_CALL_IN_HANDLER_POLICY = _sync_policy
 
 # ========== 插件Logger配置 ==========
 
@@ -244,6 +261,9 @@ __all__ = [
     "STATUS_CONSUMER_SLEEP_INTERVAL",
     "MESSAGE_CONSUMER_SLEEP_INTERVAL",
     "RESULT_CONSUMER_SLEEP_INTERVAL",
+    "PLUGIN_LOG_MESSAGE_FORWARD",
+    "PLUGIN_LOG_SYNC_CALL_WARNINGS",
+    "SYNC_CALL_IN_HANDLER_POLICY",
     
     # 插件Logger配置
     "PLUGIN_LOG_LEVEL",
