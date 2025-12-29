@@ -25,12 +25,25 @@ export interface PluginMeta {
   entries?: PluginEntry[]
 }
 
+// JSON Schema（简化版），用于描述插件入口参数
+export interface JSONSchemaProperty {
+  type?: string
+  description?: string
+  default?: any
+}
+
+export interface JSONSchema {
+  type?: string
+  properties?: Record<string, JSONSchemaProperty>
+  required?: string[]
+}
+
 // 插件入口点
 export interface PluginEntry {
   id: string
   name: string
   description: string
-  input_schema?: Record<string, any>
+  input_schema?: JSONSchema
   return_message?: string
 }
 

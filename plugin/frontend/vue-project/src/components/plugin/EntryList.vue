@@ -50,7 +50,7 @@
 
         <!-- 无 schema 时退回到 JSON 文本输入 -->
         <el-form v-else label-position="top">
-          <el-form-item label="Args (JSON)">
+          <el-form-item :label="$t('plugins.argsJson')">
             <el-input
               v-model="argsText"
               type="textarea"
@@ -94,18 +94,19 @@ const submitting = ref(false)
 const formModel = ref<Record<string, any>>({})
 
 const hasSchema = computed(() => {
-  const entry = currentEntry.value as any
+  const entry = currentEntry.value
   const schema = entry?.input_schema
-  return !!(schema && typeof schema === 'object' && schema.properties && typeof schema.properties === 'object')
+  return !!(schema?.properties && typeof schema.properties === 'object')
 })
 
 function initFormModelFromSchema(entry: PluginEntry) {
-  const schema: any = entry.input_schema || {}
-  const props = schema.properties || {}
+  const schema = entry.input_schema
+  const props = schema?.properties || {}
   const initial: Record<string, any> = {}
   for (const key in props) {
     if (!Object.prototype.hasOwnProperty.call(props, key)) continue
-    const field = props[key] || {}
+    const field = props[key]
+    if (!field) continue
     if ('default' in field) {
       initial[key] = field.default
     } else {
@@ -128,7 +129,7 @@ function initFormModelFromSchema(entry: PluginEntry) {
 function openExecuteDialog(entry: PluginEntry) {
   currentEntry.value = entry
   argsText.value = '{}'
-  if (entry.input_schema && (entry as any).input_schema.properties) {
+  if (entry.input_schema?.properties && typeof entry.input_schema.properties === 'object') {
     initFormModelFromSchema(entry)
   } else {
     formModel.value = {}
@@ -148,7 +149,7 @@ async function handleExecute() {
       try {
         parsedArgs = JSON.parse(raw)
       } catch (e) {
-        ElMessage.error('Invalid JSON args')
+        ElMessage.error(t('plugins.invalidJsonArgs'))
         return
       }
     }
@@ -168,7 +169,6 @@ async function handleExecute() {
   } finally {
     submitting.value = false
   }
-  // TODO: 打开执行对话框
 }
 </script>
 

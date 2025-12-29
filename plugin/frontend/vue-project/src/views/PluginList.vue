@@ -24,7 +24,7 @@
               v-model="filterText"
               clearable
               class="filter-input"
-              placeholder="过滤插件 (支持正则, 匹配 ID/名称/描述)"
+              :placeholder="$t('plugins.filterPlaceholder')"
             />
             <el-switch
               v-model="useRegex"
@@ -33,13 +33,13 @@
               inactive-text="Text"
             />
             <el-radio-group v-model="filterMode" size="small" class="filter-mode">
-              <el-radio-button label="whitelist">白名单</el-radio-button>
-              <el-radio-button label="blacklist">黑名单</el-radio-button>
+              <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
+              <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
             </el-radio-group>
-            <span v-if="regexError" class="filter-error">无效的正则表达式</span>
+            <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
           </template>
           <template v-else>
-            <span class="filter-placeholder">悬停以显示过滤选项…</span>
+            <span class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
           </template>
         </div>
       </template>
@@ -97,21 +97,31 @@ const filteredPlugins = computed(() => {
     try {
       const re = new RegExp(text, 'i')
       regexError.value = false
-      return list.filter((p) => {
+      const matches = (p: any) => {
         const id = p.id || ''
         const name = p.name || ''
         const desc = p.description || ''
         return re.test(id) || re.test(name) || re.test(desc)
-      })
+      }
+      
+      if (filterMode.value === 'blacklist') {
+        return list.filter((p) => !matches(p))
+      }
+      return list.filter((p) => matches(p))
     } catch {
       regexError.value = true
       return list
-    }
+  const match = (p: typeof rawPlugins.value[number]) => {
+    const id = (p.id || '').toLowerCase()
+    const name = (p.name || '').toLowerCase()
+    const desc = (p.description || '').toLowerCase()
+    return id.includes(lower) || name.includes(lower) || desc.includes(lower)
+  }
   }
 
   regexError.value = false
   const lower = text.toLowerCase()
-  const match = (p: any) => {
+   const match = (p: typeof rawPlugins.value[number]) => {  
     const id = (p.id || '').toLowerCase()
     const name = (p.name || '').toLowerCase()
     const desc = (p.description || '').toLowerCase()
@@ -144,11 +154,15 @@ async function toggleMetrics() {
       startMetricsAutoRefresh()
     } catch (error) {
       console.error('Failed to fetch metrics:', error)
-      // 即使失败也显示，让用户看到错误状态
-      showMetrics.value = true
-    }
-  } else {
-    // 隐藏时停止自动刷新
+function startMetricsAutoRefresh() {
+  stopMetricsAutoRefresh()
+  metricsRefreshTimer = window.setInterval(() => {
+    metricsStore.fetchAllMetrics().catch((error) => {
+      console.warn('Auto-refresh metrics failed:', error)
+      // 可选：在连续失败多次后停止自动刷新或提示用户
+    })
+  }, METRICS_REFRESH_INTERVAL)
+}
     showMetrics.value = false
     stopMetricsAutoRefresh()
   }
@@ -157,7 +171,10 @@ async function toggleMetrics() {
 function startMetricsAutoRefresh() {
   stopMetricsAutoRefresh()
   metricsRefreshTimer = window.setInterval(() => {
-    metricsStore.fetchAllMetrics()
+    metricsStore.fetchAllMetrics().catch((error) => {  
+      console.warn('Auto-refresh metrics failed:', error)  
+      // 可选：在连续失败多次后停止自动刷新或提示用户  
+    })  
   }, METRICS_REFRESH_INTERVAL)
 }
 
@@ -182,6 +199,42 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.filter-bar {
+  margin-top: 16px;
+  padding: 12px;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-switch {
+  flex-shrink: 0;
+}
+
+.filter-mode {
+  flex-shrink: 0;
+}
+
+.filter-error {
+  color: var(--el-color-danger);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.filter-placeholder {
+  color: var(--el-text-color-placeholder);
+  font-style: italic;
+  font-size: 14px;
+}
+
 .plugin-list {
   padding: 0;
 }

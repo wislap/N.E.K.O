@@ -123,7 +123,7 @@ def _plugin_process_runner(
             if not _p.is_file():
                 raise ModuleNotFoundError(
                     f"utils.logger_config not found; expected file={_p} project_root={project_root} sys.path_head={sys.path[:3]}"
-                )
+                ) from None
             spec = importlib.util.spec_from_file_location("utils.logger_config", _p)
             if spec is None or spec.loader is None:
                 raise
@@ -386,8 +386,14 @@ def _plugin_process_runner(
                             
                             while not result_container["done"]:
                                 if time.time() - start_time > timeout_seconds:
-                                    logger.error(f"Custom event {event_type}.{event_id} execution timed out")
-                                    raise TimeoutError(f"Custom event execution timed out after {timeout_seconds}s")
+                                    logger.error(
+                                        "Custom event {}.{} execution timed out",
+                                        event_type,
+                                        event_id,
+                                    )
+                                    raise TimeoutError(
+                                        f"Custom event execution timed out after {timeout_seconds}s"
+                                    )
                                 event.wait(timeout=check_interval)
                             
                             if result_container["exception"]:
@@ -424,8 +430,8 @@ def _plugin_process_runner(
                     )
                 except Exception:
                     logger.exception(
-                        "[Plugin Process] Failed to send response for req_id=%s",
-                        req_id
+                        "[Plugin Process] Failed to send response for req_id={}",
+                        req_id,
                     )
                     # 即使发送失败，也要继续处理下一个命令（防御性编程）
                 continue
@@ -507,8 +513,13 @@ def _plugin_process_runner(
                         
                         while not result_container["done"]:
                             if time.time() - start_time > timeout_seconds:
-                                logger.error(f"Async method {entry_id} execution timed out")
-                                raise TimeoutError(f"Async method execution timed out after {timeout_seconds}s")
+                                logger.error(
+                                    "Async method {} execution timed out",
+                                    entry_id,
+                                )
+                                raise TimeoutError(
+                                    f"Async method execution timed out after {timeout_seconds}s"
+                                )
                             event.wait(timeout=check_interval)
                         
                         if result_container["exception"]:
