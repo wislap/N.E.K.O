@@ -21,6 +21,26 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return value.lower() in ("true", "1", "yes", "on")
 
 
+def _get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 # ========== 路径配置 ==========
 
 def get_plugin_config_root() -> Path:
@@ -44,44 +64,44 @@ PLUGIN_CONFIG_ROOT = get_plugin_config_root()
 # ========== 队列配置 ==========
 
 # 事件队列最大容量
-EVENT_QUEUE_MAX = 1000
+EVENT_QUEUE_MAX = _get_int_env("NEKO_EVENT_QUEUE_MAX", 1000)
 
 # 生命周期队列最大容量
-LIFECYCLE_QUEUE_MAX = 1000
+LIFECYCLE_QUEUE_MAX = _get_int_env("NEKO_LIFECYCLE_QUEUE_MAX", 1000)
 
 # 消息队列最大容量
-MESSAGE_QUEUE_MAX = 1000
+MESSAGE_QUEUE_MAX = _get_int_env("NEKO_MESSAGE_QUEUE_MAX", 1000)
 
 
 # ========== 超时配置（秒） ==========
 
 # 插件执行超时（trigger_plugin）
-PLUGIN_EXECUTION_TIMEOUT = 30.0
+PLUGIN_EXECUTION_TIMEOUT = _get_float_env("NEKO_PLUGIN_EXECUTION_TIMEOUT", 30.0)
 
 # 插件触发超时（host.trigger）
-PLUGIN_TRIGGER_TIMEOUT = 10.0
+PLUGIN_TRIGGER_TIMEOUT = _get_float_env("NEKO_PLUGIN_TRIGGER_TIMEOUT", 10.0)
 
 # 插件关闭超时（shutdown）
-PLUGIN_SHUTDOWN_TIMEOUT = 5.0
+PLUGIN_SHUTDOWN_TIMEOUT = _get_float_env("NEKO_PLUGIN_SHUTDOWN_TIMEOUT", 5.0)
 
 # 插件全局关闭超时（秒）
-_shutdown_total_timeout_str = os.getenv("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", "30")
+_shutdown_total_timeout_str = os.getenv("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", os.getenv("NEKO_PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", "30"))
 try:
     PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = int(_shutdown_total_timeout_str)
 except ValueError:
     PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = 30  # 默认值
 
 # 队列操作超时（queue.get）
-QUEUE_GET_TIMEOUT = 1.0
+QUEUE_GET_TIMEOUT = _get_float_env("NEKO_QUEUE_GET_TIMEOUT", 1.0)
 
 # 状态消费关闭超时
-STATUS_CONSUMER_SHUTDOWN_TIMEOUT = 5.0
+STATUS_CONSUMER_SHUTDOWN_TIMEOUT = _get_float_env("NEKO_STATUS_CONSUMER_SHUTDOWN_TIMEOUT", 5.0)
 
 # 进程关闭超时
-PROCESS_SHUTDOWN_TIMEOUT = 5.0
+PROCESS_SHUTDOWN_TIMEOUT = _get_float_env("NEKO_PROCESS_SHUTDOWN_TIMEOUT", 5.0)
 
 # 进程强制终止超时
-PROCESS_TERMINATE_TIMEOUT = 1.0
+PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 1.0)
 
 
 # ========== 线程池配置 ==========
@@ -95,10 +115,10 @@ COMMUNICATION_THREAD_POOL_MAX_WORKERS = min(4, (os.cpu_count() or 1) + 2)
 # ========== 消息队列配置 ==========
 
 # 获取消息时的默认最大数量
-MESSAGE_QUEUE_DEFAULT_MAX_COUNT = 100
+MESSAGE_QUEUE_DEFAULT_MAX_COUNT = _get_int_env("NEKO_MESSAGE_QUEUE_DEFAULT_MAX_COUNT", 100)
 
 # 状态消息获取时的默认最大数量
-STATUS_MESSAGE_DEFAULT_MAX_COUNT = 100
+STATUS_MESSAGE_DEFAULT_MAX_COUNT = _get_int_env("NEKO_STATUS_MESSAGE_DEFAULT_MAX_COUNT", 100)
 
 
 # ========== SDK 元数据属性 ==========
@@ -186,6 +206,11 @@ def validate_config() -> None:
         raise ValueError("EVENT_QUEUE_MAX must be positive")
     if EVENT_QUEUE_MAX > 1000000:
         raise ValueError("EVENT_QUEUE_MAX is unreasonably large (max: 1000000)")
+
+    if LIFECYCLE_QUEUE_MAX <= 0:
+        raise ValueError("LIFECYCLE_QUEUE_MAX must be positive")
+    if LIFECYCLE_QUEUE_MAX > 1000000:
+        raise ValueError("LIFECYCLE_QUEUE_MAX is unreasonably large (max: 1000000)")
     
     if MESSAGE_QUEUE_MAX <= 0:
         raise ValueError("MESSAGE_QUEUE_MAX must be positive")
@@ -211,6 +236,26 @@ def validate_config() -> None:
         raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT must be positive")
     if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT > 300:
         raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT is unreasonably large (max: 300s)")
+
+    if QUEUE_GET_TIMEOUT <= 0:
+        raise ValueError("QUEUE_GET_TIMEOUT must be positive")
+    if QUEUE_GET_TIMEOUT > 60:
+        raise ValueError("QUEUE_GET_TIMEOUT is unreasonably large (max: 60s)")
+
+    if STATUS_CONSUMER_SHUTDOWN_TIMEOUT <= 0:
+        raise ValueError("STATUS_CONSUMER_SHUTDOWN_TIMEOUT must be positive")
+    if STATUS_CONSUMER_SHUTDOWN_TIMEOUT > 300:
+        raise ValueError("STATUS_CONSUMER_SHUTDOWN_TIMEOUT is unreasonably large (max: 300s)")
+
+    if PROCESS_SHUTDOWN_TIMEOUT <= 0:
+        raise ValueError("PROCESS_SHUTDOWN_TIMEOUT must be positive")
+    if PROCESS_SHUTDOWN_TIMEOUT > 300:
+        raise ValueError("PROCESS_SHUTDOWN_TIMEOUT is unreasonably large (max: 300s)")
+
+    if PROCESS_TERMINATE_TIMEOUT <= 0:
+        raise ValueError("PROCESS_TERMINATE_TIMEOUT must be positive")
+    if PROCESS_TERMINATE_TIMEOUT > 60:
+        raise ValueError("PROCESS_TERMINATE_TIMEOUT is unreasonably large (max: 60s)")
     
     if COMMUNICATION_THREAD_POOL_MAX_WORKERS <= 0:
         raise ValueError("COMMUNICATION_THREAD_POOL_MAX_WORKERS must be positive")
@@ -241,6 +286,7 @@ __all__ = [
     
     # 队列配置
     "EVENT_QUEUE_MAX",
+    "LIFECYCLE_QUEUE_MAX",
     "MESSAGE_QUEUE_MAX",
     
     # 超时配置

@@ -781,6 +781,41 @@ class LoadTestPlugin(NekoPluginBase):
             pass
         return ok(data={"tests": results, "enabled": True})
 
+    @lifecycle(id="startup")
+    def startup(self, **_: Any):
+        """Auto-start benchmarks.
+
+        Important: do not read config / call bus APIs directly inside lifecycle handler.
+        We only spawn a daemon thread here.
+        """
+
+        def _runner() -> None:
+            try:
+                root_cfg = self._get_load_test_section(None)
+                enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+                auto_start = bool(root_cfg.get("auto_start", False)) if root_cfg else False
+                if not enabled or not auto_start:
+                    return
+                if self._stop_event.is_set():
+                    return
+                self.run_all_benchmarks()
+            except Exception as e:
+                try:
+                    self.logger.warning("[load_tester] startup auto_start failed: {}", e)
+                except Exception:
+                    pass
+
+        try:
+            t = threading.Thread(target=_runner, daemon=True, name="load_tester-auto")
+            self._auto_thread = t
+            t.start()
+        except Exception as e:
+            try:
+                self.logger.warning("[load_tester] startup: failed to start background thread: {}", e)
+            except Exception:
+                pass
+        return ok(data={"status": "startup_started"})
+
     @lifecycle(id="shutdown")
     def shutdown(self, **_: Any):
         try:

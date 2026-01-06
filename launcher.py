@@ -438,12 +438,31 @@ def main():
             
             try:
                 if hasattr(os, 'killpg'):
-                    pgid = os.getpgrp()
-                    # 先尝试 SIGTERM 允许清理
-                    os.killpg(pgid, signal.SIGTERM)
+                    # POSIX: 逐个终止子进程，避免向自身进程组发送 SIGKILL
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc:
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                     time.sleep(1)
-                    # 如果还活着，再使用 SIGKILL
-                    os.killpg(pgid, signal.SIGKILL)
+
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc or not proc.is_alive():
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                     time.sleep(0.5)
                 else:
                     # Windows: 使用 taskkill 强制杀死进程树
