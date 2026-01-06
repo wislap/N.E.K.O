@@ -610,6 +610,16 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.exception("Error in lifecycle.shutdown: {}", e)
 
+        for q in (cmd_queue, res_queue, status_queue, message_queue):
+            try:
+                q.cancel_join_thread()
+            except Exception:
+                pass
+            try:
+                q.close()
+            except Exception:
+                pass
+
     except (KeyboardInterrupt, SystemExit):
         # 系统级中断，正常退出
         logger.info("Plugin process {} interrupted", plugin_id)

@@ -121,6 +121,7 @@ class EventClient:
         self,
         plugin_id: Optional[str] = None,
         max_count: int = 50,
+        since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> EventList:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
@@ -148,6 +149,7 @@ class EventClient:
             "request_id": req_id,
             "plugin_id": pid_norm,
             "max_count": int(max_count),
+            "since_ts": float(since_ts) if since_ts is not None else None,
             "timeout": float(timeout),
         }
 
@@ -187,6 +189,7 @@ class EventClient:
         get_params = {
             "plugin_id": pid_norm,
             "max_count": max_count,
+            "since_ts": since_ts,
             "timeout": timeout,
         }
         trace = [BusOp(name="get", params=dict(get_params), at=time.time())]

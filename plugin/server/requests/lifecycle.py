@@ -27,11 +27,13 @@ async def handle_lifecycle_get(request: Dict[str, Any], send_response: SendRespo
         plugin_id = None
 
     max_count = request.get("max_count", request.get("limit", None))
+    since_ts = request.get("since_ts", None)
 
     try:
         events = get_lifecycle_from_queue(
             plugin_id=plugin_id,
             max_count=int(max_count) if max_count is not None else None,
+            since_ts=float(since_ts) if since_ts is not None else None,
         )
         send_response(from_plugin, request_id, {"plugin_id": plugin_id or "*", "events": events}, None, timeout=timeout)
     except Exception as e:

@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
@@ -34,6 +35,31 @@ from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
+
+
+def _parse_iso_ts(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except Exception:
+            return None
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s[:-1]).replace(tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
 
 
 def build_plugin_list() -> List[Dict[str, Any]]:
@@ -343,6 +369,7 @@ def get_messages_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
     priority_min: Optional[int] = None,
+    since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     从消息队列中获取消息
@@ -395,6 +422,10 @@ def get_messages_from_queue(
                     continue
             except Exception:
                 continue
+        if since_ts is not None:
+            ts = _parse_iso_ts(msg.get("time"))
+            if ts is None or ts <= float(since_ts):
+                continue
         filtered.append(msg)
 
     if len(filtered) > max_count:
@@ -413,7 +444,7 @@ def get_messages_from_queue(
             binary_url=msg.get("binary_url"),
             metadata=msg.get("metadata", {}),
             timestamp=msg.get("time", now_iso()),
-            message_id=msg.get("message_id"),
+            message_id=str(msg.get("message_id") or ""),
         )
         messages.append(plugin_message.model_dump())
 
@@ -423,6 +454,7 @@ def get_messages_from_queue(
 def get_events_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
+    since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """从事件队列中获取事件。
 
@@ -465,6 +497,10 @@ def get_events_from_queue(
     for ev in all_events:
         if plugin_id and ev.get("plugin_id") != plugin_id:
             continue
+        if since_ts is not None:
+            ts = _parse_iso_ts(ev.get("received_at"))
+            if ts is None or ts <= float(since_ts):
+                continue
         filtered.append(ev)
 
     if len(filtered) > max_count:
@@ -475,6 +511,7 @@ def get_events_from_queue(
 def get_lifecycle_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
+    since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT

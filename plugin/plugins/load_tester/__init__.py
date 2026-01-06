@@ -626,6 +626,7 @@ class LoadTestPlugin(NekoPluginBase):
                 "timeout": {"type": "number", "default": 1.0},
                 "source": {"type": "string", "default": ""},
                 "inplace": {"type": "boolean", "default": False},
+                "incremental": {"type": "boolean", "default": False},
             },
         },
     )
@@ -636,6 +637,7 @@ class LoadTestPlugin(NekoPluginBase):
         timeout: float = 1.0,
         source: str = "",
         inplace: bool = False,
+        incremental: bool = False,
         **_: Any,
     ):
         root_cfg = self._get_load_test_section(None)
@@ -703,7 +705,7 @@ class LoadTestPlugin(NekoPluginBase):
 
         def _op() -> None:
             ctx = cast(BusReplayContext, self.ctx)
-            _ = expr.reload_with(ctx, inplace=bool(inplace))
+            _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=bool(incremental))
 
         if workers > 1:
             stats = self._bench_loop_concurrent(duration, workers, _op)
@@ -713,7 +715,7 @@ class LoadTestPlugin(NekoPluginBase):
         if log_summary:
             try:
                 self.logger.info(
-                    "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} workers={}",
+                    "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} incremental={} workers={}",
                     duration,
                     stats["iterations"],
                     stats["qps"],
@@ -721,11 +723,20 @@ class LoadTestPlugin(NekoPluginBase):
                     len(base_list),
                     flt_kwargs,
                     bool(inplace),
+                    bool(incremental),
                     stats.get("workers", workers),
                 )
             except Exception:
                 pass
-        return ok(data={"test": "bench_buslist_reload", "base_size": len(base_list), "inplace": bool(inplace), **stats})
+        return ok(
+            data={
+                "test": "bench_buslist_reload",
+                "base_size": len(base_list),
+                "inplace": bool(inplace),
+                "incremental": bool(incremental),
+                **stats,
+            }
+        )
 
     @plugin_entry(
         id="run_all_benchmarks",
@@ -763,7 +774,8 @@ class LoadTestPlugin(NekoPluginBase):
             ("bench_bus_events_get", self.bench_bus_events_get),
             ("bench_bus_lifecycle_get", self.bench_bus_lifecycle_get),
             ("bench_buslist_filter", self.bench_buslist_filter),
-            ("bench_buslist_reload", self.bench_buslist_reload),
+            ("bench_buslist_reload_full", lambda **kw: self.bench_buslist_reload(incremental=False, **kw)),
+            ("bench_buslist_reload_incr", lambda **kw: self.bench_buslist_reload(incremental=True, **kw)),
         ]
         for name, fn in tests:
             try:
@@ -791,6 +803,8 @@ class LoadTestPlugin(NekoPluginBase):
                     extra_parts.append(f"base={v.get('base_size')}")
                 if "inplace" in v:
                     extra_parts.append(f"inplace={v.get('inplace')}")
+                if "incremental" in v:
+                    extra_parts.append(f"incr={v.get('incremental')}")
                 if "workers" in v:
                     extra_parts.append(f"workers={v.get('workers')}")
                 if "error" in v:

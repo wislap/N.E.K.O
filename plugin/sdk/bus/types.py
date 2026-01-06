@@ -13,6 +13,7 @@ from typing import (
     Final,
     Literal,
     Iterable,
+    Iterator,
     List,
     Optional,
     Protocol,
@@ -274,6 +275,9 @@ class BusList(Generic[TRecord]):
         self._trace: Tuple[BusOp, ...] = tuple(trace or ()) if not self._fast_mode else ()
         self._plan: Optional[TraceNode] = plan if not self._fast_mode else None
         self._cache_valid: bool = True
+        self._reload_cursor_ts: Optional[float] = None
+        self._incremental_seed: Optional[Dict[str, Any]] = None
+        self._incremental_base_items: Optional[List[Any]] = None
 
     def _is_lazy_mode(self) -> bool:
         return self._ctx is not None and self._plan is not None and not self._fast_mode
@@ -1063,7 +1067,7 @@ class BusList(Generic[TRecord]):
         return out
 
     def _replay_plan(self, ctx: BusReplayContext, plan: TraceNode) -> "BusList[TRecord]":
-        def _as_eager(lst: "BusList[TRecord]") -> "BusList[TRecord]":
+        def _as_eager(lst: Any) -> Any:
             try:
                 lst._ctx = None  # type: ignore[assignment]
                 lst._cache_valid = True  # type: ignore[assignment]
@@ -1157,7 +1161,12 @@ class BusList(Generic[TRecord]):
     @overload
     def reload(self, ctx: None = None) -> "BusList[TRecord]": ...
 
-    def reload(self, ctx: Optional[BusReplayContext] = None) -> "BusList[TRecord]":
+    def reload(
+        self,
+        ctx: Optional[BusReplayContext] = None,
+        *,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]":
         """Replay the recorded plan against live bus data.
 
         中文: 使用可重放 plan 重新从 bus 拉取数据并应用同样的链式操作, 返回最新 BusList.
@@ -1171,15 +1180,33 @@ class BusList(Generic[TRecord]):
             ctx = getattr(self, "_ctx", None)
         if ctx is None:
             raise TypeError("reload() missing required argument: 'ctx' (BusList is not bound to a context)")
-        return self.reload_with(ctx)
+        return self.reload_with(ctx, incremental=bool(incremental))
 
     @overload
-    def reload_with(self, ctx: BusReplayContext, *, inplace: bool = False) -> "BusList[TRecord]": ...
+    def reload_with(
+        self,
+        ctx: BusReplayContext,
+        *,
+        inplace: bool = False,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]": ...
 
     @overload
-    def reload_with(self, ctx: None = None, *, inplace: bool = False) -> "BusList[TRecord]": ...
+    def reload_with(
+        self,
+        ctx: None = None,
+        *,
+        inplace: bool = False,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]": ...
 
-    def reload_with(self, ctx: Optional[BusReplayContext] = None, *, inplace: bool = False) -> "BusList[TRecord]":
+    def reload_with(
+        self,
+        ctx: Optional[BusReplayContext] = None,
+        *,
+        inplace: bool = False,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]":
         """Reload with optional in-place mutation.
 
         中文: reload 的底层实现, 可选择 inplace=True 直接更新当前对象内容.
@@ -1203,6 +1230,244 @@ class BusList(Generic[TRecord]):
 
         if self._plan is None:
             raise NonReplayableTraceError("reload is unavailable when fast_mode=True or plan is missing")
+
+        # Experimental: incremental reload for replayable plans.
+        # Strategy:
+        # - Identify the underlying GetNode seed (bus + params).
+        # - Maintain a local snapshot of the GetNode result (bounded by max_count) as base.
+        # - On incremental reload, fetch only delta (since_ts) from bus, merge into base snapshot.
+        # - Replay the full plan locally against the updated base snapshot.
+        if incremental:
+            def _collect_get_nodes(node: TraceNode) -> List[GetNode]:
+                if isinstance(node, GetNode):
+                    return [node]
+                if isinstance(node, UnaryNode):
+                    return _collect_get_nodes(node.child)
+                if isinstance(node, BinaryNode):
+                    return _collect_get_nodes(node.left) + _collect_get_nodes(node.right)
+                return []
+
+            def _seed_key(bus: str, params: Dict[str, Any]) -> Dict[str, Any]:
+                # since_ts is runtime cursor and should not be part of identity.
+                p = dict(params)
+                p.pop("since_ts", None)
+                return {"bus": bus, "params": p}
+
+            get_nodes = _collect_get_nodes(self._plan)
+            if not get_nodes:
+                # No GetNode => cannot incrementally fetch delta
+                refreshed = self._replay_plan(ctx, self._plan)
+            else:
+                # Require all GetNodes to be equivalent (same bus+params excluding since_ts)
+                seed0 = get_nodes[0]
+                seed_bus = str(seed0.params.get("bus") or "").strip()
+                seed_params0 = dict(seed0.params.get("params") or {})
+                seed_id0 = _seed_key(seed_bus, seed_params0)
+                ok = True
+                for gn in get_nodes[1:]:
+                    b = str(gn.params.get("bus") or "").strip()
+                    pp = dict(gn.params.get("params") or {})
+                    if _seed_key(b, pp) != seed_id0:
+                        ok = False
+                        break
+                if not ok or not seed_bus:
+                    # Fallback: full replay (may hit bus multiple times)
+                    refreshed = self._replay_plan(ctx, self._plan)
+                else:
+                    # Ensure base snapshot exists for this seed; if seed changed, reset snapshot/cursor.
+                    if self._incremental_seed != seed_id0 or self._incremental_base_items is None:
+                        # Initialize base snapshot by doing a normal replay once.
+                        base_list = self._replay_plan(ctx, seed0)
+                        self._incremental_seed = seed_id0
+                        self._incremental_base_items = list(base_list.dump_records())
+                        # Update cursor from base snapshot
+                        try:
+                            max_ts0: Optional[float] = None
+                            for d in base_list.dump():
+                                if not isinstance(d, dict):
+                                    continue
+                                ts0 = (
+                                    parse_iso_timestamp(d.get("time"))
+                                    or parse_iso_timestamp(d.get("timestamp"))
+                                    or parse_iso_timestamp(d.get("received_at"))
+                                )
+                                if ts0 is None:
+                                    continue
+                                if max_ts0 is None or ts0 > max_ts0:
+                                    max_ts0 = ts0
+                            if max_ts0 is not None:
+                                self._reload_cursor_ts = max_ts0
+                        except Exception:
+                            pass
+
+                    # Fetch delta from bus
+                    delta_params = dict(seed_params0)
+                    if self._reload_cursor_ts is not None:
+                        delta_params["since_ts"] = float(self._reload_cursor_ts)
+
+                    delta_list = None
+                    try:
+                        if seed_bus == "messages":
+                            delta_list = ctx.bus.messages.get(**delta_params)
+                        elif seed_bus == "events":
+                            delta_list = ctx.bus.events.get(**delta_params)
+                        elif seed_bus == "lifecycle":
+                            delta_list = ctx.bus.lifecycle.get(**delta_params)
+                        else:
+                            delta_list = None
+                    except Exception:
+                        delta_list = None
+
+                    # Merge delta into base snapshot
+                    if delta_list is not None and self._incremental_base_items is not None:
+                        base_items = list(self._incremental_base_items)
+                        base_keys: set[Any] = set()
+                        try:
+                            for it in base_items:
+                                base_keys.add(self._dedupe_key(it))
+                        except Exception:
+                            base_keys = set()
+
+                        try:
+                            for rec in delta_list.dump_records():
+                                k = self._dedupe_key(rec)
+                                if k in base_keys:
+                                    continue
+                                base_keys.add(k)
+                                base_items.append(rec)
+                        except Exception:
+                            pass
+
+                        # Base snapshot should respect max_count of the seed get.
+                        try:
+                            mc0 = seed_params0.get("max_count")
+                            if mc0 is not None:
+                                n0 = int(mc0)
+                                if n0 > 0 and len(base_items) > n0:
+                                    base_items = base_items[-n0:]
+                        except Exception:
+                            pass
+
+                        self._incremental_base_items = list(base_items)
+
+                        # Update cursor from delta
+                        try:
+                            max_ts: Optional[float] = None
+                            for d in delta_list.dump():
+                                if not isinstance(d, dict):
+                                    continue
+                                ts = (
+                                    parse_iso_timestamp(d.get("time"))
+                                    or parse_iso_timestamp(d.get("timestamp"))
+                                    or parse_iso_timestamp(d.get("received_at"))
+                                )
+                                if ts is None:
+                                    continue
+                                if max_ts is None or ts > max_ts:
+                                    max_ts = ts
+                            if max_ts is not None:
+                                self._reload_cursor_ts = max_ts
+                        except Exception:
+                            pass
+
+                    # Replay full plan locally using base snapshot as the GetNode seed.
+                    seed_bus_now = seed_bus
+                    items_any = list(self._incremental_base_items or [])
+
+                    def _make_seed_buslist() -> Any:
+                        # Construct a generic BusList with the base snapshot as eager items.
+                        return BusList(items_any, ctx=None, trace=None, plan=None, fast_mode=True)  # type: ignore[name-defined]
+
+                    def _replay_local(node: TraceNode) -> Any:
+                        if isinstance(node, GetNode):
+                            # Return base snapshot list
+                            return _make_seed_buslist()
+                        if isinstance(node, UnaryNode):
+                            base = _replay_local(node.child)
+                            if node.op == "filter":
+                                p = dict(node.params)
+                                strict = bool(p.pop("strict", True))
+                                return base.filter(strict=strict, **p)
+                            if node.op == "limit":
+                                return base.limit(int(node.params.get("n", 0)))
+                            if node.op == "sort":
+                                if node.params.get("key") is not None:
+                                    raise NonReplayableTraceError(
+                                        "incremental reload cannot replay sort(key=callable); use sort(by=...) only"
+                                    )
+                                return base.sort(
+                                    by=node.params.get("by"),
+                                    cast=node.params.get("cast"),
+                                    reverse=bool(node.params.get("reverse", False)),
+                                )
+                            if node.op == "where_in":
+                                return base.where_in(str(node.params.get("field")), list(node.params.get("values") or []))
+                            if node.op == "where_eq":
+                                return base.where_eq(str(node.params.get("field")), node.params.get("value"))
+                            if node.op == "where_contains":
+                                return base.where_contains(str(node.params.get("field")), str(node.params.get("value") or ""))
+                            if node.op == "where_regex":
+                                return base.where_regex(
+                                    str(node.params.get("field")),
+                                    str(node.params.get("pattern") or ""),
+                                    strict=bool(node.params.get("strict", True)),
+                                )
+                            if node.op == "where_gt":
+                                return base.where_gt(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
+                            if node.op == "where_ge":
+                                return base.where_ge(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
+                            if node.op == "where_lt":
+                                return base.where_lt(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
+                            if node.op == "where_le":
+                                return base.where_le(str(node.params.get("field")), node.params.get("value"), cast=node.params.get("cast"))
+                            if node.op == "where":
+                                raise NonReplayableTraceError(
+                                    "incremental reload cannot replay where(predicate); use where_in/where_eq/... instead"
+                                )
+                            raise NonReplayableTraceError(f"Unknown unary op for incremental reload: {node.op!r}")
+                        if isinstance(node, BinaryNode):
+                            left = _replay_local(node.left)
+                            right = _replay_local(node.right)
+                            if node.op == "merge":
+                                return left + right
+                            if node.op == "intersection":
+                                return left & right
+                            if node.op == "difference":
+                                return left - right
+                            raise NonReplayableTraceError(f"Unknown binary op for incremental reload: {node.op!r}")
+                        raise NonReplayableTraceError(f"Unknown plan node type: {type(node).__name__}")
+
+                    refreshed = _replay_local(self._plan)
+                    # Materialize result records
+                    out_items = list(refreshed.dump_records()) if hasattr(refreshed, "dump_records") else list(refreshed)
+                    refreshed = self.__class__(
+                        out_items,  # type: ignore[arg-type]
+                        ctx=ctx,
+                        trace=self._trace,
+                        plan=self._plan,
+                        fast_mode=self._fast_mode,
+                    )
+                    try:
+                        refreshed._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
+                        refreshed._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
+                        refreshed._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+
+            if refreshed is not None and inplace:
+                self._items = list(refreshed.dump_records())
+                self._ctx = ctx
+                self._cache_valid = True
+                try:
+                    self._reload_cursor_ts = getattr(refreshed, "_reload_cursor_ts", None)
+                    self._incremental_seed = getattr(refreshed, "_incremental_seed", None)
+                    self._incremental_base_items = getattr(refreshed, "_incremental_base_items", None)
+                except Exception:
+                    pass
+                return self
+
+            if refreshed is not None:
+                return refreshed
 
         refreshed = self._replay_plan(ctx, self._plan)
         if not inplace:
