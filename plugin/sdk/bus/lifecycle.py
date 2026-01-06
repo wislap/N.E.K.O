@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
+from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
 if TYPE_CHECKING:
@@ -86,11 +87,10 @@ class LifecycleList(BusList[LifecycleRecord]):
         super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
-    def merge(self, other: "LifecycleList") -> "LifecycleList":
+    def merge(self, other: "BusList[LifecycleRecord]") -> "LifecycleList":
         merged = super().merge(other)
-        pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        if getattr(merged, "plugin_id", None) == pid:
-            return merged
+        other_pid = getattr(other, "plugin_id", None)
+        pid = self.plugin_id if self.plugin_id == other_pid else "*"
         return LifecycleList(
             merged.dump_records(),
             plugin_id=pid,
@@ -100,7 +100,7 @@ class LifecycleList(BusList[LifecycleRecord]):
             fast_mode=merged.fast_mode,
         )
 
-    def __add__(self, other: "LifecycleList") -> "LifecycleList":
+    def __add__(self, other: "BusList[LifecycleRecord]") -> "LifecycleList":
         return self.merge(other)
 
 
@@ -150,7 +150,7 @@ class LifecycleClient:
             raise RuntimeError(f"Failed to send LIFECYCLE_GET request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         events: List[Any] = []
         while time.time() - start_time < timeout:
             response = state.get_plugin_response(req_id)
@@ -164,8 +164,12 @@ class LifecycleClient:
                 raise RuntimeError(str(response.get("error")))
 
             result = response.get("result")
-            if isinstance(result, dict) and isinstance(result.get("events"), list):
-                events = result.get("events")
+            if isinstance(result, dict):
+                evs = result.get("events")
+                if isinstance(evs, list):
+                    events = evs
+                else:
+                    events = []
             elif isinstance(result, list):
                 events = result
             else:
@@ -226,7 +230,7 @@ class LifecycleClient:
             raise RuntimeError(f"Failed to send LIFECYCLE_DEL request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         while time.time() - start_time < timeout:
             response = state.get_plugin_response(req_id)
             if response is None:

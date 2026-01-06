@@ -94,6 +94,10 @@ except ValueError:
 # 队列操作超时（queue.get）
 QUEUE_GET_TIMEOUT = _get_float_env("NEKO_QUEUE_GET_TIMEOUT", 1.0)
 
+# 插件 SDK 同步轮询响应间隔（秒）
+# bus.*.get 等接口使用该间隔轮询共享 response_map；调小可降低延迟抖动、提升吞吐，但会增加 CPU。
+BUS_SDK_POLL_INTERVAL_SECONDS = _get_float_env("NEKO_BUS_SDK_POLL_INTERVAL_SECONDS", 0.002)
+
 # 状态消费关闭超时
 STATUS_CONSUMER_SHUTDOWN_TIMEOUT = _get_float_env("NEKO_STATUS_CONSUMER_SHUTDOWN_TIMEOUT", 5.0)
 
@@ -242,6 +246,11 @@ def validate_config() -> None:
     if QUEUE_GET_TIMEOUT > 60:
         raise ValueError("QUEUE_GET_TIMEOUT is unreasonably large (max: 60s)")
 
+    if BUS_SDK_POLL_INTERVAL_SECONDS < 0:
+        raise ValueError("BUS_SDK_POLL_INTERVAL_SECONDS must be >= 0")
+    if BUS_SDK_POLL_INTERVAL_SECONDS > 1:
+        raise ValueError("BUS_SDK_POLL_INTERVAL_SECONDS is unreasonably large (max: 1s)")
+
     if STATUS_CONSUMER_SHUTDOWN_TIMEOUT <= 0:
         raise ValueError("STATUS_CONSUMER_SHUTDOWN_TIMEOUT must be positive")
     if STATUS_CONSUMER_SHUTDOWN_TIMEOUT > 300:
@@ -295,6 +304,7 @@ __all__ = [
     "PLUGIN_SHUTDOWN_TIMEOUT",
     "PLUGIN_SHUTDOWN_TOTAL_TIMEOUT",
     "QUEUE_GET_TIMEOUT",
+    "BUS_SDK_POLL_INTERVAL_SECONDS",
     "STATUS_CONSUMER_SHUTDOWN_TIMEOUT",
     "PROCESS_SHUTDOWN_TIMEOUT",
     "PROCESS_TERMINATE_TIMEOUT",

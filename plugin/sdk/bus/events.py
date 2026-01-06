@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
+from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
 if TYPE_CHECKING:
@@ -94,9 +95,10 @@ class EventList(BusList[EventRecord]):
         super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
-    def merge(self, other: "EventList") -> "EventList":
+    def merge(self, other: "BusList[EventRecord]") -> "EventList":
         merged = super().merge(other)
-        pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
+        other_pid = getattr(other, "plugin_id", None)
+        pid = self.plugin_id if self.plugin_id == other_pid else "*"
         return EventList(
             merged.dump_records(),
             plugin_id=pid,
@@ -106,7 +108,7 @@ class EventList(BusList[EventRecord]):
             fast_mode=merged.fast_mode,
         )
 
-    def __add__(self, other: "EventList") -> "EventList":
+    def __add__(self, other: "BusList[EventRecord]") -> "EventList":
         return self.merge(other)
 
 
@@ -155,7 +157,7 @@ class EventClient:
             raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         events: List[Any] = []
         while time.time() - start_time < timeout:
             response = state.get_plugin_response(req_id)
@@ -169,8 +171,12 @@ class EventClient:
                 raise RuntimeError(str(response.get("error")))
 
             result = response.get("result")
-            if isinstance(result, dict) and isinstance(result.get("events"), list):
-                events = result.get("events")
+            if isinstance(result, dict):
+                evs = result.get("events")
+                if isinstance(evs, list):
+                    events = evs
+                else:
+                    events = []
             elif isinstance(result, list):
                 events = result
             else:
@@ -230,7 +236,7 @@ class EventClient:
             raise RuntimeError(f"Failed to send EVENT_DEL request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         while time.time() - start_time < timeout:
             response = state.get_plugin_response(req_id)
             if response is None:

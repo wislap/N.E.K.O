@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
+from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode
 
 if TYPE_CHECKING:
@@ -160,7 +161,7 @@ class MessageClient:
             raise RuntimeError(f"Failed to send MESSAGE_GET request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         messages: List[Any] = []
         while time.time() - start_time < timeout:
             # NOTE: 同步轮询等待响应; 每次循环 sleep 一小段时间以避免占满 CPU。
@@ -253,7 +254,7 @@ class MessageClient:
             raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
 
         start_time = time.time()
-        check_interval = 0.01
+        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
         while time.time() - start_time < timeout:
             response = state.get_plugin_response(req_id)
             if response is None:
