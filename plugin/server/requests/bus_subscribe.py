@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from plugin.core.state import state
 from plugin.server.bus_subscriptions import new_sub_id
+from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS
 from plugin.server.requests.typing import SendResponse
 
 
@@ -60,7 +61,8 @@ async def handle_bus_subscribe(request: Dict[str, Any], send_response: SendRespo
 
     try:
         state.add_bus_subscription(bus, sub_id, info)
-        logger.info("[PluginRouter] BUS_SUBSCRIBE ok: from_plugin=%s bus=%s sub_id=%s", from_plugin, bus, sub_id)
+        if PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS:
+            logger.info("[PluginRouter] BUS_SUBSCRIBE ok: from_plugin=%s bus=%s sub_id=%s", from_plugin, bus, sub_id)
         send_response(from_plugin, request_id, {"ok": True, "sub_id": sub_id, "bus": bus}, None, timeout=float(timeout))
     except Exception as e:
         logger.exception("[PluginRouter] Error handling BUS_SUBSCRIBE: %s", e)
@@ -85,13 +87,14 @@ async def handle_bus_unsubscribe(request: Dict[str, Any], send_response: SendRes
 
     try:
         ok = state.remove_bus_subscription(bus, sub_id)
-        logger.info(
-            "[PluginRouter] BUS_UNSUBSCRIBE: from_plugin=%s bus=%s sub_id=%s ok=%s",
-            from_plugin,
-            bus,
-            sub_id,
-            bool(ok),
-        )
+        if PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS:
+            logger.info(
+                "[PluginRouter] BUS_UNSUBSCRIBE: from_plugin=%s bus=%s sub_id=%s ok=%s",
+                from_plugin,
+                bus,
+                sub_id,
+                bool(ok),
+            )
         send_response(from_plugin, request_id, {"ok": bool(ok), "sub_id": sub_id, "bus": bus}, None, timeout=float(timeout))
     except Exception as e:
         logger.exception("[PluginRouter] Error handling BUS_UNSUBSCRIBE: %s", e)

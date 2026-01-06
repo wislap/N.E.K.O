@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
+from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 from .types import BusList, BusOp, BusRecord, GetNode
 
 if TYPE_CHECKING:
@@ -95,11 +96,10 @@ class MessageList(BusList[MessageRecord]):
         super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
-    def merge(self, other: "MessageList") -> "MessageList":
+    def merge(self, other: "BusList[MessageRecord]") -> "MessageList":
         merged = super().merge(other)
-        pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        if getattr(merged, "plugin_id", None) == pid:
-            return merged
+        other_pid = getattr(other, "plugin_id", None)
+        pid = self.plugin_id if self.plugin_id == other_pid else "*"
         return MessageList(
             merged.dump_records(),
             plugin_id=pid,
@@ -109,10 +109,8 @@ class MessageList(BusList[MessageRecord]):
             fast_mode=merged.fast_mode,
         )
 
-    def __add__(self, other: "MessageList") -> "MessageList":
+    def __add__(self, other: "BusList[MessageRecord]") -> "MessageList":
         return self.merge(other)
-
-
 
 
 @dataclass
@@ -177,8 +175,12 @@ class MessageClient:
                 raise RuntimeError(str(response.get("error")))
 
             result = response.get("result")
-            if isinstance(result, dict) and isinstance(result.get("messages"), list):
-                messages = result.get("messages")
+            if isinstance(result, dict):
+                msgs = result.get("messages")
+                if isinstance(msgs, list):
+                    messages = msgs
+                else:
+                    messages = []
             elif isinstance(result, list):
                 messages = result
             else:
@@ -190,7 +192,7 @@ class MessageClient:
                 orphan_response = state.get_plugin_response(req_id)
             except Exception:
                 orphan_response = None
-            if orphan_response is not None and hasattr(self.ctx, "logger"):
+            if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
                 try:
                     self.ctx.logger.warning(
                         f"[PluginContext] Timeout reached, but response was found (likely delayed). "
@@ -269,7 +271,7 @@ class MessageClient:
             return False
 
         orphan_response = state.get_plugin_response(req_id)
-        if orphan_response is not None and hasattr(self.ctx, "logger"):
+        if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
             try:
                 self.ctx.logger.warning(
                     f"[PluginContext] Timeout reached for MESSAGE_DEL, but response was found (likely delayed). "

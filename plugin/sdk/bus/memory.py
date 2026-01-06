@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence
 
 from plugin.core.state import state
+from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -138,8 +139,12 @@ class MemoryClient:
                 raise RuntimeError(str(response.get("error")))
 
             result = response.get("result")
-            if isinstance(result, dict) and isinstance(result.get("history"), list):
-                history = result.get("history")
+            if isinstance(result, dict):
+                items = result.get("history")
+                if isinstance(items, list):
+                    history = items
+                else:
+                    history = []
             elif isinstance(result, list):
                 history = result
             else:
@@ -152,7 +157,7 @@ class MemoryClient:
                 orphan_response = state.get_plugin_response(request_id)
             except Exception:
                 orphan_response = None
-            if orphan_response is not None and hasattr(self.ctx, "logger"):
+            if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
                 try:
                     self.ctx.logger.warning(
                         f"[PluginContext] Timeout reached, but response was found (likely delayed). "

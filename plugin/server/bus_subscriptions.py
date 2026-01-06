@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from plugin.core.state import state
-
+from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIPTIONS
 
 logger = logging.getLogger("plugin.bus_subscriptions")
 
@@ -111,16 +111,17 @@ class BusSubscriptionManager:
                 )
             except Exception:
                 continue
-            try:
-                logger.info(
-                    "Pushed bus.change to plugin=%s sub_id=%s bus=%s op=%s",
-                    plugin_id,
-                    sub_id,
-                    delta.bus,
-                    delta.op,
-                )
-            except Exception:
-                pass
+            if PLUGIN_LOG_BUS_SUBSCRIPTIONS:
+                try:
+                    logger.info(
+                        "Pushed bus.change to plugin=%s sub_id=%s bus=%s op=%s",
+                        plugin_id,
+                        sub_id,
+                        delta.bus,
+                        delta.op,
+                    )
+                except Exception:
+                    pass
 
 
 bus_subscription_manager = BusSubscriptionManager()

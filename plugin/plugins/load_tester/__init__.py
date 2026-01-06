@@ -1,10 +1,12 @@
 import time
 import threading
-from typing import Any, Dict, Optional
+import signal
+from typing import Any, Dict, Optional, cast
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import neko_plugin, plugin_entry, lifecycle
 from plugin.sdk import ok
+from plugin.sdk.bus.types import BusReplayContext
 
 
 @neko_plugin
@@ -14,6 +16,23 @@ class LoadTestPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self.plugin_id = ctx.plugin_id
+        self._stop_event = threading.Event()
+        self._auto_thread: Optional[threading.Thread] = None
+
+        def _handle_signal(_signum: int, _frame: Any) -> None:
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
+
+        try:
+            signal.signal(signal.SIGTERM, _handle_signal)
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGINT, _handle_signal)
+        except Exception:
+            pass
 
     def _bench_loop(self, duration_seconds: float, fn, *args, **kwargs) -> Dict[str, Any]:
         start = time.perf_counter()
@@ -21,6 +40,8 @@ class LoadTestPlugin(NekoPluginBase):
         count = 0
         errors = 0
         while True:
+            if self._stop_event.is_set():
+                break
             now = time.perf_counter()
             if now >= end_time:
                 break
@@ -56,6 +77,8 @@ class LoadTestPlugin(NekoPluginBase):
         def _worker() -> None:
             nonlocal count, errors
             while True:
+                if self._stop_event.is_set():
+                    break
                 now = time.perf_counter()
                 if now >= end_time:
                     break
@@ -121,6 +144,90 @@ class LoadTestPlugin(NekoPluginBase):
             workers_int = 1
         workers = max(1, workers_int)
         return workers, log_summary
+
+    @plugin_entry(
+        id="op_bus_messages_get",
+        name="Op Bus Messages Get",
+        description="Single operation: call ctx.bus.messages.get once (for external HTTP load testing)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "max_count": {"type": "integer", "default": 50},
+                "plugin_id": {"type": "string", "default": "*"},
+                "timeout": {"type": "number", "default": 0.5},
+            },
+        },
+    )
+    def op_bus_messages_get(
+        self,
+        max_count: int = 50,
+        plugin_id: str = "*",
+        timeout: float = 0.5,
+        **_: Any,
+    ):
+        pid_norm = None if not plugin_id or plugin_id.strip() == "*" else plugin_id.strip()
+        res = self.ctx.bus.messages.get(
+            plugin_id=pid_norm,
+            max_count=int(max_count),
+            timeout=float(timeout),
+        )
+        # Avoid returning large payload over HTTP.
+        return ok(data={"count": len(res)})
+
+    @plugin_entry(
+        id="op_buslist_reload",
+        name="Op BusList Reload",
+        description="Single operation: build BusList expr (filter + +/-) and reload once (for external HTTP load testing)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "max_count": {"type": "integer", "default": 500},
+                "timeout": {"type": "number", "default": 1.0},
+                "source": {"type": "string", "default": ""},
+                "inplace": {"type": "boolean", "default": True},
+            },
+        },
+    )
+    def op_buslist_reload(
+        self,
+        max_count: int = 500,
+        timeout: float = 1.0,
+        source: str = "",
+        inplace: bool = True,
+        **_: Any,
+    ):
+        base_list = self.ctx.bus.messages.get(
+            plugin_id=None,
+            max_count=int(max_count),
+            timeout=float(timeout),
+        )
+        if len(base_list) == 0:
+            for _i in range(10):
+                self.ctx.push_message(
+                    source="load_tester.seed",
+                    message_type="text",
+                    description="seed message for op_buslist_reload",
+                    priority=1,
+                    content="seed",
+                )
+            base_list = self.ctx.bus.messages.get(
+                plugin_id=None,
+                max_count=int(max_count),
+                timeout=float(timeout),
+            )
+
+        flt_kwargs: Dict[str, Any] = {}
+        if source:
+            flt_kwargs["source"] = source
+        else:
+            flt_kwargs["source"] = "load_tester"
+
+        left = base_list.filter(strict=False, **flt_kwargs)
+        right = base_list.filter(strict=False, **flt_kwargs)
+        expr = (left + right) - left
+        ctx = cast(BusReplayContext, self.ctx)
+        out = expr.reload_with(ctx, inplace=bool(inplace))
+        return ok(data={"count": len(out)})
 
     @plugin_entry(
         id="bench_push_messages",
@@ -463,7 +570,7 @@ class LoadTestPlugin(NekoPluginBase):
                 self.logger.info("[load_tester] bench_buslist_filter: no messages available, pushing seed messages")
             except Exception:
                 pass
-            for _ in range(10):
+            for _i in range(10):
                 self.ctx.push_message(
                     source="load_tester.seed",
                     message_type="text",
@@ -508,6 +615,119 @@ class LoadTestPlugin(NekoPluginBase):
         return ok(data={"test": "bench_buslist_filter", "base_size": len(base_list), **stats})
 
     @plugin_entry(
+        id="bench_buslist_reload",
+        name="Bench BusList Reload",
+        description="Measure QPS of BusList.reload() after filter and binary ops (+/-)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "duration_seconds": {"type": "number", "default": 5.0},
+                "max_count": {"type": "integer", "default": 500},
+                "timeout": {"type": "number", "default": 1.0},
+                "source": {"type": "string", "default": ""},
+                "inplace": {"type": "boolean", "default": False},
+            },
+        },
+    )
+    def bench_buslist_reload(
+        self,
+        duration_seconds: float = 5.0,
+        max_count: int = 500,
+        timeout: float = 1.0,
+        source: str = "",
+        inplace: bool = False,
+        **_: Any,
+    ):
+        root_cfg = self._get_load_test_section(None)
+        sec_cfg = self._get_load_test_section("buslist_reload")
+        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
+        if not enabled:
+            try:
+                self.logger.info("[load_tester] bench_buslist_reload disabled by config")
+            except Exception:
+                pass
+            return ok(data={"test": "bench_buslist_reload", "enabled": False, "skipped": True})
+
+        workers, log_summary = self._get_global_bench_config(root_cfg)
+
+        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
+        if dur_cfg is None and root_cfg:
+            dur_cfg = root_cfg.get("duration_seconds")
+        try:
+            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
+        except Exception:
+            duration = duration_seconds
+
+        try:
+            inplace_cfg = sec_cfg.get("inplace") if sec_cfg else None
+            if inplace_cfg is not None:
+                inplace = bool(inplace_cfg)
+        except Exception:
+            pass
+
+        base_list = self.ctx.bus.messages.get(
+            plugin_id=None,
+            max_count=int(max_count),
+            timeout=float(timeout),
+        )
+
+        if len(base_list) == 0:
+            try:
+                self.logger.info("[load_tester] bench_buslist_reload: no messages available, pushing seed messages")
+            except Exception:
+                pass
+            for _i in range(10):
+                self.ctx.push_message(
+                    source="load_tester.seed",
+                    message_type="text",
+                    description="seed message for buslist reload benchmark",
+                    priority=1,
+                    content="seed",
+                )
+            base_list = self.ctx.bus.messages.get(
+                plugin_id=None,
+                max_count=int(max_count),
+                timeout=float(timeout),
+            )
+
+        flt_kwargs: Dict[str, Any] = {}
+        if source:
+            flt_kwargs["source"] = source
+        else:
+            flt_kwargs["source"] = "load_tester"
+
+        left = base_list.filter(strict=False, **flt_kwargs)
+        right = base_list.filter(strict=False, **flt_kwargs)
+        expr = (left + right) - left
+
+        def _op() -> None:
+            ctx = cast(BusReplayContext, self.ctx)
+            _ = expr.reload_with(ctx, inplace=bool(inplace))
+
+        if workers > 1:
+            stats = self._bench_loop_concurrent(duration, workers, _op)
+        else:
+            stats = self._bench_loop(duration, _op)
+
+        if log_summary:
+            try:
+                self.logger.info(
+                    "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} workers={}",
+                    duration,
+                    stats["iterations"],
+                    stats["qps"],
+                    stats["errors"],
+                    len(base_list),
+                    flt_kwargs,
+                    bool(inplace),
+                    stats.get("workers", workers),
+                )
+            except Exception:
+                pass
+        return ok(data={"test": "bench_buslist_reload", "base_size": len(base_list), "inplace": bool(inplace), **stats})
+
+    @plugin_entry(
         id="run_all_benchmarks",
         name="Run All Benchmarks",
         description="Run a suite of QPS benchmarks for core subsystems",
@@ -543,6 +763,7 @@ class LoadTestPlugin(NekoPluginBase):
             ("bench_bus_events_get", self.bench_bus_events_get),
             ("bench_bus_lifecycle_get", self.bench_bus_lifecycle_get),
             ("bench_buslist_filter", self.bench_buslist_filter),
+            ("bench_buslist_reload", self.bench_buslist_reload),
         ]
         for name, fn in tests:
             try:
@@ -558,37 +779,18 @@ class LoadTestPlugin(NekoPluginBase):
             self.logger.info("[load_tester] run_all_benchmarks finished: {}", results)
         except Exception:
             pass
-        return ok(data={"tests": results})
+        return ok(data={"tests": results, "enabled": True})
 
-    @lifecycle(id="startup")
-    def startup(self, **_: Any):
-        """Optional auto-start hook to run benchmarks on plugin startup.
-
-        Controlled by plugin.toml:
-
-        [load_test]
-        auto_start = true/false
-        """
-        root_cfg = self._get_load_test_section(None)
-        auto_start = bool(root_cfg.get("auto_start", False)) if root_cfg else False
-        if not auto_start:
+    @lifecycle(id="shutdown")
+    def shutdown(self, **_: Any):
+        try:
+            self._stop_event.set()
+        except Exception:
+            pass
+        t = getattr(self, "_auto_thread", None)
+        if t is not None:
             try:
-                self.logger.info("[load_tester] startup: auto_start disabled, skipping benchmarks")
+                t.join(timeout=2.0)
             except Exception:
                 pass
-            return ok(data={"status": "startup_skipped", "auto_start": False})
-
-        # 重用 run_all_benchmarks 的逻辑和配置检查
-        res = self.run_all_benchmarks()
-        result_data: Any = None
-        try:
-            result_data = getattr(res, "data", None)
-        except Exception:
-            try:
-                # 兼容直接返回 dict 的情况
-                if isinstance(res, dict):
-                    result_data = res.get("data")
-            except Exception:
-                result_data = None
-
-        return ok(data={"status": "startup_ran", "auto_start": True, "result": result_data})
+        return ok(data={"status": "shutdown_signaled"})

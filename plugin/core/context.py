@@ -20,7 +20,13 @@ from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
 from plugin.core.state import state
-from plugin.settings import EVENT_META_ATTR, PLUGIN_LOG_SYNC_CALL_WARNINGS, SYNC_CALL_IN_HANDLER_POLICY
+from plugin.settings import (
+    EVENT_META_ATTR,
+    PLUGIN_LOG_CTX_MESSAGE_PUSH,
+    PLUGIN_LOG_CTX_STATUS_UPDATE,
+    PLUGIN_LOG_SYNC_CALL_WARNINGS,
+    SYNC_CALL_IN_HANDLER_POLICY,
+)
 
 if TYPE_CHECKING:
     from plugin.sdk.bus.events import EventClient
@@ -163,8 +169,8 @@ class PluginContext:
                 "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             self.status_queue.put_nowait(payload)
-            # 这条日志爱要不要
-            self.logger.info(f"Plugin {self.plugin_id} status updated: {payload}")
+            if PLUGIN_LOG_CTX_STATUS_UPDATE:
+                self.logger.info(f"Plugin {self.plugin_id} status updated: {payload}")
         except (AttributeError, RuntimeError) as e:
             # 队列操作错误
             self.logger.warning(f"Queue error updating status for plugin {self.plugin_id}: {e}")
@@ -215,7 +221,8 @@ class PluginContext:
                 "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             self.message_queue.put_nowait(payload)
-            self.logger.debug(f"Plugin {self.plugin_id} pushed message: {source} - {description}")
+            if PLUGIN_LOG_CTX_MESSAGE_PUSH:
+                self.logger.debug(f"Plugin {self.plugin_id} pushed message: {source} - {description}")
         except (AttributeError, RuntimeError) as e:
             # 队列操作错误
             self.logger.warning(f"Queue error pushing message for plugin {self.plugin_id}: {e}")
@@ -271,7 +278,8 @@ class PluginContext:
         warn_on_orphan_response: bool = False,
         orphan_warning_template: Optional[str] = None,
     ) -> Any:
-        if self._plugin_comm_queue is None:
+        plugin_comm_queue = self._plugin_comm_queue
+        if plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "
                 "This method can only be called from within a plugin process."
@@ -290,7 +298,7 @@ class PluginContext:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                lambda: self._plugin_comm_queue.put(request, timeout=timeout),
+                lambda: plugin_comm_queue.put(request, timeout=timeout),
             )
             if send_log_template:
                 self.logger.debug(

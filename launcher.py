@@ -444,14 +444,29 @@ def main():
                     time.sleep(1)
                     # 如果还活着，再使用 SIGKILL
                     os.killpg(pgid, signal.SIGKILL)
+                    time.sleep(0.5)
                 else:
                     # Windows: 使用 taskkill 强制杀死进程树
                     import subprocess
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc:
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
             except Exception as e:
                 # 强制终止失败，忽略错误（进程可能已经退出）
                 print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
+
+            # 强制终止后重新检查是否还有存活的进程
+            has_alive = any(
+                server.get('process') and server['process'].is_alive()
+                for server in SERVERS
+            )
         
         print("\n清理完成", flush=True)
         # 如果还有残留进程，使用非零退出码
