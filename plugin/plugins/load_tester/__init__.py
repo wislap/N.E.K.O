@@ -140,6 +140,56 @@ class LoadTestPlugin(NekoPluginBase):
             "error_samples": err_samples,
         }
 
+    def _sample_latency_ms(self, fn, *, samples: int = 100) -> Dict[str, Any]:
+        n = max(1, int(samples))
+        durs: list[float] = []
+        errors = 0
+        for _ in range(n):
+            if self._stop_event.is_set():
+                break
+            t0 = time.perf_counter()
+            try:
+                fn()
+            except Exception:
+                errors += 1
+            dt = (time.perf_counter() - t0) * 1000.0
+            durs.append(float(dt))
+
+        if not durs:
+            return {
+                "latency_samples": 0,
+                "latency_errors": int(errors),
+            }
+
+        durs.sort()
+        total = 0.0
+        for x in durs:
+            total += float(x)
+        avg = total / float(len(durs))
+
+        def _pct(p: float) -> float:
+            if not durs:
+                return 0.0
+            if len(durs) == 1:
+                return float(durs[0])
+            idx = int(round((float(p) / 100.0) * (len(durs) - 1)))
+            if idx < 0:
+                idx = 0
+            if idx >= len(durs):
+                idx = len(durs) - 1
+            return float(durs[idx])
+
+        return {
+            "latency_samples": int(len(durs)),
+            "latency_errors": int(errors),
+            "latency_min_ms": float(durs[0]),
+            "latency_max_ms": float(durs[-1]),
+            "latency_avg_ms": float(avg),
+            "latency_p50_ms": float(_pct(50.0)),
+            "latency_p95_ms": float(_pct(95.0)),
+            "latency_p99_ms": float(_pct(99.0)),
+        }
+
     def _get_load_test_section(self, section: Optional[str] = None) -> Dict[str, Any]:
         """Read load_test config section from plugin.toml via PluginConfig.
 
@@ -327,6 +377,11 @@ class LoadTestPlugin(NekoPluginBase):
         else:
             stats = self._bench_loop(duration, _op)
 
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
+
         if log_summary:
             try:
                 self.logger.info(
@@ -392,6 +447,11 @@ class LoadTestPlugin(NekoPluginBase):
             stats = self._bench_loop_concurrent(duration, workers, _op)
         else:
             stats = self._bench_loop(duration, _op)
+
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
 
         if log_summary:
             try:
@@ -475,6 +535,11 @@ class LoadTestPlugin(NekoPluginBase):
             stats = self._bench_loop_concurrent(duration, workers, _op)
         else:
             stats = self._bench_loop(duration, _op)
+
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
 
         if log_summary:
             try:
@@ -561,6 +626,11 @@ class LoadTestPlugin(NekoPluginBase):
         else:
             stats = self._bench_loop(duration, _op)
 
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
+
         if log_summary:
             try:
                 self.logger.info(
@@ -645,6 +715,11 @@ class LoadTestPlugin(NekoPluginBase):
             stats = self._bench_loop_concurrent(duration, workers, _op)
         else:
             stats = self._bench_loop(duration, _op)
+
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
 
         if log_summary:
             try:
@@ -756,6 +831,11 @@ class LoadTestPlugin(NekoPluginBase):
             stats = self._bench_loop_concurrent(duration, workers, _op)
         else:
             stats = self._bench_loop(duration, _op)
+
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
 
         if log_summary:
             try:
@@ -898,6 +978,11 @@ class LoadTestPlugin(NekoPluginBase):
             stats = self._bench_loop_concurrent(duration, workers, _op)
         else:
             stats = self._bench_loop(duration, _op)
+
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
 
         if log_summary:
             try:
@@ -1043,6 +1128,11 @@ class LoadTestPlugin(NekoPluginBase):
         else:
             stats = self._bench_loop(duration, _op)
 
+        try:
+            stats.update(self._sample_latency_ms(_op, samples=100))
+        except Exception:
+            pass
+
         diag = _get_rev_diag()
         if log_summary:
             try:
@@ -1147,6 +1237,14 @@ class LoadTestPlugin(NekoPluginBase):
                     extra_parts.append(f"latest_rev={v.get('latest_rev')}")
                 if "workers" in v:
                     extra_parts.append(f"workers={v.get('workers')}")
+                lat_avg = v.get("latency_avg_ms")
+                lat_p95 = v.get("latency_p95_ms")
+                lat_p99 = v.get("latency_p99_ms")
+                if lat_avg is not None and lat_p95 is not None and lat_p99 is not None:
+                    try:
+                        extra_parts.append(f"lat={float(lat_avg):.3f}/{float(lat_p95):.3f}/{float(lat_p99):.3f}ms")
+                    except Exception:
+                        pass
                 if "error" in v:
                     extra_parts.append(f"error={v.get('error')}")
                 extra = " ".join([p for p in extra_parts if p])

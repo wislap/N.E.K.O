@@ -107,6 +107,8 @@ class MemoryClient:
         if not isinstance(bucket_id, str) or not bucket_id:
             raise ValueError("bucket_id is required")
 
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
         request_id = str(uuid.uuid4())
         request = {
             "type": "USER_CONTEXT_GET",
@@ -116,29 +118,25 @@ class MemoryClient:
             "limit": int(limit),
             "timeout": float(timeout),
         }
-
-        try:
-            plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
         history: List[Any] = []
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(request_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
 
-            if not isinstance(response, dict):
-                time.sleep(check_interval)
-                continue
+        if zmq_client is not None:
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+            except Exception:
+                resp = None
+            if not isinstance(resp, dict):
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.memory.get] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"USER_CONTEXT_GET over ZeroMQ timed out or failed after {timeout}s")
 
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
+            if resp.get("error"):
+                raise RuntimeError(str(resp.get("error")))
 
-            result = response.get("result")
+            result = resp.get("result")
             if isinstance(result, dict):
                 items = result.get("history")
                 if isinstance(items, list):
@@ -149,23 +147,55 @@ class MemoryClient:
                 history = result
             else:
                 history = []
-            break
-
         else:
-            orphan_response = None
             try:
-                orphan_response = state.get_plugin_response(request_id)
-            except Exception:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send USER_CONTEXT_GET request: {e}") from e
+
+            start_time = time.time()
+            check_interval = 0.01
+            while time.time() - start_time < timeout:
+                response = state.get_plugin_response(request_id)
+                if response is None:
+                    time.sleep(check_interval)
+                    continue
+
+                if not isinstance(response, dict):
+                    time.sleep(check_interval)
+                    continue
+
+                if response.get("error"):
+                    raise RuntimeError(str(response.get("error")))
+
+                result = response.get("result")
+                if isinstance(result, dict):
+                    items = result.get("history")
+                    if isinstance(items, list):
+                        history = items
+                    else:
+                        history = []
+                elif isinstance(result, list):
+                    history = result
+                else:
+                    history = []
+                break
+
+            else:
                 orphan_response = None
-            if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
                 try:
-                    self.ctx.logger.warning(
-                        f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                        f"Cleaned up orphan response for req_id={request_id}"
-                    )
+                    orphan_response = state.get_plugin_response(request_id)
                 except Exception:
-                    pass
-            raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
+                    orphan_response = None
+                if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning(
+                            f"[PluginContext] Timeout reached, but response was found (likely delayed). "
+                            f"Cleaned up orphan response for req_id={request_id}"
+                        )
+                    except Exception:
+                        pass
+                raise TimeoutError(f"USER_CONTEXT_GET timed out after {timeout}s")
 
         records: List[MemoryRecord] = []
         for item in history:
