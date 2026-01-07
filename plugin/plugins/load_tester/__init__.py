@@ -316,6 +316,7 @@ class LoadTestPlugin(NekoPluginBase):
                 description="load test message",
                 priority=1,
                 content="load_test",
+                fast_mode=False,
             )
 
         if workers > 1:
@@ -336,6 +337,72 @@ class LoadTestPlugin(NekoPluginBase):
             except Exception:
                 pass
         return ok(data={"test": "bench_push_messages", **stats})
+
+    @plugin_entry(
+        id="bench_push_messages_fast",
+        name="Bench Push Messages (Fast)",
+        description="Measure QPS of ctx.push_message(fast_mode=True) (ZeroMQ PUSH/PULL + batching)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "duration_seconds": {
+                    "type": "number",
+                    "description": "Benchmark duration in seconds",
+                    "default": 5.0,
+                },
+            },
+        },
+    )
+    def bench_push_messages_fast(self, duration_seconds: float = 5.0, **_: Any):
+        root_cfg = self._get_load_test_section(None)
+        sec_cfg = self._get_load_test_section("push_messages_fast")
+        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
+        if not enabled:
+            try:
+                self.logger.info("[load_tester] bench_push_messages_fast disabled by config")
+            except Exception:
+                pass
+            return ok(data={"test": "bench_push_messages_fast", "enabled": False, "skipped": True})
+
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
+        if dur_cfg is None and root_cfg:
+            dur_cfg = root_cfg.get("duration_seconds")
+        try:
+            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
+        except Exception:
+            duration = duration_seconds
+
+        def _op() -> None:
+            self.ctx.push_message(
+                source="load_tester.push_messages_fast",
+                message_type="text",
+                description="load test message (fast)",
+                priority=1,
+                content="load_test",
+                fast_mode=True,
+            )
+
+        if workers > 1:
+            stats = self._bench_loop_concurrent(duration, workers, _op)
+        else:
+            stats = self._bench_loop(duration, _op)
+
+        if log_summary:
+            try:
+                self.logger.info(
+                    "[load_tester] bench_push_messages_fast duration={}s iterations={} qps={} errors={} workers={}",
+                    duration,
+                    stats["iterations"],
+                    stats["qps"],
+                    stats["errors"],
+                    stats.get("workers", workers),
+                )
+            except Exception:
+                pass
+        return ok(data={"test": "bench_push_messages_fast", **stats})
 
     @plugin_entry(
         id="bench_bus_messages_get",
@@ -1030,6 +1097,7 @@ class LoadTestPlugin(NekoPluginBase):
         results = {}
         tests = [
             ("bench_push_messages", self.bench_push_messages),
+            ("bench_push_messages_fast", self.bench_push_messages_fast),
             ("bench_bus_messages_get", self.bench_bus_messages_get),
             ("bench_bus_events_get", self.bench_bus_events_get),
             ("bench_bus_lifecycle_get", self.bench_bus_lifecycle_get),

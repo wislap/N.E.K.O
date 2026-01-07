@@ -12,7 +12,11 @@ from typing import Dict, Any, Optional
 
 from plugin.core.state import state
 from plugin.server.requests.registry import build_request_handlers
-from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
+from plugin.settings import (
+    PLUGIN_ZMQ_IPC_ENABLED,
+    PLUGIN_ZMQ_IPC_ENDPOINT,
+    PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT,
+)
 
 logger = logging.getLogger("plugin.router")
 
@@ -24,6 +28,8 @@ class PluginRouter:
         self._router_task: Optional[asyncio.Task] = None
         self._zmq_task: Optional[asyncio.Task] = None
         self._zmq_server: Any = None
+        self._push_pull_task: Optional[asyncio.Task] = None
+        self._push_pull_server: Any = None
         self._shutdown_event: Optional[asyncio.Event] = None  # 延迟初始化，在 start() 中创建
         self._pending_requests: Dict[str, asyncio.Future] = {}
         # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
@@ -69,6 +75,121 @@ class PluginRouter:
                 self._zmq_server = None
                 self._zmq_task = None
                 logger.exception("Failed to start ZeroMQ IPC server: %s", e)
+
+        if PLUGIN_ZMQ_IPC_ENABLED:
+            try:
+                from plugin.zeromq_ipc import ZmqMessagePushPullConsumer
+                from plugin.server.services import push_message_to_queue, validate_and_advance_push_seq
+
+                async def _handle_push_batch(msg: Dict[str, Any]) -> None:
+                    from_plugin = msg.get("from_plugin")
+                    if not isinstance(from_plugin, str) or not from_plugin:
+                        return
+                    items = msg.get("items")
+                    if not isinstance(items, list):
+                        return
+
+                    declared_count = msg.get("count")
+                    if isinstance(declared_count, int) and int(declared_count) != len(items):
+                        logger.warning(
+                            "[MESSAGE_PUSH_BATCH] count mismatch from=%s declared=%s actual=%s",
+                            from_plugin,
+                            declared_count,
+                            len(items),
+                        )
+
+                    seq_list: list[int] = []
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        s = it.get("seq")
+                        if isinstance(s, int):
+                            seq_list.append(int(s))
+                        else:
+                            try:
+                                if s is not None:
+                                    seq_list.append(int(s))
+                            except Exception:
+                                pass
+
+                    first_seq = msg.get("first_seq")
+                    last_seq = msg.get("last_seq")
+                    if seq_list:
+                        if first_seq is not None:
+                            try:
+                                if int(first_seq) != int(seq_list[0]):
+                                    logger.warning(
+                                        "[MESSAGE_PUSH_BATCH] first_seq mismatch from=%s declared=%s actual=%s",
+                                        from_plugin,
+                                        first_seq,
+                                        seq_list[0],
+                                    )
+                            except Exception:
+                                pass
+                        if last_seq is not None:
+                            try:
+                                if int(last_seq) != int(seq_list[-1]):
+                                    logger.warning(
+                                        "[MESSAGE_PUSH_BATCH] last_seq mismatch from=%s declared=%s actual=%s",
+                                        from_plugin,
+                                        last_seq,
+                                        seq_list[-1],
+                                    )
+                            except Exception:
+                                pass
+
+                        for i in range(1, len(seq_list)):
+                            if seq_list[i] <= seq_list[i - 1]:
+                                logger.warning(
+                                    "[MESSAGE_PUSH_BATCH] seq not strictly increasing from=%s prev=%s curr=%s",
+                                    from_plugin,
+                                    seq_list[i - 1],
+                                    seq_list[i],
+                                )
+                                break
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        meta_raw = it.get("metadata")
+                        meta: Optional[Dict[str, Any]]
+                        if isinstance(meta_raw, dict):
+                            meta = {}
+                            for k, v in meta_raw.items():
+                                try:
+                                    kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                                except Exception:
+                                    kk = str(k)
+                                meta[kk] = v
+                        else:
+                            meta = None
+                        seq = it.get("seq")
+                        if seq is not None:
+                            try:
+                                validate_and_advance_push_seq(plugin_id=str(from_plugin), seq=int(seq))
+                            except Exception:
+                                pass
+                        try:
+                            push_message_to_queue(
+                                plugin_id=str(from_plugin),
+                                source=str(it.get("source") or ""),
+                                message_type=str(it.get("message_type") or ""),
+                                description=str(it.get("description") or ""),
+                                priority=int(it.get("priority") or 0),
+                                content=it.get("content"),
+                                binary_data=it.get("binary_data"),
+                                binary_url=it.get("binary_url"),
+                                metadata=meta,
+                            )
+                        except Exception:
+                            continue
+
+                self._push_pull_server = ZmqMessagePushPullConsumer(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, _handle_push_batch)
+                self._push_pull_task = asyncio.create_task(self._push_pull_server.serve_forever(shutdown_event))
+                logger.warning("ZeroMQ PUSH server started at %s", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
+            except Exception as e:
+                self._push_pull_server = None
+                self._push_pull_task = None
+                logger.exception("Failed to start ZeroMQ PUSH server: %s", e)
         logger.info("Plugin router started")
     
     async def stop(self) -> None:
@@ -102,6 +223,23 @@ class PluginRouter:
                 except Exception:
                     pass
                 self._zmq_server = None
+
+            if self._push_pull_task is not None:
+                try:
+                    await asyncio.wait_for(self._push_pull_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    try:
+                        self._push_pull_task.cancel()
+                    except Exception:
+                        pass
+                finally:
+                    self._push_pull_task = None
+            if self._push_pull_server is not None:
+                try:
+                    self._push_pull_server.close()
+                except Exception:
+                    pass
+                self._push_pull_server = None
 
             # 关闭线程池执行器
             if self._executor is not None:

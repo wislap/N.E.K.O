@@ -10,6 +10,7 @@ import inspect
 import time
 import tomllib
 import uuid
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +97,9 @@ class PluginContext:
     _response_pending: Optional[Dict[str, Any]] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
+    _push_seq: int = 0
+    _push_lock: Optional[Any] = None
+    _push_batcher: Optional[Any] = None
 
     @property
     def bus(self) -> _BusHub:
@@ -191,6 +195,7 @@ class PluginContext:
         binary_data: Optional[bytes] = None,
         binary_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        fast_mode: bool = False,
     ) -> None:
         """
         子进程 / 插件内部调用：推送消息到主进程的消息队列。
@@ -206,35 +211,121 @@ class PluginContext:
             metadata: 额外的元数据
         """
         zmq_client = getattr(self, "_zmq_ipc_client", None)
-        if zmq_client is not None:
-            req_id = str(uuid.uuid4())
-            req = {
-                "type": "MESSAGE_PUSH",
-                "from_plugin": self.plugin_id,
-                "request_id": req_id,
-                "timeout": 5.0,
-                "source": source,
-                "message_type": message_type,
-                "description": description,
-                "priority": priority,
-                "content": content,
-                "binary_data": binary_data,
-                "binary_url": binary_url,
-                "metadata": metadata or {},
-            }
+        if zmq_client is None and bool(fast_mode):
             try:
-                resp = zmq_client.request(req, timeout=5.0)
+                self.logger.warning("[PluginContext] fast_mode requested but ZeroMQ IPC is disabled; falling back to queue")
             except Exception:
-                resp = None
-            if not isinstance(resp, dict):
+                pass
+
+        if zmq_client is not None:
+            try:
+                from plugin.settings import (
+                    PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT,
+                    PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT,
+                    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
+                    PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
+                )
+            except Exception:
+                PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT = 3600.0
+                PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT = "tcp://127.0.0.1:38766"
+                PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = 256
+                PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS = 5
+
+            if getattr(self, "_push_lock", None) is None:
                 try:
-                    self.logger.warning("[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; raising exception (no fallback)")
+                    object.__setattr__(self, "_push_lock", threading.Lock())
                 except Exception:
-                    pass
-                raise TimeoutError("MESSAGE_PUSH over ZeroMQ timed out or failed")
-            if resp.get("error"):
-                raise RuntimeError(str(resp.get("error")))
-            return
+                    self._push_lock = threading.Lock()
+
+            lock = getattr(self, "_push_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                try:
+                    object.__setattr__(self, "_push_lock", lock)
+                except Exception:
+                    self._push_lock = lock
+
+            if bool(fast_mode):
+                if getattr(self, "_push_batcher", None) is None:
+                    from plugin.zeromq_ipc import ZmqMessagePushBatcher
+
+                    batcher = ZmqMessagePushBatcher(
+                        plugin_id=self.plugin_id,
+                        endpoint=str(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT),
+                        batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
+                        flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
+                    )
+                    batcher.start()
+                    try:
+                        object.__setattr__(self, "_push_batcher", batcher)
+                    except Exception:
+                        self._push_batcher = batcher
+
+                with lock:
+                    self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
+                    seq = int(self._push_seq)
+                item = {
+                    "seq": seq,
+                    "source": source,
+                    "message_type": message_type,
+                    "description": description,
+                    "priority": priority,
+                    "content": content,
+                    "binary_data": binary_data,
+                    "binary_url": binary_url,
+                    "metadata": metadata or {},
+                }
+                batcher = getattr(self, "_push_batcher", None)
+                if batcher is None:
+                    raise RuntimeError("push batcher not initialized")
+                batcher.enqueue(item)
+                return
+
+            timeout_s = float(PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT)
+            if timeout_s <= 0:
+                timeout_s = 3600.0
+
+            attempt_timeout = float(timeout_s)
+            if attempt_timeout > 1.0:
+                attempt_timeout = 1.0
+            if attempt_timeout <= 0:
+                attempt_timeout = 0.2
+
+            with lock:
+                self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
+                seq = int(self._push_seq)
+
+                while True:
+                    req_id = str(uuid.uuid4())
+                    req = {
+                        "type": "MESSAGE_PUSH",
+                        "from_plugin": self.plugin_id,
+                        "request_id": req_id,
+                        "timeout": timeout_s,
+                        "seq": seq,
+                        "source": source,
+                        "message_type": message_type,
+                        "description": description,
+                        "priority": priority,
+                        "content": content,
+                        "binary_data": binary_data,
+                        "binary_url": binary_url,
+                        "metadata": metadata or {},
+                    }
+                    try:
+                        resp = zmq_client.request(req, timeout=attempt_timeout)
+                    except Exception:
+                        resp = None
+                    if not isinstance(resp, dict):
+                        try:
+                            self.logger.warning("[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; retrying (no fallback)")
+                        except Exception:
+                            pass
+                        time.sleep(0.01)
+                        continue
+                    if resp.get("error"):
+                        raise RuntimeError(str(resp.get("error")))
+                    return
 
         if self.message_queue is None:
             self.logger.warning(f"Plugin {self.plugin_id} message_queue is not available, message dropped")

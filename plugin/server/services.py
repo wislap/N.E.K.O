@@ -13,6 +13,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+import threading
 
 from fastapi import HTTPException
 from loguru import logger as loguru_logger
@@ -45,6 +46,32 @@ _mq_full_dropped: int = 0
 
 _msg_push_last_info_ts: float = 0.0
 _msg_push_suppressed: int = 0
+
+_push_seq_lock = threading.Lock()
+_push_expected_seq: Dict[str, int] = {}
+
+
+def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
+    pid = str(plugin_id)
+    try:
+        seq_i = int(seq)
+    except Exception:
+        return
+    with _push_seq_lock:
+        expected = _push_expected_seq.get(pid)
+        if expected is None:
+            _push_expected_seq[pid] = seq_i + 1
+            return
+        if seq_i != int(expected):
+            loguru_logger.warning(
+                "[MESSAGE PUSH] seq mismatch: plugin={} expected={} got={}",
+                pid,
+                int(expected),
+                seq_i,
+            )
+            _push_expected_seq[pid] = seq_i + 1
+            return
+        _push_expected_seq[pid] = int(expected) + 1
 
 
 _BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "0").lower() in ("1", "true", "yes", "on")

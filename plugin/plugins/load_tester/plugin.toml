@@ -26,6 +26,9 @@ timeout = 0.5
 [load_test.push_messages]
 enable = true
 
+[load_test.push_messages_fast]
+enable = true
+
 [load_test.bus_messages_get]
 enable = true
 

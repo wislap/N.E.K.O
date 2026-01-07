@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict
 
 from plugin.server.requests.typing import SendResponse
-from plugin.server.services import get_messages_from_queue, push_message_to_queue
+from plugin.server.services import get_messages_from_queue, push_message_to_queue, validate_and_advance_push_seq
 
 
 logger = logging.getLogger("plugin.router")
@@ -67,6 +67,7 @@ async def handle_message_push(request: Dict[str, Any], send_response: SendRespon
     binary_data = request.get("binary_data", None)
     binary_url = request.get("binary_url", None)
     metadata = request.get("metadata", None)
+    seq = request.get("seq", None)
 
     if not isinstance(source, str) or not source:
         send_response(from_plugin, request_id, None, "source is required", timeout=timeout)
@@ -76,6 +77,11 @@ async def handle_message_push(request: Dict[str, Any], send_response: SendRespon
         return
 
     try:
+        if seq is not None:
+            try:
+                validate_and_advance_push_seq(plugin_id=str(from_plugin), seq=int(seq))
+            except Exception:
+                pass
         mid = push_message_to_queue(
             plugin_id=str(from_plugin),
             source=str(source),

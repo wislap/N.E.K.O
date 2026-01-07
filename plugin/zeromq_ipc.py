@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import threading
+import queue
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -191,3 +192,174 @@ async def _async_sleep(seconds: float) -> None:
     import asyncio
 
     await asyncio.sleep(seconds)
+
+
+class ZmqMessagePushBatcher:
+    def __init__(
+        self,
+        *,
+        plugin_id: str,
+        endpoint: str,
+        batch_size: int = 256,
+        flush_interval_ms: int = 5,
+        max_queue: int = 100000,
+    ) -> None:
+        if zmq is None:
+            raise RuntimeError("pyzmq is not available")
+        self._plugin_id = str(plugin_id)
+        self._endpoint = str(endpoint)
+        self._batch_size = max(1, int(batch_size))
+        self._flush_interval_s = max(0.0, float(flush_interval_ms) / 1000.0)
+        self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=int(max_queue))
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name=f"zmq-push-batcher-{self._plugin_id}", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 1.0) -> None:
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            try:
+                t.join(timeout=float(timeout))
+            except Exception:
+                pass
+
+    def enqueue(self, item: Dict[str, Any]) -> None:
+        if self._stop.is_set():
+            raise RuntimeError("push batcher stopped")
+        try:
+            self._q.put(item, timeout=1.0)
+        except Exception as e:
+            raise RuntimeError(f"push batcher queue full: {e}") from e
+
+    def _run(self) -> None:
+        if zmq is None:
+            return
+        ctx = zmq.Context.instance()
+        sock = ctx.socket(zmq.PUSH)
+        sock.setsockopt(zmq.LINGER, 0)
+        try:
+            sock.connect(self._endpoint)
+        except Exception:
+            try:
+                sock.close(0)
+            except Exception:
+                pass
+            return
+
+        batch: list[Dict[str, Any]] = []
+        last_flush = time.time()
+
+        while not self._stop.is_set():
+            timeout = self._flush_interval_s
+            if timeout <= 0:
+                timeout = 0.001
+            try:
+                item = self._q.get(timeout=timeout)
+            except queue.Empty:
+                item = None
+            except Exception:
+                item = None
+
+            now_ts = time.time()
+            if item is not None:
+                if isinstance(item, dict):
+                    batch.append(item)
+
+            should_flush = False
+            if len(batch) >= self._batch_size:
+                should_flush = True
+            elif batch and (now_ts - float(last_flush) >= self._flush_interval_s):
+                should_flush = True
+
+            if not should_flush:
+                continue
+
+            try:
+                first_seq = batch[0].get("seq") if batch else None
+                last_seq = batch[-1].get("seq") if batch else None
+                payload = {
+                    "type": "MESSAGE_PUSH_BATCH",
+                    "from_plugin": self._plugin_id,
+                    "first_seq": int(first_seq) if isinstance(first_seq, int) else first_seq,
+                    "last_seq": int(last_seq) if isinstance(last_seq, int) else last_seq,
+                    "count": int(len(batch)),
+                    "items": batch,
+                }
+                sock.send(_dumps(payload), flags=0)
+            except Exception:
+                pass
+            batch = []
+            last_flush = float(now_ts)
+
+        try:
+            sock.close(0)
+        except Exception:
+            pass
+
+
+class ZmqMessagePushPullConsumer:
+    def __init__(self, endpoint: str, handler) -> None:
+        if zmq is None:
+            raise RuntimeError("pyzmq is not available")
+        self._endpoint = str(endpoint)
+        self._handler = handler
+        self._ctx = zmq.asyncio.Context.instance()
+        self._sock = self._ctx.socket(zmq.PULL)
+        self._sock.setsockopt(zmq.LINGER, 0)
+        self._sock.bind(self._endpoint)
+        self._running = True
+        self._recv_count = 0
+        self._last_log_ts = 0.0
+
+    async def serve_forever(self, shutdown_event) -> None:
+        while self._running and not shutdown_event.is_set():
+            try:
+                raw = await asyncio.wait_for(self._sock.recv(), timeout=0.2)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                await _async_sleep(0.01)
+                continue
+            try:
+                msg = _loads(raw)
+            except Exception:
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if str(msg.get("type")) != "MESSAGE_PUSH_BATCH":
+                continue
+
+            self._recv_count += 1
+            try:
+                now_ts = time.time()
+                if now_ts - float(self._last_log_ts) >= 5.0:
+                    self._last_log_ts = float(now_ts)
+                    import logging
+
+                    logging.getLogger("plugin.router").warning(
+                        "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
+                        int(self._recv_count),
+                        str(msg.get("type")),
+                        str(msg.get("from_plugin")),
+                    )
+            except Exception:
+                pass
+
+            try:
+                await self._handler(msg)
+            except Exception:
+                continue
+
+    def close(self) -> None:
+        self._running = False
+        try:
+            self._sock.close(0)
+        except Exception:
+            pass
