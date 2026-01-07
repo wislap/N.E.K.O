@@ -176,28 +176,19 @@ class MessageClient:
                     response = None
             except Exception:
                 response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.messages.get] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"MESSAGE_GET over ZeroMQ timed out or failed after {timeout}s")
         else:
             response = None
-
-        if response is None:
-            if zmq_client is not None and hasattr(self.ctx, "logger"):
-                try:
-                    last_ts = getattr(self.ctx, "_zmq_fallback_last_warn_ts", 0.0)
-                    now_ts = time.time()
-                    if not isinstance(last_ts, (int, float)):
-                        last_ts = 0.0
-                    if now_ts - float(last_ts) >= 5.0:
-                        setattr(self.ctx, "_zmq_fallback_last_warn_ts", float(now_ts))
-                        self.ctx.logger.warning("[bus.messages.get] ZeroMQ IPC failed; falling back to legacy IPC")
-                except Exception:
-                    pass
             try:
                 plugin_comm_queue.put(request, timeout=timeout)
             except Exception as e:
                 raise RuntimeError(f"Failed to send MESSAGE_GET request: {e}") from e
-
-        if response is None:
-            response = None
         resp_q = getattr(self.ctx, "_response_queue", None)
         pending = getattr(self.ctx, "_response_pending", None)
         if pending is None:
@@ -302,6 +293,8 @@ class MessageClient:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.messages.delete")
 
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
         plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
         if plugin_comm_queue is None:
             raise RuntimeError(
@@ -322,12 +315,28 @@ class MessageClient:
             "timeout": float(timeout),
         }
 
-        try:
-            plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
+        if zmq_client is not None:
+            response = None
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+                if isinstance(resp, dict):
+                    response = resp
+            except Exception:
+                response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.messages.delete] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"MESSAGE_DEL over ZeroMQ timed out or failed after {timeout}s")
+        else:
+            try:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
 
-        response = state.wait_for_plugin_response(req_id, timeout)
+            response = state.wait_for_plugin_response(req_id, timeout)
         if response is None:
             orphan_response = None
             try:

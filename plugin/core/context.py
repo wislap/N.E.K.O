@@ -205,6 +205,37 @@ class PluginContext:
             binary_url: 二进制文件的URL（当message_type为binary_url时）
             metadata: 额外的元数据
         """
+        zmq_client = getattr(self, "_zmq_ipc_client", None)
+        if zmq_client is not None:
+            req_id = str(uuid.uuid4())
+            req = {
+                "type": "MESSAGE_PUSH",
+                "from_plugin": self.plugin_id,
+                "request_id": req_id,
+                "timeout": 5.0,
+                "source": source,
+                "message_type": message_type,
+                "description": description,
+                "priority": priority,
+                "content": content,
+                "binary_data": binary_data,
+                "binary_url": binary_url,
+                "metadata": metadata or {},
+            }
+            try:
+                resp = zmq_client.request(req, timeout=5.0)
+            except Exception:
+                resp = None
+            if not isinstance(resp, dict):
+                try:
+                    self.logger.warning("[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; raising exception (no fallback)")
+                except Exception:
+                    pass
+                raise TimeoutError("MESSAGE_PUSH over ZeroMQ timed out or failed")
+            if resp.get("error"):
+                raise RuntimeError(str(resp.get("error")))
+            return
+
         if self.message_queue is None:
             self.logger.warning(f"Plugin {self.plugin_id} message_queue is not available, message dropped")
             return

@@ -21,8 +21,8 @@ enable = true
 duration_seconds = 5
 auto_start = true
 log_summary = true
-worker_threads = 2
-timeout = 2.0
+worker_threads = 1
+timeout = 0.5
 [load_test.push_messages]
 enable = true
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -31,26 +32,42 @@ class ZmqIpcClient:
     def __post_init__(self) -> None:
         if zmq is None:
             raise RuntimeError("pyzmq is not available")
+        self._tls = threading.local()
+
+    def _get_sock(self):
+        sock = getattr(self._tls, "sock", None)
+        if sock is not None:
+            return sock
+        if zmq is None:
+            return None
         ctx = zmq.Context.instance()
         sock = ctx.socket(zmq.DEALER)
-        sock.setsockopt(zmq.IDENTITY, self.plugin_id.encode("utf-8"))
+        ident = f"{self.plugin_id}:{threading.get_ident()}".encode("utf-8")
+        sock.setsockopt(zmq.IDENTITY, ident)
         sock.setsockopt(zmq.LINGER, 0)
         sock.connect(self.endpoint)
-        self._sock = sock
+        try:
+            self._tls.sock = sock
+        except Exception:
+            pass
+        return sock
 
     def request(self, request: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
         if zmq is None:
+            return None
+        sock = self._get_sock()
+        if sock is None:
             return None
         req_id = request.get("request_id")
         if not isinstance(req_id, str) or not req_id:
             return None
         try:
-            self._sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
+            sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
         except Exception:
             return None
 
         poller = zmq.Poller()
-        poller.register(self._sock, zmq.POLLIN)
+        poller.register(sock, zmq.POLLIN)
         deadline = time.time() + max(0.0, float(timeout))
         while True:
             remaining = deadline - time.time()
@@ -60,10 +77,10 @@ class ZmqIpcClient:
                 events = dict(poller.poll(timeout=int(remaining * 1000)))
             except Exception:
                 return None
-            if self._sock not in events:
+            if sock not in events:
                 continue
             try:
-                frames = self._sock.recv_multipart(flags=0)
+                frames = sock.recv_multipart(flags=0)
             except Exception:
                 return None
             if len(frames) < 2:
@@ -85,7 +102,9 @@ class ZmqIpcClient:
 
     def close(self) -> None:
         try:
-            self._sock.close(0)
+            sock = getattr(self._tls, "sock", None)
+            if sock is not None:
+                sock.close(0)
         except Exception:
             pass
 
@@ -101,6 +120,8 @@ class ZmqIpcServer:
         self._sock.setsockopt(zmq.LINGER, 0)
         self._sock.bind(self._endpoint)
         self._running = True
+        self._recv_count = 0
+        self._last_log_ts = 0.0
 
     async def serve_forever(self, shutdown_event) -> None:
         while self._running and not shutdown_event.is_set():
@@ -124,6 +145,22 @@ class ZmqIpcServer:
                 continue
             if not isinstance(request, dict):
                 continue
+
+            self._recv_count += 1
+            try:
+                now_ts = time.time()
+                if now_ts - float(self._last_log_ts) >= 5.0:
+                    self._last_log_ts = float(now_ts)
+                    import logging
+
+                    logging.getLogger("plugin.router").warning(
+                        "[ZeroMQ IPC] recv=%d last_type=%s from=%s",
+                        int(self._recv_count),
+                        str(request.get("type")),
+                        str(request.get("from_plugin")),
+                    )
+            except Exception:
+                pass
 
             try:
                 resp = await self._request_handler(request)

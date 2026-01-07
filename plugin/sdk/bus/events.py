@@ -130,6 +130,8 @@ class EventClient:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.events.get")
 
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
         plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
         if plugin_comm_queue is None:
             raise RuntimeError(
@@ -158,12 +160,29 @@ class EventClient:
             "timeout": float(timeout),
         }
 
-        try:
-            plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
+        if zmq_client is not None:
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+                if isinstance(resp, dict):
+                    response = resp
+                else:
+                    response = None
+            except Exception:
+                response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.events.get] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"EVENT_GET over ZeroMQ timed out or failed after {timeout}s")
+        else:
+            try:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
 
-        response = None
+            response = None
         resp_q = getattr(self.ctx, "_response_queue", None)
         pending = getattr(self.ctx, "_response_pending", None)
         if pending is None:
@@ -253,6 +272,8 @@ class EventClient:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.events.delete")
 
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
         plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
         if plugin_comm_queue is None:
             raise RuntimeError(
@@ -273,12 +294,28 @@ class EventClient:
             "timeout": float(timeout),
         }
 
-        try:
-            plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send EVENT_DEL request: {e}") from e
+        if zmq_client is not None:
+            response = None
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+                if isinstance(resp, dict):
+                    response = resp
+            except Exception:
+                response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.events.delete] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"EVENT_DEL over ZeroMQ timed out or failed after {timeout}s")
+        else:
+            try:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send EVENT_DEL request: {e}") from e
 
-        response = state.wait_for_plugin_response(req_id, timeout)
+            response = state.wait_for_plugin_response(req_id, timeout)
         if response is None:
             raise TimeoutError(f"EVENT_DEL timed out after {timeout}s")
         if not isinstance(response, dict):

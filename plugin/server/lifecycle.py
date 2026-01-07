@@ -66,6 +66,9 @@ async def startup() -> None:
         state.event_handlers.clear()
     
     logger.debug("Cleared old plugin state")
+
+    await plugin_router.start()
+    logger.info("Plugin router started")
     
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
@@ -108,10 +111,6 @@ async def startup() -> None:
     # 启动诊断：列出插件实例和公共方法
     _log_startup_diagnostics()
     
-    # 启动插件间通信路由器
-    await plugin_router.start()
-    logger.info("Plugin router started")
-
     await bus_subscription_manager.start()
     logger.info("Bus subscription manager started")
 

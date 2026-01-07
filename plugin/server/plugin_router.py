@@ -64,7 +64,7 @@ class PluginRouter:
                     request_handler=self._handle_zmq_request,
                 )
                 self._zmq_task = asyncio.create_task(self._zmq_server.serve_forever(shutdown_event))
-                logger.info("ZeroMQ IPC server started at %s", PLUGIN_ZMQ_IPC_ENDPOINT)
+                logger.warning("ZeroMQ IPC server started at %s", PLUGIN_ZMQ_IPC_ENDPOINT)
             except Exception as e:
                 self._zmq_server = None
                 self._zmq_task = None

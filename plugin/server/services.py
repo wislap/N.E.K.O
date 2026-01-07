@@ -9,11 +9,13 @@ import logging
 import os
 import queue as _queue
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from loguru import logger as loguru_logger
 
 from plugin.core.state import state
 from plugin.api.models import (
@@ -37,6 +39,12 @@ from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
+
+_mq_full_last_warn_ts: float = 0.0
+_mq_full_dropped: int = 0
+
+_msg_push_last_info_ts: float = 0.0
+_msg_push_suppressed: int = 0
 
 
 _BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "0").lower() in ("1", "true", "yes", "on")
@@ -1049,20 +1057,47 @@ def push_message_to_queue(
     try:
         state.message_queue.put_nowait(message)
         state.append_message_record(message)
-        logger.info(
-            f"[MESSAGE PUSH] Plugin: {plugin_id} | "
-            f"Source: {source} | "
-            f"Type: {message_type} | "
-            f"Priority: {priority} | "
-            f"Description: {description} | "
-            f"Content: {_format_log_text(content or '')}"
-        )
+        global _msg_push_last_info_ts, _msg_push_suppressed
+        now_ts = time.time()
+        _msg_push_suppressed += 1
+        if now_ts - float(_msg_push_last_info_ts) >= 1.0:
+            _msg_push_last_info_ts = float(now_ts)
+            n = int(_msg_push_suppressed)
+            _msg_push_suppressed = 0
+            if n <= 1:
+                loguru_logger.info(
+                    f"[MESSAGE PUSH] Plugin: {plugin_id} | "
+                    f"Source: {source} | "
+                    f"Type: {message_type} | "
+                    f"Priority: {priority} | "
+                    f"Description: {description} | "
+                    f"Content: {_format_log_text(content or '')}"
+                )
+            else:
+                loguru_logger.info(
+                    f"[MESSAGE PUSH] Plugin: {plugin_id} | "
+                    f"Source: {source} | "
+                    f"Type: {message_type} | "
+                    f"Priority: {priority} | "
+                    f"Description: {description} | "
+                    f"Content: {_format_log_text(content or '')} (x{n})"
+                )
     except asyncio.QueueFull:
         # 队列满时，尝试移除最旧的消息
         try:
             state.message_queue.get_nowait()
             state.message_queue.put_nowait(message)
-            logger.warning("Message queue full, dropped oldest message")
+            global _mq_full_last_warn_ts, _mq_full_dropped
+            _mq_full_dropped += 1
+            now_ts = time.time()
+            if now_ts - float(_mq_full_last_warn_ts) >= 1.0:
+                _mq_full_last_warn_ts = float(now_ts)
+                dropped = int(_mq_full_dropped)
+                _mq_full_dropped = 0
+                if dropped <= 1:
+                    loguru_logger.warning("Message queue full, dropped oldest message")
+                else:
+                    loguru_logger.warning("Message queue full, dropped oldest message (x{})", dropped)
         except (asyncio.QueueEmpty, AttributeError, RuntimeError) as e:
             logger.error(f"Failed to enqueue message, queue full and cleanup failed: {e}")
             raise HTTPException(
