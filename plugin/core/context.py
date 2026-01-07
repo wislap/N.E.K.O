@@ -386,9 +386,9 @@ class PluginContext:
         except (AttributeError, RuntimeError) as e:
             # 队列操作错误
             self.logger.warning(f"Queue error pushing message for plugin {self.plugin_id}: {e}")
-        except Exception as e:
+        except Exception:
             # 其他未知异常
-            self.logger.exception(f"Unexpected error pushing message for plugin {self.plugin_id}: {e}")
+            self.logger.exception(f"Unexpected error pushing message for plugin {self.plugin_id}")
 
     def _send_request_and_wait(
         self,

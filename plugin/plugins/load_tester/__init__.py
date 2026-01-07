@@ -178,7 +178,7 @@ class LoadTestPlugin(NekoPluginBase):
             return float(durs[idx])
 
         return {
-            "latency_samples": int(len(durs)),
+            "latency_samples": len(durs),
             "latency_errors": int(errors),
             "latency_min_ms": float(durs[0]),
             "latency_max_ms": float(durs[-1]),
@@ -198,7 +198,7 @@ class LoadTestPlugin(NekoPluginBase):
         try:
             return self.config.get_section(path)
         except Exception:
-            # 配置缺失或格式不对时，按空配置处理，避免影响插件可用性
+            # 配置缺失或格式不对时, 按空配置处理, 避免影响插件可用性
             return {}
 
     def _get_global_bench_config(self, root_cfg: Optional[Dict[str, Any]]) -> tuple[int, bool]:
@@ -625,14 +625,6 @@ class LoadTestPlugin(NekoPluginBase):
         except Exception:
             pass
 
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
-
         pid_norm = None if not plugin_id or plugin_id.strip() == "*" else plugin_id.strip()
 
         def _op() -> None:
@@ -702,14 +694,6 @@ class LoadTestPlugin(NekoPluginBase):
                 timeout = float(timeout_cfg)
         except Exception:
             pass
-
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
 
         pid_norm = None if not plugin_id or plugin_id.strip() == "*" else plugin_id.strip()
 
@@ -816,7 +800,7 @@ class LoadTestPlugin(NekoPluginBase):
         def _op() -> None:
             _ = base_list.filter(strict=False, **flt_kwargs)
 
-        def _extra_data_builder(stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
+        def _extra_data_builder(_stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
             return {"base_size": len(base_list)}
 
         def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
@@ -884,14 +868,6 @@ class LoadTestPlugin(NekoPluginBase):
         except Exception:
             pass
 
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
-
         try:
             inplace_cfg = sec_cfg.get("inplace") if sec_cfg else None
             if inplace_cfg is not None:
@@ -938,7 +914,7 @@ class LoadTestPlugin(NekoPluginBase):
             ctx = cast(BusReplayContext, self.ctx)
             _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=bool(incremental))
 
-        def _extra_data_builder(stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
+        def _extra_data_builder(_stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
             data: Dict[str, Any] = {
                 "base_size": len(base_list),
                 "inplace": bool(inplace),
@@ -1217,11 +1193,11 @@ class LoadTestPlugin(NekoPluginBase):
                     ]
                 )
 
-            cols = list(zip(*([headers] + rows), strict=True)) if rows else [headers]
+            cols = list(zip(*[headers, *rows], strict=True))
             widths = [max(len(str(x)) for x in col) for col in cols]
 
             def _line(parts: list[str]) -> str:
-                return " | ".join(p.ljust(w) for p, w in zip(parts, widths))
+                return " | ".join(p.ljust(w) for p, w in zip(parts, widths, strict=True))
 
             sep = "-+-".join("-" * w for w in widths)
             table = "\n".join([
