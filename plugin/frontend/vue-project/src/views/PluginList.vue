@@ -97,7 +97,7 @@ const filteredPlugins = computed(() => {
     try {
       const re = new RegExp(text, 'i')
       regexError.value = false
-      const matches = (p: any) => {
+      const matches = (p: typeof list[number]) => {
         const id = p.id || ''
         const name = p.name || ''
         const desc = p.description || ''

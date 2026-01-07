@@ -611,13 +611,6 @@ class PluginRuntimeState:
                 except Exception:
                     time.sleep(min(0.01, remaining))
 
-            # Clear to avoid spinning on a permanently-set event.
-            try:
-                if notify_ev is not None:
-                    notify_ev.clear()
-            except Exception:
-                pass
-
             got = self.get_plugin_response(rid)
             if got is not None:
                 return got
