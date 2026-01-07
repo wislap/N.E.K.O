@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 
 from plugin.core.state import state
 from plugin.server.requests.registry import build_request_handlers
+from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
 
 logger = logging.getLogger("plugin.router")
 
@@ -21,6 +22,8 @@ class PluginRouter:
     
     def __init__(self):
         self._router_task: Optional[asyncio.Task] = None
+        self._zmq_task: Optional[asyncio.Task] = None
+        self._zmq_server: Any = None
         self._shutdown_event: Optional[asyncio.Event] = None  # 延迟初始化，在 start() 中创建
         self._pending_requests: Dict[str, asyncio.Future] = {}
         # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
@@ -52,6 +55,20 @@ class PluginRouter:
         shutdown_event = self._ensure_shutdown_event()
         shutdown_event.clear()
         self._router_task = asyncio.create_task(self._router_loop())
+        if PLUGIN_ZMQ_IPC_ENABLED:
+            try:
+                from plugin.zeromq_ipc import ZmqIpcServer
+
+                self._zmq_server = ZmqIpcServer(
+                    endpoint=PLUGIN_ZMQ_IPC_ENDPOINT,
+                    request_handler=self._handle_zmq_request,
+                )
+                self._zmq_task = asyncio.create_task(self._zmq_server.serve_forever(shutdown_event))
+                logger.info("ZeroMQ IPC server started at %s", PLUGIN_ZMQ_IPC_ENDPOINT)
+            except Exception as e:
+                self._zmq_server = None
+                self._zmq_task = None
+                logger.exception("Failed to start ZeroMQ IPC server: %s", e)
         logger.info("Plugin router started")
     
     async def stop(self) -> None:
@@ -69,6 +86,23 @@ class PluginRouter:
             self._router_task.cancel()
         finally:
             self._router_task = None
+            if self._zmq_task is not None:
+                try:
+                    await asyncio.wait_for(self._zmq_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    try:
+                        self._zmq_task.cancel()
+                    except Exception:
+                        pass
+                finally:
+                    self._zmq_task = None
+            if self._zmq_server is not None:
+                try:
+                    self._zmq_server.close()
+                except Exception:
+                    pass
+                self._zmq_server = None
+
             # 关闭线程池执行器
             if self._executor is not None:
                 executor = self._executor
@@ -85,6 +119,47 @@ class PluginRouter:
                         executor.shutdown(wait=False)
                 self._executor = None
             logger.info("Plugin router stopped")
+
+    async def _handle_zmq_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle a request coming from ZeroMQ IPC.
+
+        Returns a response dict compatible with existing bus SDK expectations:
+        {type,to_plugin,request_id,result,error}
+        """
+        request_type = request.get("type")
+        handler = self._handlers.get(str(request_type))
+        from_plugin = request.get("from_plugin")
+        request_id = request.get("request_id")
+
+        if not isinstance(from_plugin, str) or not from_plugin:
+            return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": "", "request_id": str(request_id or ""), "result": None, "error": "missing from_plugin"}
+        if not isinstance(request_id, str) or not request_id:
+            return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": str(request_id or ""), "result": None, "error": "missing request_id"}
+        if handler is None:
+            return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": request_id, "result": None, "error": f"unknown request type: {request_type}"}
+
+        out: Dict[str, Any] = {}
+
+        def _send_response(to_plugin: str, request_id: str, result: Any, error: Optional[str], timeout: float = 10.0) -> None:
+            out.update(
+                {
+                    "type": "PLUGIN_TO_PLUGIN_RESPONSE",
+                    "to_plugin": to_plugin,
+                    "request_id": request_id,
+                    "result": result,
+                    "error": error,
+                }
+            )
+
+        try:
+            await handler(request, _send_response)
+        except Exception as e:
+            logger.exception("Error handling ZMQ request: %s", e)
+            return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": request_id, "result": None, "error": str(e)}
+
+        if not out:
+            return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": request_id, "result": None, "error": "no response"}
+        return out
     
     async def _router_loop(self) -> None:
         """路由器主循环"""

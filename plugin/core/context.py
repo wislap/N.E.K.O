@@ -89,6 +89,7 @@ class PluginContext:
     message_queue: Any = None  # 消息推送队列
     app: Optional[FastAPI] = None
     _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（主进程提供）
+    _zmq_ipc_client: Optional[Any] = None
     _cmd_queue: Optional[Any] = None  # 命令队列（用于在等待期间处理命令）
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
     _response_queue: Optional[Any] = None

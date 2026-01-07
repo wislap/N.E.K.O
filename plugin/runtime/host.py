@@ -180,6 +180,7 @@ def _plugin_process_runner(
             status_queue=status_queue,
             message_queue=message_queue,
             _plugin_comm_queue=plugin_comm_queue,
+            _zmq_ipc_client=None,
             _cmd_queue=cmd_queue,  # 传递命令队列，用于在等待期间处理命令
             _res_queue=res_queue,  # 传递结果队列，用于在等待期间处理响应
             _response_queue=response_queue,
@@ -187,6 +188,24 @@ def _plugin_process_runner(
             _entry_map=None,  # 将在创建 instance 后设置（见下方第116行）
             _instance=None,  # 将在创建 instance 后设置（见下方第117行）
         )
+
+        try:
+            from plugin.settings import PLUGIN_ZMQ_IPC_ENABLED, PLUGIN_ZMQ_IPC_ENDPOINT
+
+            if PLUGIN_ZMQ_IPC_ENABLED:
+                from plugin.zeromq_ipc import ZmqIpcClient
+
+                ctx._zmq_ipc_client = ZmqIpcClient(plugin_id=plugin_id, endpoint=PLUGIN_ZMQ_IPC_ENDPOINT)
+                try:
+                    logger.info("[Plugin Process] ZeroMQ IPC enabled: {}", PLUGIN_ZMQ_IPC_ENDPOINT)
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                logger.warning("[Plugin Process] ZeroMQ IPC enabled but client init failed")
+            except Exception:
+                pass
+            pass
         instance = cls(ctx)
 
         entry_map: Dict[str, Any] = {}
