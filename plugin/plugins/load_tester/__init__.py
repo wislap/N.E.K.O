@@ -168,6 +168,26 @@ class LoadTestPlugin(NekoPluginBase):
         workers = max(1, workers_int)
         return workers, log_summary
 
+    def _get_bench_config(
+        self,
+        root_cfg: Optional[Dict[str, Any]],
+        sec_cfg: Optional[Dict[str, Any]],
+    ) -> tuple[int, bool]:
+        """Read workers/log_summary for a specific benchmark.
+
+        - workers default comes from [load_test].worker_threads
+        - can be overridden by section worker_threads, e.g. [load_test.bus_messages_get].worker_threads
+        """
+        workers, log_summary = self._get_global_bench_config(root_cfg)
+        try:
+            if sec_cfg:
+                workers_raw = sec_cfg.get("worker_threads")
+                if workers_raw is not None:
+                    workers = max(1, int(workers_raw))
+        except Exception:
+            pass
+        return workers, log_summary
+
     @plugin_entry(
         id="op_bus_messages_get",
         name="Op Bus Messages Get",
@@ -279,7 +299,7 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_push_messages", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -350,7 +370,18 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_bus_messages_get", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -424,7 +455,18 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_bus_events_get", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -498,7 +540,18 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_bus_lifecycle_get", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -572,7 +625,18 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_buslist_filter", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -674,7 +738,18 @@ class LoadTestPlugin(NekoPluginBase):
                 pass
             return ok(data={"test": "bench_buslist_reload", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
 
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
@@ -813,7 +888,19 @@ class LoadTestPlugin(NekoPluginBase):
         if not enabled:
             return ok(data={"test": "bench_buslist_reload_nochange", "enabled": False, "skipped": True})
 
-        workers, log_summary = self._get_global_bench_config(root_cfg)
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        timeout_cfg = None
+        if sec_cfg:
+            timeout_cfg = sec_cfg.get("timeout")
+        if timeout_cfg is None and root_cfg:
+            timeout_cfg = root_cfg.get("timeout")
+        try:
+            if timeout_cfg is not None:
+                timeout = float(timeout_cfg)
+        except Exception:
+            pass
+
         dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
         if dur_cfg is None and root_cfg:
             dur_cfg = root_cfg.get("duration_seconds")

@@ -17,12 +17,12 @@ conflicts = [
 ]
 
 [load_test]
-enable = false
+enable = true
 duration_seconds = 5
-auto_start = false
+auto_start = true
 log_summary = true
-worker_threads = 1
-
+worker_threads = 2
+timeout = 2.0
 [load_test.push_messages]
 enable = true
 
