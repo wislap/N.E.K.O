@@ -123,6 +123,9 @@ class MessageClient:
         plugin_id: Optional[str] = None,
         max_count: int = 50,
         priority_min: Optional[int] = None,
+        source: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> MessageList:
@@ -153,6 +156,9 @@ class MessageClient:
             "plugin_id": pid_norm,
             "max_count": int(max_count),
             "priority_min": int(priority_min) if priority_min is not None else None,
+            "source": str(source) if isinstance(source, str) and source else None,
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
             "since_ts": float(since_ts) if since_ts is not None else None,
             "timeout": float(timeout),
         }
@@ -207,6 +213,9 @@ class MessageClient:
             "plugin_id": pid_norm,
             "max_count": max_count,
             "priority_min": priority_min,
+            "source": str(source) if isinstance(source, str) and source else None,
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
             "since_ts": since_ts,
             "timeout": timeout,
         }

@@ -63,7 +63,18 @@ async def handle_bus_subscribe(request: Dict[str, Any], send_response: SendRespo
         state.add_bus_subscription(bus, sub_id, info)
         if PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS:
             logger.info("[PluginRouter] BUS_SUBSCRIBE ok: from_plugin=%s bus=%s sub_id=%s", from_plugin, bus, sub_id)
-        send_response(from_plugin, request_id, {"ok": True, "sub_id": sub_id, "bus": bus}, None, timeout=float(timeout))
+        cur_rev = None
+        try:
+            cur_rev = int(state.get_bus_rev(bus))
+        except Exception:
+            cur_rev = None
+        send_response(
+            from_plugin,
+            request_id,
+            {"ok": True, "sub_id": sub_id, "bus": bus, "rev": cur_rev},
+            None,
+            timeout=float(timeout),
+        )
     except Exception as e:
         logger.exception("[PluginRouter] Error handling BUS_SUBSCRIBE: %s", e)
         send_response(from_plugin, request_id, None, str(e), timeout=float(timeout))

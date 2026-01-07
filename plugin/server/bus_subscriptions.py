@@ -103,6 +103,13 @@ class BusSubscriptionManager:
             }
 
             try:
+                d = args.get("delta")
+                if isinstance(d, dict) and "rev" not in d:
+                    d["rev"] = int(state.get_bus_rev(delta.bus))
+            except Exception:
+                pass
+
+            try:
                 await host.push_bus_change(
                     sub_id=str(args.get("sub_id") or ""),
                     bus=str(args.get("bus") or ""),

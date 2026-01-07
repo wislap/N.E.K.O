@@ -4,8 +4,10 @@
 提供插件相关的业务逻辑处理。
 """
 import asyncio
+import base64
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -15,7 +17,6 @@ from fastapi import HTTPException
 from plugin.core.state import state
 from plugin.api.models import (
     PluginTriggerResponse,
-    PluginPushMessage,
     PluginPushMessageResponse,
 )
 from plugin.api.exceptions import (
@@ -58,6 +59,17 @@ def _parse_iso_ts(value: Any) -> Optional[float]:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
         return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _b64_bytes(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    try:
+        return base64.b64encode(bytes(value)).decode("utf-8")
     except Exception:
         return None
 
@@ -369,6 +381,9 @@ def get_messages_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
     priority_min: Optional[int] = None,
+    source: Optional[str] = None,
+    filter: Optional[Dict[str, Any]] = None,
+    strict: bool = True,
     since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -411,42 +426,162 @@ def get_messages_from_queue(
 
         state.append_message_record(msg)
 
-    all_msgs = state.list_message_records()
-    filtered: List[Dict[str, Any]] = []
-    for msg in all_msgs:
-        if plugin_id and msg.get("plugin_id") != plugin_id:
-            continue
-        if priority_min is not None:
-            try:
-                if int(msg.get("priority", 0)) < int(priority_min):
-                    continue
-            except Exception:
-                continue
-        if since_ts is not None:
+    # Optimize common case: scan from the tail and expand window until we have enough matches.
+    # Worst-case still falls back to full scan, preserving semantics.
+    store_size = 0
+    try:
+        store_size = int(state.message_store_len())
+    except Exception:
+        store_size = 0
+
+    flt = dict(filter) if isinstance(filter, dict) else {}
+    if source is None and isinstance(flt.get("source"), str) and flt.get("source"):
+        source = str(flt.get("source"))
+    if plugin_id is None and isinstance(flt.get("plugin_id"), str) and flt.get("plugin_id"):
+        plugin_id = str(flt.get("plugin_id"))
+    if priority_min is None and flt.get("priority_min") is not None:
+        try:
+            v = flt.get("priority_min")
+            if isinstance(v, (int, float, str)):
+                priority_min = int(v)
+        except Exception:
+            priority_min = priority_min
+    if since_ts is None and flt.get("since_ts") is not None:
+        try:
+            v = flt.get("since_ts")
+            if isinstance(v, (int, float, str)):
+                since_ts = float(v)
+        except Exception:
+            since_ts = since_ts
+
+    def _re_ok(field: str, pattern: Optional[str], value: Optional[str]) -> bool:
+        if pattern is None:
+            return True
+        if value is None:
+            return False
+        try:
+            return re.search(str(pattern), str(value)) is not None
+        except re.error as e:
+            if bool(strict):
+                raise e
+            return False
+
+    def _match_message(msg: Dict[str, Any]) -> bool:
+        if not flt:
+            return True
+        if flt.get("kind") is not None and msg.get("kind") != flt.get("kind"):
+            return False
+        if flt.get("type") is not None and msg.get("message_type") != flt.get("type") and msg.get("type") != flt.get("type"):
+            return False
+        if flt.get("plugin_id") is not None and msg.get("plugin_id") != flt.get("plugin_id"):
+            return False
+        if flt.get("source") is not None and msg.get("source") != flt.get("source"):
+            return False
+        if not _re_ok("kind_re", flt.get("kind_re"), msg.get("kind")):
+            return False
+        if not _re_ok("type_re", flt.get("type_re"), msg.get("message_type") or msg.get("type")):
+            return False
+        if not _re_ok("plugin_id_re", flt.get("plugin_id_re"), msg.get("plugin_id")):
+            return False
+        if not _re_ok("source_re", flt.get("source_re"), msg.get("source")):
+            return False
+        if not _re_ok("content_re", flt.get("content_re"), msg.get("content")):
+            return False
+        if flt.get("priority_min") is not None:
+            vmin = flt.get("priority_min")
+            if isinstance(vmin, (int, float, str)):
+                if isinstance(msg.get("priority"), (int, float, str)) and int(msg.get("priority", 0)) < int(vmin):
+                    return False
+        if flt.get("since_ts") is not None:
             ts = _parse_iso_ts(msg.get("time"))
-            if ts is None or ts <= float(since_ts):
+            try:
+                v = flt.get("since_ts")
+                if v is None:
+                    return True
+                if ts is None or ts <= float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        if flt.get("until_ts") is not None:
+            ts = _parse_iso_ts(msg.get("time"))
+            try:
+                v = flt.get("until_ts")
+                if v is None:
+                    return True
+                if ts is None or ts > float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        return True
+
+    filtered: List[Dict[str, Any]] = []
+    window = max(int(max_count) * 8, 256)
+    if store_size > 0:
+        window = min(window, store_size)
+    while True:
+        try:
+            if store_size > 0 and window >= store_size:
+                all_msgs = state.list_message_records()
+            else:
+                all_msgs = state.list_message_records_tail(window)
+        except Exception:
+            all_msgs = state.list_message_records()
+
+        filtered = []
+        for msg in all_msgs:
+            if plugin_id and msg.get("plugin_id") != plugin_id:
                 continue
-        filtered.append(msg)
+            if source and msg.get("source") != source:
+                continue
+            if priority_min is not None:
+                try:
+                    if int(msg.get("priority", 0)) < int(priority_min):
+                        continue
+                except Exception:
+                    continue
+            if since_ts is not None:
+                ts = _parse_iso_ts(msg.get("time"))
+                if ts is None or ts <= float(since_ts):
+                    continue
+            if not _match_message(msg):
+                continue
+            filtered.append(msg)
+
+        if len(filtered) >= int(max_count):
+            break
+        if store_size > 0 and window >= store_size:
+            break
+        if store_size == 0 and window >= 16384:
+            break
+        window = int(window * 2)
+        if store_size > 0:
+            window = min(window, store_size)
 
     if len(filtered) > max_count:
         filtered = filtered[-max_count:]
 
     messages: List[Dict[str, Any]] = []
     for msg in filtered:
-        plugin_message = PluginPushMessage(
-            plugin_id=msg.get("plugin_id", ""),
-            source=msg.get("source", ""),
-            description=msg.get("description", ""),
-            priority=msg.get("priority", 0),
-            message_type=msg.get("message_type", "text"),
-            content=msg.get("content"),
-            binary_data=msg.get("binary_data"),
-            binary_url=msg.get("binary_url"),
-            metadata=msg.get("metadata", {}),
-            timestamp=msg.get("time", now_iso()),
-            message_id=str(msg.get("message_id") or ""),
+        # Keep response schema consistent with PluginPushMessage.model_dump()
+        messages.append(
+            {
+                "plugin_id": msg.get("plugin_id", ""),
+                "source": msg.get("source", ""),
+                "description": msg.get("description", ""),
+                "priority": msg.get("priority", 0),
+                "message_type": msg.get("message_type", "text"),
+                "content": msg.get("content"),
+                "binary_data": _b64_bytes(msg.get("binary_data")),
+                "binary_url": msg.get("binary_url"),
+                "metadata": msg.get("metadata", {}),
+                "timestamp": msg.get("time", now_iso()),
+                "message_id": str(msg.get("message_id") or ""),
+            }
         )
-        messages.append(plugin_message.model_dump())
 
     return messages
 
@@ -454,6 +589,8 @@ def get_messages_from_queue(
 def get_events_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
+    filter: Optional[Dict[str, Any]] = None,
+    strict: bool = True,
     since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """从事件队列中获取事件。
@@ -492,16 +629,115 @@ def get_events_from_queue(
 
         state.append_event_record(ev)
 
-    all_events = state.list_event_records()
-    filtered: List[Dict[str, Any]] = []
-    for ev in all_events:
-        if plugin_id and ev.get("plugin_id") != plugin_id:
-            continue
-        if since_ts is not None:
+    store_size = 0
+    try:
+        store_size = int(state.event_store_len())
+    except Exception:
+        store_size = 0
+    flt = dict(filter) if isinstance(filter, dict) else {}
+    if plugin_id is None and isinstance(flt.get("plugin_id"), str) and flt.get("plugin_id"):
+        plugin_id = str(flt.get("plugin_id"))
+    if since_ts is None and flt.get("since_ts") is not None:
+        try:
+            v = flt.get("since_ts")
+            if isinstance(v, (int, float, str)):
+                since_ts = float(v)
+        except Exception:
+            since_ts = since_ts
+
+    def _re_ok(field: str, pattern: Optional[str], value: Optional[str]) -> bool:
+        if pattern is None:
+            return True
+        if value is None:
+            return False
+        try:
+            return re.search(str(pattern), str(value)) is not None
+        except re.error as e:
+            if bool(strict):
+                raise e
+            return False
+
+    def _match_event(ev: Dict[str, Any]) -> bool:
+        if not flt:
+            return True
+        if flt.get("kind") is not None and ev.get("kind") != flt.get("kind"):
+            return False
+        if flt.get("type") is not None and ev.get("type") != flt.get("type"):
+            return False
+        if flt.get("plugin_id") is not None and ev.get("plugin_id") != flt.get("plugin_id"):
+            return False
+        if flt.get("source") is not None and ev.get("source") != flt.get("source"):
+            return False
+        if not _re_ok("kind_re", flt.get("kind_re"), ev.get("kind")):
+            return False
+        if not _re_ok("type_re", flt.get("type_re"), ev.get("type")):
+            return False
+        if not _re_ok("plugin_id_re", flt.get("plugin_id_re"), ev.get("plugin_id")):
+            return False
+        if not _re_ok("source_re", flt.get("source_re"), ev.get("source")):
+            return False
+        if not _re_ok("content_re", flt.get("content_re"), ev.get("content")):
+            return False
+        if flt.get("since_ts") is not None:
             ts = _parse_iso_ts(ev.get("received_at"))
-            if ts is None or ts <= float(since_ts):
+            try:
+                v = flt.get("since_ts")
+                if v is None:
+                    return True
+                if ts is None or ts <= float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        if flt.get("until_ts") is not None:
+            ts = _parse_iso_ts(ev.get("received_at"))
+            try:
+                v = flt.get("until_ts")
+                if v is None:
+                    return True
+                if ts is None or ts > float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        return True
+
+    filtered: List[Dict[str, Any]] = []
+    window = max(int(max_count) * 8, 256)
+    if store_size > 0:
+        window = min(window, store_size)
+    while True:
+        try:
+            if store_size > 0 and window >= store_size:
+                all_events = state.list_event_records()
+            else:
+                all_events = state.list_event_records_tail(window)
+        except Exception:
+            all_events = state.list_event_records()
+
+        filtered = []
+        for ev in all_events:
+            if plugin_id and ev.get("plugin_id") != plugin_id:
                 continue
-        filtered.append(ev)
+            if since_ts is not None:
+                ts = _parse_iso_ts(ev.get("received_at"))
+                if ts is None or ts <= float(since_ts):
+                    continue
+            if not _match_event(ev):
+                continue
+            filtered.append(ev)
+
+        if len(filtered) >= int(max_count):
+            break
+        if store_size > 0 and window >= store_size:
+            break
+        if store_size == 0 and window >= 16384:
+            break
+        window = int(window * 2)
+        if store_size > 0:
+            window = min(window, store_size)
 
     if len(filtered) > max_count:
         filtered = filtered[-max_count:]
@@ -511,6 +747,8 @@ def get_events_from_queue(
 def get_lifecycle_from_queue(
     plugin_id: Optional[str] = None,
     max_count: int | None = None,
+    filter: Optional[Dict[str, Any]] = None,
+    strict: bool = True,
     since_ts: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     if max_count is None:
@@ -539,12 +777,115 @@ def get_lifecycle_from_queue(
 
         state.append_lifecycle_record(ev)
 
-    all_events = state.list_lifecycle_records()
+    store_size = 0
+    try:
+        store_size = int(state.lifecycle_store_len())
+    except Exception:
+        store_size = 0
+    flt = dict(filter) if isinstance(filter, dict) else {}
+    if plugin_id is None and isinstance(flt.get("plugin_id"), str) and flt.get("plugin_id"):
+        plugin_id = str(flt.get("plugin_id"))
+    if since_ts is None and flt.get("since_ts") is not None:
+        try:
+            v = flt.get("since_ts")
+            if isinstance(v, (int, float, str)):
+                since_ts = float(v)
+        except Exception:
+            since_ts = since_ts
+
+    def _re_ok(field: str, pattern: Optional[str], value: Optional[str]) -> bool:
+        if pattern is None:
+            return True
+        if value is None:
+            return False
+        try:
+            return re.search(str(pattern), str(value)) is not None
+        except re.error as e:
+            if bool(strict):
+                raise e
+            return False
+
+    def _match_lifecycle(ev: Dict[str, Any]) -> bool:
+        if not flt:
+            return True
+        if flt.get("kind") is not None and ev.get("kind") != flt.get("kind"):
+            return False
+        if flt.get("type") is not None and ev.get("type") != flt.get("type"):
+            return False
+        if flt.get("plugin_id") is not None and ev.get("plugin_id") != flt.get("plugin_id"):
+            return False
+        if flt.get("source") is not None and ev.get("source") != flt.get("source"):
+            return False
+        if not _re_ok("kind_re", flt.get("kind_re"), ev.get("kind")):
+            return False
+        if not _re_ok("type_re", flt.get("type_re"), ev.get("type")):
+            return False
+        if not _re_ok("plugin_id_re", flt.get("plugin_id_re"), ev.get("plugin_id")):
+            return False
+        if not _re_ok("source_re", flt.get("source_re"), ev.get("source")):
+            return False
+        if not _re_ok("content_re", flt.get("content_re"), ev.get("content")):
+            return False
+        if flt.get("since_ts") is not None:
+            ts = _parse_iso_ts(ev.get("time"))
+            try:
+                v = flt.get("since_ts")
+                if v is None:
+                    return True
+                if ts is None or ts <= float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        if flt.get("until_ts") is not None:
+            ts = _parse_iso_ts(ev.get("time"))
+            try:
+                v = flt.get("until_ts")
+                if v is None:
+                    return True
+                if ts is None or ts > float(v):
+                    return False
+            except Exception as e:
+                if bool(strict):
+                    raise e
+                return False
+        return True
+
     filtered: List[Dict[str, Any]] = []
-    for ev in all_events:
-        if plugin_id and ev.get("plugin_id") != plugin_id:
-            continue
-        filtered.append(ev)
+    window = max(int(max_count) * 8, 256)
+    if store_size > 0:
+        window = min(window, store_size)
+    while True:
+        try:
+            if store_size > 0 and window >= store_size:
+                all_events = state.list_lifecycle_records()
+            else:
+                all_events = state.list_lifecycle_records_tail(window)
+        except Exception:
+            all_events = state.list_lifecycle_records()
+
+        filtered = []
+        for ev in all_events:
+            if plugin_id and ev.get("plugin_id") != plugin_id:
+                continue
+            if since_ts is not None:
+                ts = _parse_iso_ts(ev.get("time"))
+                if ts is None or ts <= float(since_ts):
+                    continue
+            if not _match_lifecycle(ev):
+                continue
+            filtered.append(ev)
+
+        if len(filtered) >= int(max_count):
+            break
+        if store_size > 0 and window >= store_size:
+            break
+        if store_size == 0 and window >= 16384:
+            break
+        window = int(window * 2)
+        if store_size > 0:
+            window = min(window, store_size)
 
     if len(filtered) > max_count:
         filtered = filtered[-max_count:]

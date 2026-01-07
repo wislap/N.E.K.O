@@ -85,6 +85,13 @@ class PluginRuntimeState:
         self._deleted_event_ids: Set[str] = set()
         self._deleted_lifecycle_ids: Set[str] = set()
 
+        self._bus_rev_lock = threading.Lock()
+        self._bus_rev: Dict[str, int] = {
+            "messages": 0,
+            "events": 0,
+            "lifecycle": 0,
+        }
+
         self.bus_change_hub = BusChangeHub()
 
         self._bus_subscriptions_lock = threading.Lock()
@@ -98,6 +105,19 @@ class PluginRuntimeState:
         self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
         self._user_context_default_maxlen: int = 200
         self._user_context_ttl_seconds: float = 60.0 * 60.0
+
+    def _bump_bus_rev(self, bus: str) -> int:
+        b = str(bus).strip()
+        with self._bus_rev_lock:
+            cur = int(self._bus_rev.get(b, 0))
+            cur += 1
+            self._bus_rev[b] = cur
+            return cur
+
+    def get_bus_rev(self, bus: str) -> int:
+        b = str(bus).strip()
+        with self._bus_rev_lock:
+            return int(self._bus_rev.get(b, 0))
 
     @property
     def event_queue(self) -> asyncio.Queue:
@@ -204,7 +224,8 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._message_store.append(record)
         try:
-            self.bus_change_hub.emit("messages", "add", {"record": dict(record)})
+            rev = self._bump_bus_rev("messages")
+            self.bus_change_hub.emit("messages", "add", {"record": dict(record), "rev": rev})
         except Exception:
             pass
 
@@ -217,7 +238,8 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._event_store.append(record)
         try:
-            self.bus_change_hub.emit("events", "add", {"record": dict(record)})
+            rev = self._bump_bus_rev("events")
+            self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
         except Exception:
             pass
 
@@ -230,7 +252,8 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._lifecycle_store.append(record)
         try:
-            self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record)})
+            rev = self._bump_bus_rev("lifecycle")
+            self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record), "rev": rev})
         except Exception:
             pass
 
@@ -238,13 +261,70 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             return list(self._message_store)
 
+    def list_message_records_tail(self, n: int) -> List[Dict[str, Any]]:
+        nn = int(n)
+        if nn <= 0:
+            return []
+        with self._bus_store_lock:
+            try:
+                return list(self._message_store)[-nn:]
+            except Exception:
+                return list(self._message_store)
+
+    def message_store_len(self) -> int:
+        with self._bus_store_lock:
+            return len(self._message_store)
+
+    def iter_message_records_reverse(self):
+        with self._bus_store_lock:
+            snap = list(self._message_store)
+        return reversed(snap)
+
     def list_event_records(self) -> List[Dict[str, Any]]:
         with self._bus_store_lock:
             return list(self._event_store)
 
+    def list_event_records_tail(self, n: int) -> List[Dict[str, Any]]:
+        nn = int(n)
+        if nn <= 0:
+            return []
+        with self._bus_store_lock:
+            try:
+                return list(self._event_store)[-nn:]
+            except Exception:
+                return list(self._event_store)
+
+    def event_store_len(self) -> int:
+        with self._bus_store_lock:
+            return len(self._event_store)
+
+    def iter_event_records_reverse(self):
+        with self._bus_store_lock:
+            snap = list(self._event_store)
+        return reversed(snap)
+
     def list_lifecycle_records(self) -> List[Dict[str, Any]]:
         with self._bus_store_lock:
             return list(self._lifecycle_store)
+
+    def list_lifecycle_records_tail(self, n: int) -> List[Dict[str, Any]]:
+        nn = int(n)
+        if nn <= 0:
+            return []
+        with self._bus_store_lock:
+            try:
+                return list(self._lifecycle_store)[-nn:]
+            except Exception:
+                return list(self._lifecycle_store)
+
+    def lifecycle_store_len(self) -> int:
+        with self._bus_store_lock:
+            return len(self._lifecycle_store)
+
+    def iter_lifecycle_records_reverse(self):
+        with self._bus_store_lock:
+            snap = list(self._lifecycle_store)
+        return reversed(snap)
 
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
@@ -262,7 +342,8 @@ class PluginRuntimeState:
             self._message_store = new_store
             if removed:
                 try:
-                    self.bus_change_hub.emit("messages", "del", {"message_id": message_id})
+                    rev = self._bump_bus_rev("messages")
+                    self.bus_change_hub.emit("messages", "del", {"message_id": message_id, "rev": rev})
                 except Exception:
                     pass
             return removed
@@ -309,7 +390,8 @@ class PluginRuntimeState:
             self._event_store = new_store
             if removed:
                 try:
-                    self.bus_change_hub.emit("events", "del", {"event_id": event_id})
+                    rev = self._bump_bus_rev("events")
+                    self.bus_change_hub.emit("events", "del", {"event_id": event_id, "rev": rev})
                 except Exception:
                     pass
             return removed
@@ -330,7 +412,8 @@ class PluginRuntimeState:
             self._lifecycle_store = new_store
             if removed:
                 try:
-                    self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id})
+                    rev = self._bump_bus_rev("lifecycle")
+                    self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id, "rev": rev})
                 except Exception:
                     pass
             return removed

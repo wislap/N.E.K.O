@@ -304,7 +304,7 @@ class LoadTestPlugin(NekoPluginBase):
                 "duration_seconds": {"type": "number", "default": 5.0},
                 "max_count": {"type": "integer", "default": 50},
                 "plugin_id": {"type": "string", "default": "*"},
-                "timeout": {"type": "number", "default": 0.1},
+                "timeout": {"type": "number", "default": 0.5},
             },
         },
     )
@@ -313,7 +313,7 @@ class LoadTestPlugin(NekoPluginBase):
         duration_seconds: float = 5.0,
         max_count: int = 50,
         plugin_id: str = "*",
-        timeout: float = 0.1,
+        timeout: float = 0.5,
         **_: Any,
     ):
         root_cfg = self._get_load_test_section(None)
@@ -378,7 +378,7 @@ class LoadTestPlugin(NekoPluginBase):
                 "duration_seconds": {"type": "number", "default": 5.0},
                 "max_count": {"type": "integer", "default": 50},
                 "plugin_id": {"type": "string", "default": "*"},
-                "timeout": {"type": "number", "default": 0.1},
+                "timeout": {"type": "number", "default": 0.5},
             },
         },
     )
@@ -387,7 +387,7 @@ class LoadTestPlugin(NekoPluginBase):
         duration_seconds: float = 5.0,
         max_count: int = 50,
         plugin_id: str = "*",
-        timeout: float = 0.1,
+        timeout: float = 0.5,
         **_: Any,
     ):
         root_cfg = self._get_load_test_section(None)
@@ -452,7 +452,7 @@ class LoadTestPlugin(NekoPluginBase):
                 "duration_seconds": {"type": "number", "default": 5.0},
                 "max_count": {"type": "integer", "default": 50},
                 "plugin_id": {"type": "string", "default": "*"},
-                "timeout": {"type": "number", "default": 0.1},
+                "timeout": {"type": "number", "default": 0.5},
             },
         },
     )
@@ -461,7 +461,7 @@ class LoadTestPlugin(NekoPluginBase):
         duration_seconds: float = 5.0,
         max_count: int = 50,
         plugin_id: str = "*",
-        timeout: float = 0.1,
+        timeout: float = 0.5,
         **_: Any,
     ):
         root_cfg = self._get_load_test_section(None)
@@ -703,6 +703,23 @@ class LoadTestPlugin(NekoPluginBase):
         right = base_list.filter(strict=False, **flt_kwargs)
         expr = (left + right) - left
 
+        def _get_rev_diag() -> Dict[str, Any]:
+            if not bool(incremental):
+                return {}
+            try:
+                from plugin.sdk.bus import types as bus_types
+
+                latest = None
+                try:
+                    latest = int(getattr(bus_types, "_BUS_LATEST_REV", {}).get("messages", 0))
+                except Exception:
+                    latest = None
+                last_seen = getattr(expr, "_last_seen_bus_rev", None)
+                fast_hits = getattr(expr, "_incremental_fast_hits", None)
+                return {"latest_rev": latest, "last_seen_rev": last_seen, "fast_hits": fast_hits}
+            except Exception:
+                return {}
+
         def _op() -> None:
             ctx = cast(BusReplayContext, self.ctx)
             _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=bool(incremental))
@@ -714,6 +731,7 @@ class LoadTestPlugin(NekoPluginBase):
 
         if log_summary:
             try:
+                diag = _get_rev_diag()
                 self.logger.info(
                     "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} incremental={} workers={}",
                     duration,
@@ -726,6 +744,8 @@ class LoadTestPlugin(NekoPluginBase):
                     bool(incremental),
                     stats.get("workers", workers),
                 )
+                if diag:
+                    self.logger.info("[load_tester] bench_buslist_reload incremental diag: {}", diag)
             except Exception:
                 pass
         return ok(
@@ -734,6 +754,136 @@ class LoadTestPlugin(NekoPluginBase):
                 "base_size": len(base_list),
                 "inplace": bool(inplace),
                 "incremental": bool(incremental),
+                **_get_rev_diag(),
+                **stats,
+            }
+        )
+
+    @plugin_entry(
+        id="bench_buslist_reload_nochange",
+        name="Bench BusList Reload (No Change)",
+        description="Measure QPS of BusList.reload(incremental=True) when bus content is stable (fast-path hit)",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "duration_seconds": {"type": "number", "default": 5.0},
+                "max_count": {"type": "integer", "default": 500},
+                "timeout": {"type": "number", "default": 1.0},
+                "source": {"type": "string", "default": ""},
+                "inplace": {"type": "boolean", "default": False},
+            },
+        },
+    )
+    def bench_buslist_reload_nochange(
+        self,
+        duration_seconds: float = 5.0,
+        max_count: int = 500,
+        timeout: float = 1.0,
+        source: str = "",
+        inplace: bool = False,
+        **_: Any,
+    ):
+        root_cfg = self._get_load_test_section(None)
+        sec_cfg = self._get_load_test_section("buslist_reload")
+        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
+        if not enabled:
+            return ok(data={"test": "bench_buslist_reload_nochange", "enabled": False, "skipped": True})
+
+        workers, log_summary = self._get_global_bench_config(root_cfg)
+        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
+        if dur_cfg is None and root_cfg:
+            dur_cfg = root_cfg.get("duration_seconds")
+        try:
+            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
+        except Exception:
+            duration = duration_seconds
+
+        base_list = self.ctx.bus.messages.get(
+            plugin_id=None,
+            max_count=int(max_count),
+            timeout=float(timeout),
+        )
+        if len(base_list) == 0:
+            for _i in range(10):
+                self.ctx.push_message(
+                    source="load_tester.seed",
+                    message_type="text",
+                    description="seed message for buslist reload(nochange) benchmark",
+                    priority=1,
+                    content="seed",
+                )
+            base_list = self.ctx.bus.messages.get(
+                plugin_id=None,
+                max_count=int(max_count),
+                timeout=float(timeout),
+            )
+
+        flt_kwargs: Dict[str, Any] = {}
+        if source:
+            flt_kwargs["source"] = source
+        else:
+            flt_kwargs["source"] = "load_tester"
+
+        left = base_list.filter(strict=False, **flt_kwargs)
+        right = base_list.filter(strict=False, **flt_kwargs)
+        expr = (left + right) - left
+
+        # Prime the incremental cache and last_seen_rev once.
+        try:
+            ctx = cast(BusReplayContext, self.ctx)
+            expr.reload_with(ctx, inplace=bool(inplace), incremental=True)
+        except Exception:
+            pass
+
+        def _get_rev_diag() -> Dict[str, Any]:
+            try:
+                from plugin.sdk.bus import types as bus_types
+
+                latest = None
+                try:
+                    latest = int(getattr(bus_types, "_BUS_LATEST_REV", {}).get("messages", 0))
+                except Exception:
+                    latest = None
+                last_seen = getattr(expr, "_last_seen_bus_rev", None)
+                fast_hits = getattr(expr, "_incremental_fast_hits", None)
+                return {"latest_rev": latest, "last_seen_rev": last_seen, "fast_hits": fast_hits}
+            except Exception:
+                return {}
+
+        def _op() -> None:
+            ctx = cast(BusReplayContext, self.ctx)
+            _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=True)
+
+        if workers > 1:
+            # No-change fast-path is single-thread friendly; keep workers=1 by default.
+            stats = self._bench_loop_concurrent(duration, workers, _op)
+        else:
+            stats = self._bench_loop(duration, _op)
+
+        diag = _get_rev_diag()
+        if log_summary:
+            try:
+                self.logger.info(
+                    "[load_tester] bench_buslist_reload_nochange duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} diag={}",
+                    duration,
+                    stats["iterations"],
+                    stats["qps"],
+                    stats["errors"],
+                    len(base_list),
+                    flt_kwargs,
+                    bool(inplace),
+                    diag,
+                )
+            except Exception:
+                pass
+
+        return ok(
+            data={
+                "test": "bench_buslist_reload_nochange",
+                "base_size": len(base_list),
+                "inplace": bool(inplace),
+                **diag,
                 **stats,
             }
         )
@@ -776,6 +926,7 @@ class LoadTestPlugin(NekoPluginBase):
             ("bench_buslist_filter", self.bench_buslist_filter),
             ("bench_buslist_reload_full", lambda **kw: self.bench_buslist_reload(incremental=False, **kw)),
             ("bench_buslist_reload_incr", lambda **kw: self.bench_buslist_reload(incremental=True, **kw)),
+            ("bench_buslist_reload_nochange", self.bench_buslist_reload_nochange),
         ]
         for name, fn in tests:
             try:
@@ -805,6 +956,12 @@ class LoadTestPlugin(NekoPluginBase):
                     extra_parts.append(f"inplace={v.get('inplace')}")
                 if "incremental" in v:
                     extra_parts.append(f"incr={v.get('incremental')}")
+                if "fast_hits" in v:
+                    extra_parts.append(f"fast_hits={v.get('fast_hits')}")
+                if "last_seen_rev" in v:
+                    extra_parts.append(f"seen_rev={v.get('last_seen_rev')}")
+                if "latest_rev" in v:
+                    extra_parts.append(f"latest_rev={v.get('latest_rev')}")
                 if "workers" in v:
                     extra_parts.append(f"workers={v.get('workers')}")
                 if "error" in v:

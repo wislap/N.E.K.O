@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections import deque
 import inspect
 import re
 import time
@@ -40,11 +41,139 @@ try:
 except Exception:
     _WATCHER_REGISTRY_LOCK = None
 
+_BUS_LATEST_REV: Dict[str, int] = {
+    "messages": 0,
+    "events": 0,
+    "lifecycle": 0,
+}
+_BUS_LATEST_REV_LOCK = _WATCHER_REGISTRY_LOCK
+
+_BUS_RECENT_DELTAS: Dict[str, "deque[tuple[int, str, Dict[str, Any]]]" ] = {}
+
+_BUS_REV_SUB_ID: Dict[str, str] = {}
+
+
+class _BusRevSink:
+    def _on_remote_change(self, *, bus: str, op: str, delta: Dict[str, Any]) -> None:
+        _ = (bus, op, delta)
+        return
+
+
+def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
+    b = str(bus).strip()
+    if b not in ("messages", "events", "lifecycle"):
+        return
+    if getattr(ctx, "_plugin_comm_queue", None) is None or not hasattr(ctx, "_send_request_and_wait"):
+        return
+
+    try:
+        if _BUS_LATEST_REV_LOCK is not None:
+            with _BUS_LATEST_REV_LOCK:
+                sid0 = _BUS_REV_SUB_ID.get(b)
+        else:
+            sid0 = _BUS_REV_SUB_ID.get(b)
+        if isinstance(sid0, str) and sid0:
+            return
+    except Exception:
+        pass
+
+    try:
+        res = ctx._send_request_and_wait(
+            method_name="bus_subscribe",
+            request_type="BUS_SUBSCRIBE",
+            request_data={
+                "bus": b,
+                "rules": ["add", "del", "change"],
+                "deliver": "delta",
+                "plan": None,
+            },
+            timeout=5.0,
+            wrap_result=True,
+        )
+    except Exception:
+        return
+
+    sub_id = None
+    cur_rev = None
+    try:
+        if isinstance(res, dict):
+            sub_id = res.get("sub_id")
+            cur_rev = res.get("rev")
+    except Exception:
+        sub_id = None
+
+    if not isinstance(sub_id, str) or not sub_id:
+        return
+
+    sink = _BusRevSink()
+    if _WATCHER_REGISTRY_LOCK is not None:
+        with _WATCHER_REGISTRY_LOCK:
+            _WATCHER_REGISTRY[sub_id] = sink  # type: ignore[assignment]
+            _BUS_REV_SUB_ID[b] = sub_id
+    else:
+        _WATCHER_REGISTRY[sub_id] = sink  # type: ignore[assignment]
+        _BUS_REV_SUB_ID[b] = sub_id
+
+    if cur_rev is not None:
+        try:
+            r = int(cur_rev)
+        except Exception:
+            r = None
+        if r is not None:
+            if _BUS_LATEST_REV_LOCK is not None:
+                with _BUS_LATEST_REV_LOCK:
+                    prev = int(_BUS_LATEST_REV.get(b, 0))
+                    if r > prev:
+                        _BUS_LATEST_REV[b] = r
+            else:
+                prev = int(_BUS_LATEST_REV.get(b, 0))
+                if r > prev:
+                    _BUS_LATEST_REV[b] = r
+
 
 def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[str, Any]] = None) -> None:
     sid = str(sub_id).strip()
     if not sid:
         return
+    try:
+        b = str(bus).strip()
+        d = dict(delta or {})
+        rev = d.get("rev")
+        if b in _BUS_LATEST_REV and rev is not None:
+            try:
+                r = int(rev)
+            except Exception:
+                r = None
+            if r is not None:
+                try:
+                    from collections import deque
+
+                    if _BUS_LATEST_REV_LOCK is not None:
+                        with _BUS_LATEST_REV_LOCK:
+                            q = _BUS_RECENT_DELTAS.get(b)
+                            if q is None:
+                                q = deque(maxlen=512)
+                                _BUS_RECENT_DELTAS[b] = q
+                            q.append((r, str(op), dict(d)))
+                    else:
+                        q = _BUS_RECENT_DELTAS.get(b)
+                        if q is None:
+                            q = deque(maxlen=512)
+                            _BUS_RECENT_DELTAS[b] = q
+                        q.append((r, str(op), dict(d)))
+                except Exception:
+                    pass
+                if _BUS_LATEST_REV_LOCK is not None:
+                    with _BUS_LATEST_REV_LOCK:
+                        prev = int(_BUS_LATEST_REV.get(b, 0))
+                        if r > prev:
+                            _BUS_LATEST_REV[b] = r
+                else:
+                    prev = int(_BUS_LATEST_REV.get(b, 0))
+                    if r > prev:
+                        _BUS_LATEST_REV[b] = r
+    except Exception:
+        pass
     if _WATCHER_REGISTRY_LOCK is not None:
         with _WATCHER_REGISTRY_LOCK:
             w = _WATCHER_REGISTRY.get(sid)
@@ -278,6 +407,9 @@ class BusList(Generic[TRecord]):
         self._reload_cursor_ts: Optional[float] = None
         self._incremental_seed: Optional[Dict[str, Any]] = None
         self._incremental_base_items: Optional[List[Any]] = None
+        self._last_seen_bus_rev: Optional[int] = None
+        self._incremental_cached_items: Optional[List[Any]] = None
+        self._incremental_fast_hits: int = 0
 
     def _is_lazy_mode(self) -> bool:
         return self._ctx is not None and self._plan is not None and not self._fast_mode
@@ -1067,6 +1199,8 @@ class BusList(Generic[TRecord]):
         return out
 
     def _replay_plan(self, ctx: BusReplayContext, plan: TraceNode) -> "BusList[TRecord]":
+        cache: Dict[Any, Any] = {}
+
         def _as_eager(lst: Any) -> Any:
             try:
                 lst._ctx = None  # type: ignore[assignment]
@@ -1075,85 +1209,188 @@ class BusList(Generic[TRecord]):
                 pass
             return lst
 
-        if isinstance(plan, GetNode):
-            bus = str(plan.params.get("bus") or "").strip()
-            params = dict(plan.params.get("params") or {})
-            if bus == "messages":
-                return _as_eager(ctx.bus.messages.get(**params))
-            if bus == "events":
-                return _as_eager(ctx.bus.events.get(**params))
-            if bus == "lifecycle":
-                return _as_eager(ctx.bus.lifecycle.get(**params))
-            raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
+        def _freeze(x: Any) -> Any:
+            try:
+                if isinstance(x, dict):
+                    return tuple(sorted((str(k), _freeze(v)) for k, v in x.items()))
+                if isinstance(x, (list, tuple)):
+                    return tuple(_freeze(v) for v in x)
+                if isinstance(x, set):
+                    return tuple(sorted(_freeze(v) for v in x))
+                if isinstance(x, (str, int, float, bool, type(None))):
+                    return x
+                return repr(x)
+            except Exception:
+                return repr(x)
 
-        if isinstance(plan, UnaryNode):
-            base = _as_eager(self._replay_plan(ctx, plan.child))
-            if plan.op == "filter":
-                p = dict(plan.params)
-                strict = bool(p.pop("strict", True))
-                return base.filter(strict=strict, **p)
-            if plan.op == "limit":
-                return base.limit(int(plan.params.get("n", 0)))
-            if plan.op == "sort":
-                if plan.params.get("key") is not None:
-                    raise NonReplayableTraceError("reload cannot replay sort(key=callable); use sort(by=...) only")
-                return base.sort(
-                    by=plan.params.get("by"),
-                    cast=plan.params.get("cast"),
-                    reverse=bool(plan.params.get("reverse", False)),
-                )
-            if plan.op == "where_in":
-                return base.where_in(str(plan.params.get("field")), list(plan.params.get("values") or []))
-            if plan.op == "where_eq":
-                return base.where_eq(str(plan.params.get("field")), plan.params.get("value"))
-            if plan.op == "where_contains":
-                return base.where_contains(str(plan.params.get("field")), str(plan.params.get("value") or ""))
-            if plan.op == "where_regex":
-                return base.where_regex(
-                    str(plan.params.get("field")),
-                    str(plan.params.get("pattern") or ""),
-                    strict=bool(plan.params.get("strict", True)),
-                )
-            if plan.op == "where_gt":
-                return base.where_gt(
-                    str(plan.params.get("field")),
-                    plan.params.get("value"),
-                    cast=plan.params.get("cast"),
-                )
-            if plan.op == "where_ge":
-                return base.where_ge(
-                    str(plan.params.get("field")),
-                    plan.params.get("value"),
-                    cast=plan.params.get("cast"),
-                )
-            if plan.op == "where_lt":
-                return base.where_lt(
-                    str(plan.params.get("field")),
-                    plan.params.get("value"),
-                    cast=plan.params.get("cast"),
-                )
-            if plan.op == "where_le":
-                return base.where_le(
-                    str(plan.params.get("field")),
-                    plan.params.get("value"),
-                    cast=plan.params.get("cast"),
-                )
-            if plan.op == "where":
-                raise NonReplayableTraceError("reload cannot replay where(predicate); use where_in/where_eq/... instead")
-            raise NonReplayableTraceError(f"Unknown unary op for reload: {plan.op!r}")
+        def _cache_key(node: TraceNode) -> Any:
+            try:
+                if isinstance(node, GetNode):
+                    bus = str(node.params.get("bus") or "")
+                    params = dict(node.params.get("params") or {})
+                    return ("get", bus, _freeze(params))
+                if isinstance(node, UnaryNode):
+                    return ("unary", str(node.op), _freeze(dict(node.params or {})), _cache_key(node.child))
+                if isinstance(node, BinaryNode):
+                    return (
+                        "binary",
+                        str(node.op),
+                        _freeze(dict(node.params or {})),
+                        _cache_key(node.left),
+                        _cache_key(node.right),
+                    )
+            except Exception:
+                return ("node", id(node))
+            return ("node", id(node))
 
-        if isinstance(plan, BinaryNode):
-            left = _as_eager(self._replay_plan(ctx, plan.left))
-            right = _as_eager(self._replay_plan(ctx, plan.right))
-            if plan.op == "merge":
-                return left + right
-            if plan.op == "intersection":
-                return left & right
-            if plan.op == "difference":
-                return left - right
-            raise NonReplayableTraceError(f"Unknown binary op for reload: {plan.op!r}")
+        def _replay(node: TraceNode) -> "BusList[TRecord]":
+            key = _cache_key(node)
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
 
-        raise NonReplayableTraceError(f"Unknown plan node type: {type(plan).__name__}")
+            # Push down a chain of filter(...) into the underlying GetNode when possible.
+            # This reduces IPC payload for full reload.
+            if isinstance(node, UnaryNode) and node.op == "filter":
+                filters: List[Dict[str, Any]] = []
+                cur: TraceNode = node
+                while isinstance(cur, UnaryNode) and cur.op == "filter":
+                    filters.append(dict(cur.params or {}))
+                    cur = cur.child
+
+                if isinstance(cur, GetNode):
+                    bus = str(cur.params.get("bus") or "").strip()
+                    base_params = dict(cur.params.get("params") or {})
+
+                    if bus in {"messages", "events", "lifecycle"}:
+                        # Merge the whole filter dict (method B) and let the server do filtering.
+                        merged_filter: Dict[str, Any] = {}
+                        strict_val: bool = True
+                        for fp in reversed(filters):
+                            p = dict(fp)
+                            if "strict" in p:
+                                try:
+                                    strict_val = bool(p.get("strict"))
+                                except Exception:
+                                    strict_val = strict_val
+                            _ = p.pop("strict", None)
+                            merged_filter.update({k: v for k, v in p.items() if v is not None})
+
+                        merged = dict(base_params)
+                        merged["filter"] = dict(merged_filter) if merged_filter else None
+                        merged["strict"] = bool(strict_val)
+                        out0 = _replay(GetNode(op="get", params={"bus": bus, "params": merged}, at=cur.at))
+                        cache[key] = out0
+                        return out0
+
+            if isinstance(node, GetNode):
+                bus = str(node.params.get("bus") or "").strip()
+                params = dict(node.params.get("params") or {})
+                if bus == "messages":
+                    out = _as_eager(ctx.bus.messages.get(**params))
+                elif bus == "events":
+                    out = _as_eager(ctx.bus.events.get(**params))
+                elif bus == "lifecycle":
+                    out = _as_eager(ctx.bus.lifecycle.get(**params))
+                else:
+                    raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
+                cache[key] = out
+                return out
+
+            if isinstance(node, UnaryNode):
+                base = _as_eager(_replay(node.child))
+                if node.op == "filter":
+                    p = dict(node.params)
+                    strict = bool(p.pop("strict", True))
+                    out = base.filter(strict=strict, **p)
+                    cache[key] = out
+                    return out
+                if node.op == "limit":
+                    out = base.limit(int(node.params.get("n", 0)))
+                    cache[key] = out
+                    return out
+                if node.op == "sort":
+                    if node.params.get("key") is not None:
+                        raise NonReplayableTraceError("reload cannot replay sort(key=callable); use sort(by=...) only")
+                    out = base.sort(
+                        by=node.params.get("by"),
+                        cast=node.params.get("cast"),
+                        reverse=bool(node.params.get("reverse", False)),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where_in":
+                    out = base.where_in(str(node.params.get("field")), list(node.params.get("values") or []))
+                    cache[key] = out
+                    return out
+                if node.op == "where_eq":
+                    out = base.where_eq(str(node.params.get("field")), node.params.get("value"))
+                    cache[key] = out
+                    return out
+                if node.op == "where_contains":
+                    out = base.where_contains(str(node.params.get("field")), str(node.params.get("value") or ""))
+                    cache[key] = out
+                    return out
+                if node.op == "where_regex":
+                    out = base.where_regex(
+                        str(node.params.get("field")),
+                        str(node.params.get("pattern") or ""),
+                        strict=bool(node.params.get("strict", True)),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where_gt":
+                    out = base.where_gt(
+                        str(node.params.get("field")),
+                        node.params.get("value"),
+                        cast=node.params.get("cast"),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where_ge":
+                    out = base.where_ge(
+                        str(node.params.get("field")),
+                        node.params.get("value"),
+                        cast=node.params.get("cast"),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where_lt":
+                    out = base.where_lt(
+                        str(node.params.get("field")),
+                        node.params.get("value"),
+                        cast=node.params.get("cast"),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where_le":
+                    out = base.where_le(
+                        str(node.params.get("field")),
+                        node.params.get("value"),
+                        cast=node.params.get("cast"),
+                    )
+                    cache[key] = out
+                    return out
+                if node.op == "where":
+                    raise NonReplayableTraceError("reload cannot replay where(predicate); use where_in/where_eq/... instead")
+                raise NonReplayableTraceError(f"Unknown unary op for reload: {node.op!r}")
+
+            if isinstance(node, BinaryNode):
+                left = _as_eager(_replay(node.left))
+                right = _as_eager(_replay(node.right))
+                if node.op == "merge":
+                    out = left + right
+                elif node.op == "intersection":
+                    out = left & right
+                elif node.op == "difference":
+                    out = left - right
+                else:
+                    raise NonReplayableTraceError(f"Unknown binary op for reload: {node.op!r}")
+                cache[key] = out
+                return out
+
+            raise NonReplayableTraceError(f"Unknown plan node type: {type(node).__name__}")
+        return _replay(plan)
 
     @overload
     def reload(self, ctx: BusReplayContext) -> "BusList[TRecord]": ...
@@ -1274,12 +1511,163 @@ class BusList(Generic[TRecord]):
                     # Fallback: full replay (may hit bus multiple times)
                     refreshed = self._replay_plan(ctx, self._plan)
                 else:
+                    try:
+                        _ensure_bus_rev_subscription(ctx, seed_bus)
+                    except Exception:
+                        pass
+                    latest_rev: Optional[int] = None
+                    try:
+                        if _BUS_LATEST_REV_LOCK is not None:
+                            with _BUS_LATEST_REV_LOCK:
+                                latest_rev = int(_BUS_LATEST_REV.get(seed_bus, 0))
+                        else:
+                            latest_rev = int(_BUS_LATEST_REV.get(seed_bus, 0))
+                    except Exception:
+                        latest_rev = None
+
+                    def _collect_source_filters(node: TraceNode) -> set[str]:
+                        out: set[str] = set()
+                        try:
+                            if isinstance(node, UnaryNode):
+                                if str(node.op) == "filter" and isinstance(node.params, dict):
+                                    v = node.params.get("source")
+                                    if isinstance(v, str) and v:
+                                        out.add(v)
+                                out |= _collect_source_filters(node.child)
+                            elif isinstance(node, BinaryNode):
+                                out |= _collect_source_filters(node.left)
+                                out |= _collect_source_filters(node.right)
+                        except Exception:
+                            return out
+                        return out
+
+                    def _deltas_affect_query(*, bus: str, from_rev: int, to_rev: int, plan: TraceNode) -> bool:
+                        # Minimal heuristic: if plan filters by source, only treat deltas whose record.source matches.
+                        sources = _collect_source_filters(plan)
+                        if len(sources) != 1:
+                            return True
+                        src = next(iter(sources))
+                        try:
+                            if _BUS_LATEST_REV_LOCK is not None:
+                                with _BUS_LATEST_REV_LOCK:
+                                    q = list(_BUS_RECENT_DELTAS.get(bus, []))
+                            else:
+                                q = list(_BUS_RECENT_DELTAS.get(bus, []))
+                        except Exception:
+                            return True
+
+                        found = False
+                        for r, op0, d0 in q:
+                            if int(r) <= int(from_rev) or int(r) > int(to_rev):
+                                continue
+                            found = True
+                            rec = None
+                            if isinstance(d0, dict):
+                                rec = d0.get("record")
+                            if isinstance(rec, dict):
+                                if str(rec.get("source") or "") == str(src):
+                                    return True
+                            else:
+                                # Without record payload we must assume it may affect the query.
+                                return True
+                        # If we have no delta history for this rev window, be conservative.
+                        if not found and int(to_rev) != int(from_rev):
+                            return True
+                        return False
+
+                    if (
+                        latest_rev is not None
+                        and self._last_seen_bus_rev is not None
+                        and int(latest_rev) == int(self._last_seen_bus_rev)
+                        and self._incremental_seed == seed_id0
+                    ):
+                        cached = getattr(self, "_incremental_cached_items", None)
+                        if cached is None:
+                            # No cached materialization available; fall back to normal incremental path.
+                            pass
+                        else:
+                            try:
+                                self._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0)) + 1
+                            except Exception:
+                                self._incremental_fast_hits = 1
+                            if inplace:
+                                self._items = list(cached)  # type: ignore[list-item]
+                                self._ctx = ctx
+                                self._cache_valid = True
+                                return self
+                            out = self.__class__(
+                                list(cached),  # type: ignore[arg-type]
+                                ctx=ctx,
+                                trace=self._trace,
+                                plan=self._plan,
+                                fast_mode=self._fast_mode,
+                            )
+                            try:
+                                out._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
+                                out._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
+                                out._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
+                                out._last_seen_bus_rev = self._last_seen_bus_rev  # type: ignore[attr-defined]
+                                out._incremental_cached_items = list(cached)  # type: ignore[attr-defined]
+                                out._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                            return out
+
+                    # If bus rev changed but the changes do not affect this query, we can still fast-hit.
+                    if (
+                        latest_rev is not None
+                        and self._last_seen_bus_rev is not None
+                        and int(latest_rev) > int(self._last_seen_bus_rev)
+                        and self._incremental_seed == seed_id0
+                        and self._incremental_cached_items is not None
+                    ):
+                        try:
+                            affects = _deltas_affect_query(
+                                bus=seed_bus,
+                                from_rev=int(self._last_seen_bus_rev),
+                                to_rev=int(latest_rev),
+                                plan=self._plan,
+                            )
+                        except Exception:
+                            affects = True
+                        if not affects:
+                            self._last_seen_bus_rev = int(latest_rev)
+                            try:
+                                self._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0)) + 1
+                            except Exception:
+                                self._incremental_fast_hits = 1
+                            cached2 = list(self._incremental_cached_items)
+                            if inplace:
+                                self._items = list(cached2)  # type: ignore[list-item]
+                                self._ctx = ctx
+                                self._cache_valid = True
+                                return self
+                            out2 = self.__class__(
+                                cached2,  # type: ignore[arg-type]
+                                ctx=ctx,
+                                trace=self._trace,
+                                plan=self._plan,
+                                fast_mode=self._fast_mode,
+                            )
+                            try:
+                                out2._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
+                                out2._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
+                                out2._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
+                                out2._last_seen_bus_rev = self._last_seen_bus_rev  # type: ignore[attr-defined]
+                                out2._incremental_cached_items = list(cached2)  # type: ignore[attr-defined]
+                                out2._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                            return out2
+
                     # Ensure base snapshot exists for this seed; if seed changed, reset snapshot/cursor.
                     if self._incremental_seed != seed_id0 or self._incremental_base_items is None:
                         # Initialize base snapshot by doing a normal replay once.
                         base_list = self._replay_plan(ctx, seed0)
                         self._incremental_seed = seed_id0
                         self._incremental_base_items = list(base_list.dump_records())
+                        if latest_rev is not None:
+                            self._last_seen_bus_rev = int(latest_rev)
                         # Update cursor from base snapshot
                         try:
                             max_ts0: Optional[float] = None
@@ -1451,6 +1839,12 @@ class BusList(Generic[TRecord]):
                         refreshed._reload_cursor_ts = self._reload_cursor_ts  # type: ignore[attr-defined]
                         refreshed._incremental_seed = self._incremental_seed  # type: ignore[attr-defined]
                         refreshed._incremental_base_items = self._incremental_base_items  # type: ignore[attr-defined]
+                        if latest_rev is not None:
+                            refreshed._last_seen_bus_rev = int(latest_rev)  # type: ignore[attr-defined]
+                            self._last_seen_bus_rev = int(latest_rev)
+                        refreshed._incremental_cached_items = list(out_items)  # type: ignore[attr-defined]
+                        self._incremental_cached_items = list(out_items)
+                        refreshed._incremental_fast_hits = int(getattr(self, "_incremental_fast_hits", 0))  # type: ignore[attr-defined]
                     except Exception:
                         pass
 
@@ -1462,6 +1856,9 @@ class BusList(Generic[TRecord]):
                     self._reload_cursor_ts = getattr(refreshed, "_reload_cursor_ts", None)
                     self._incremental_seed = getattr(refreshed, "_incremental_seed", None)
                     self._incremental_base_items = getattr(refreshed, "_incremental_base_items", None)
+                    self._last_seen_bus_rev = getattr(refreshed, "_last_seen_bus_rev", None)
+                    self._incremental_cached_items = getattr(refreshed, "_incremental_cached_items", None)
+                    self._incremental_fast_hits = int(getattr(refreshed, "_incremental_fast_hits", getattr(self, "_incremental_fast_hits", 0)))
                 except Exception:
                     pass
                 return self

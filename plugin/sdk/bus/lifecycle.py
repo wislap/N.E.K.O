@@ -114,6 +114,8 @@ class LifecycleClient:
         self,
         plugin_id: Optional[str] = None,
         max_count: int = 50,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
     ) -> LifecycleList:
@@ -142,6 +144,8 @@ class LifecycleClient:
             "request_id": req_id,
             "plugin_id": pid_norm,
             "max_count": int(max_count),
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
             "since_ts": float(since_ts) if since_ts is not None else None,
             "timeout": float(timeout),
         }
@@ -187,6 +191,8 @@ class LifecycleClient:
         get_params = {
             "plugin_id": pid_norm,
             "max_count": max_count,
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
             "since_ts": since_ts,
             "timeout": timeout,
         }
