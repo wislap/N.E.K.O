@@ -73,6 +73,14 @@ def _plugin_process_runner(
             cur = cur.parent
         # Fallback: assume layout plugin/plugins/<id>/plugin.toml
         try:
+            logger.debug(
+                "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
+                p,
+            )
+        except Exception:
+            # Logging should never prevent fallback resolution
+            pass
+        try:
             return p.parent.parent.parent.parent.resolve()
         except Exception:
             return p.parent.resolve()
@@ -230,10 +238,8 @@ def _plugin_process_runner(
 
         logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
         
-        # 设置命令队列、入口映射和实例到上下文，用于在等待期间处理命令
-        # 这些属性在 PluginContext 中定义为 Optional，现在进行初始化
-        ctx._cmd_queue = cmd_queue
-        ctx._res_queue = res_queue
+        # 设置入口映射和实例到上下文，用于在等待期间处理命令
+        # _cmd_queue 和 _res_queue 已在 PluginContext 构造函数中初始化
         ctx._entry_map = entry_map
         ctx._instance = instance
 

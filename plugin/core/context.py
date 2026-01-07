@@ -11,6 +11,7 @@ import time
 import tomllib
 import uuid
 import threading
+import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,42 +43,30 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 class _BusHub:
     def __init__(self, ctx: "PluginContext"):
         self._ctx = ctx
-        self._memory: Optional["MemoryClient"] = None
-        self._messages: Optional["MessageClient"] = None
-        self._events: Optional["EventClient"] = None
-        self._lifecycle: Optional["LifecycleClient"] = None
 
-    @property
+    @functools.cached_property
     def memory(self) -> "MemoryClient":
-        if self._memory is None:
-            from plugin.sdk.bus.memory import MemoryClient
+        from plugin.sdk.bus.memory import MemoryClient
 
-            self._memory = MemoryClient(self._ctx)
-        return self._memory
+        return MemoryClient(self._ctx)
 
-    @property
+    @functools.cached_property
     def messages(self) -> "MessageClient":
-        if self._messages is None:
-            from plugin.sdk.bus.messages import MessageClient
+        from plugin.sdk.bus.messages import MessageClient
 
-            self._messages = MessageClient(self._ctx)
-        return self._messages
+        return MessageClient(self._ctx)
 
-    @property
+    @functools.cached_property
     def events(self) -> "EventClient":
-        if self._events is None:
-            from plugin.sdk.bus.events import EventClient
+        from plugin.sdk.bus.events import EventClient
 
-            self._events = EventClient(self._ctx)
-        return self._events
+        return EventClient(self._ctx)
 
-    @property
+    @functools.cached_property
     def lifecycle(self) -> "LifecycleClient":
-        if self._lifecycle is None:
-            from plugin.sdk.bus.lifecycle import LifecycleClient
+        from plugin.sdk.bus.lifecycle import LifecycleClient
 
-            self._lifecycle = LifecycleClient(self._ctx)
-        return self._lifecycle
+        return LifecycleClient(self._ctx)
 
 
 @dataclass
@@ -101,13 +90,9 @@ class PluginContext:
     _push_lock: Optional[Any] = None
     _push_batcher: Optional[Any] = None
 
-    @property
+    @functools.cached_property
     def bus(self) -> _BusHub:
-        hub = getattr(self, "_bus_hub", None)
-        if hub is None:
-            hub = _BusHub(self)
-            object.__setattr__(self, "_bus_hub", hub)
-        return hub
+        return _BusHub(self)
 
     def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
         raise RuntimeError(
@@ -225,25 +210,31 @@ class PluginContext:
                     PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
                     PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
                 )
-            except Exception:
+            except Exception as e:
+                # Fallback to safe defaults if settings import fails, but keep a clue in logs.
+                try:
+                    self.logger.warning(
+                        "[PluginContext] Failed to import ZeroMQ push settings (%s); using defaults",
+                        e,
+                    )
+                except Exception:
+                    pass
                 PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT = 3600.0
                 PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT = "tcp://127.0.0.1:38766"
                 PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = 256
                 PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS = 5
 
-            if getattr(self, "_push_lock", None) is None:
-                try:
-                    object.__setattr__(self, "_push_lock", threading.Lock())
-                except Exception:
-                    self._push_lock = threading.Lock()
-
+            # Canonical initialization of the per-context push lock.
             lock = getattr(self, "_push_lock", None)
             if lock is None:
-                lock = threading.Lock()
+                new_lock = threading.Lock()
                 try:
-                    object.__setattr__(self, "_push_lock", lock)
-                except Exception:
-                    self._push_lock = lock
+                    object.__setattr__(self, "_push_lock", new_lock)
+                    lock = new_lock
+                except (AttributeError, TypeError):
+                    # Fallback for non-dataclass or unusual attribute models.
+                    self._push_lock = new_lock
+                    lock = new_lock
 
             if bool(fast_mode):
                 if getattr(self, "_push_batcher", None) is None:
@@ -298,7 +289,22 @@ class PluginContext:
                 self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
                 seq = int(self._push_seq)
 
+                start_ts = time.time()
+                deadline = start_ts + timeout_s
+                attempt = 0
+                last_exc: Optional[BaseException] = None
+
                 while True:
+                    now = time.time()
+                    if now >= deadline:
+                        # Bounded by total elapsed time derived from sync timeout.
+                        msg = (
+                            f"ZeroMQ MESSAGE_PUSH failed after {attempt} attempts "
+                            f"over ~{timeout_s:.2f}s; last_error={last_exc!r}"
+                        )
+                        raise RuntimeError(msg)
+
+                    attempt += 1
                     req_id = str(uuid.uuid4())
                     req = {
                         "type": "MESSAGE_PUSH",
@@ -317,15 +323,41 @@ class PluginContext:
                     }
                     try:
                         resp = zmq_client.request(req, timeout=attempt_timeout)
-                    except Exception:
+                        last_exc = None
+                    except Exception as e:  # noqa: BLE001 - we want to capture and report any IPC failure here
                         resp = None
+                        last_exc = e
+
                     if not isinstance(resp, dict):
+                        # Transport-level failure or timeout; apply bounded exponential backoff.
                         try:
-                            self.logger.warning("[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; retrying (no fallback)")
+                            self.logger.warning(
+                                "[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; "
+                                "retrying attempt %d, last_error=%r (no fallback)",
+                                attempt,
+                                last_exc,
+                            )
                         except Exception:
                             pass
-                        time.sleep(0.01)
+
+                        # Exponential backoff with cap to avoid hot looping when router is down.
+                        backoff_base = 0.05
+                        backoff_cap = 1.0
+                        sleep_s = backoff_base * (2 ** (attempt - 1))
+                        if sleep_s > backoff_cap:
+                            sleep_s = backoff_cap
+
+                        remaining = deadline - time.time()
+                        if remaining <= 0:
+                            msg = (
+                                f"ZeroMQ MESSAGE_PUSH failed after {attempt} attempts "
+                                f"over ~{timeout_s:.2f}s; last_error={last_exc!r}"
+                            )
+                            raise RuntimeError(msg)
+
+                        time.sleep(min(sleep_s, max(0.0, remaining)))
                         continue
+
                     if resp.get("error"):
                         raise RuntimeError(str(resp.get("error")))
                     return
@@ -469,7 +501,7 @@ class PluginContext:
                 try:
                     msg = await loop.run_in_executor(
                         None,
-                        lambda: response_queue.get(timeout=min(0.05, remaining)),
+                        lambda r=remaining: response_queue.get(timeout=min(0.05, r)),
                     )
                 except Empty:
                     continue

@@ -1,6 +1,6 @@
 import time
 import threading
-import signal
+import atexit
 from collections import Counter
 from typing import Any, Dict, Optional, cast
 
@@ -20,18 +20,16 @@ class LoadTestPlugin(NekoPluginBase):
         self._stop_event = threading.Event()
         self._auto_thread: Optional[threading.Thread] = None
 
-        def _handle_signal(_signum: int, _frame: Any) -> None:
-            try:
-                self._stop_event.set()
-            except Exception:
-                pass
-
+        # Register a process-exit cleanup hook for this plugin instance instead of
+        # installing process-wide signal handlers per instance.
         try:
-            signal.signal(signal.SIGTERM, _handle_signal)
+            atexit.register(self._cleanup)
         except Exception:
             pass
+
+    def _cleanup(self) -> None:
         try:
-            signal.signal(signal.SIGINT, _handle_signal)
+            self._stop_event.set()
         except Exception:
             pass
 
@@ -172,7 +170,7 @@ class LoadTestPlugin(NekoPluginBase):
                 return 0.0
             if len(durs) == 1:
                 return float(durs[0])
-            idx = int(round((float(p) / 100.0) * (len(durs) - 1)))
+            idx = round((float(p) / 100.0) * (len(durs) - 1))
             if idx < 0:
                 idx = 0
             if idx >= len(durs):
@@ -237,6 +235,99 @@ class LoadTestPlugin(NekoPluginBase):
         except Exception:
             pass
         return workers, log_summary
+
+    def _get_incremental_diagnostics(self, expr) -> Dict[str, Any]:
+        """Get incremental reload diagnostics from a BusList expression.
+
+        Returns a dict with latest_rev/last_seen_rev/fast_hits when available.
+        """
+        try:
+            from plugin.sdk.bus import types as bus_types
+
+            latest = None
+            try:
+                latest = int(getattr(bus_types, "_BUS_LATEST_REV", {}).get("messages", 0))
+            except Exception:
+                latest = None
+            last_seen = getattr(expr, "_last_seen_bus_rev", None)
+            fast_hits = getattr(expr, "_incremental_fast_hits", None)
+            return {"latest_rev": latest, "last_seen_rev": last_seen, "fast_hits": fast_hits}
+        except Exception:
+            return {}
+
+    def _run_benchmark(
+        self,
+        *,
+        test_name: str,
+        root_cfg: Optional[Dict[str, Any]],
+        sec_cfg: Optional[Dict[str, Any]],
+        default_duration: float,
+        op_fn,
+        log_template: Optional[str] = None,
+        build_log_args=None,
+        extra_data_builder=None,
+    ) -> Dict[str, Any]:
+        """Execute a benchmark with common config, timing, logging, and result wiring.
+
+        This helper centralizes the repeated pattern used by bench_* methods:
+        - load global/section config
+        - resolve enable flag
+        - derive workers/log_summary and effective duration
+        - run _bench_loop or _bench_loop_concurrent
+        - sample latency
+        - optional extra data builder
+        - optional summary logging
+        - wrap result into ok(data={...}) at call site
+        """
+
+        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
+        if not enabled:
+            try:
+                self.logger.info("[load_tester] %s disabled by config", test_name)
+            except Exception:
+                pass
+            return {"test": test_name, "enabled": False, "skipped": True}
+
+        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
+        if dur_cfg is None and root_cfg:
+            dur_cfg = root_cfg.get("duration_seconds")
+        try:
+            duration = float(dur_cfg) if dur_cfg is not None else default_duration
+        except Exception:
+            duration = default_duration
+
+        if workers > 1:
+            stats = self._bench_loop_concurrent(duration, workers, op_fn)
+        else:
+            stats = self._bench_loop(duration, op_fn)
+
+        try:
+            stats.update(self._sample_latency_ms(op_fn, samples=100))
+        except Exception:
+            pass
+
+        if callable(extra_data_builder):
+            try:
+                extra = extra_data_builder(stats, duration, workers)
+                if isinstance(extra, dict):
+                    stats.update(extra)
+            except Exception:
+                pass
+
+        if log_summary and log_template:
+            try:
+                args = ()
+                if callable(build_log_args):
+                    args = build_log_args(duration, stats, workers) or ()
+                self.logger.info(log_template, *args)
+            except Exception:
+                pass
+
+        # Caller is responsible for wrapping into ok(data={...}).
+        return {"test": test_name, **stats}
 
     @plugin_entry(
         id="op_bus_messages_get",
@@ -343,24 +434,6 @@ class LoadTestPlugin(NekoPluginBase):
     def bench_push_messages(self, duration_seconds: float = 5.0, **_: Any):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("push_messages")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_push_messages disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_push_messages", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
-
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
 
         def _op() -> None:
             self.ctx.push_message(
@@ -372,29 +445,27 @@ class LoadTestPlugin(NekoPluginBase):
                 fast_mode=False,
             )
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                stats.get("workers", workers),
+            )
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_push_messages duration={}s iterations={} qps={} errors={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_push_messages", **stats})
+        stats = self._run_benchmark(
+            test_name="bench_push_messages",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_push_messages duration={}s iterations={} qps={} errors={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_push_messages_fast",
@@ -414,24 +485,6 @@ class LoadTestPlugin(NekoPluginBase):
     def bench_push_messages_fast(self, duration_seconds: float = 5.0, **_: Any):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("push_messages_fast")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_push_messages_fast disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_push_messages_fast", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
-
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
 
         def _op() -> None:
             self.ctx.push_message(
@@ -443,29 +496,27 @@ class LoadTestPlugin(NekoPluginBase):
                 fast_mode=True,
             )
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                stats.get("workers", workers),
+            )
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_push_messages_fast duration={}s iterations={} qps={} errors={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_push_messages_fast", **stats})
+        stats = self._run_benchmark(
+            test_name="bench_push_messages_fast",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_push_messages_fast duration={}s iterations={} qps={} errors={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_bus_messages_get",
@@ -491,16 +542,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("bus_messages_get")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_bus_messages_get disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_bus_messages_get", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -513,14 +554,6 @@ class LoadTestPlugin(NekoPluginBase):
         except Exception:
             pass
 
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
-
         pid_norm = None if not plugin_id or plugin_id.strip() == "*" else plugin_id.strip()
 
         def _op() -> None:
@@ -531,32 +564,30 @@ class LoadTestPlugin(NekoPluginBase):
                 raw=True,
             )
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                max_count,
+                plugin_id,
+                timeout,
+                stats.get("workers", workers),
+            )
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_bus_messages_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    max_count,
-                    plugin_id,
-                    timeout,
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_bus_messages_get", **stats})
+        stats = self._run_benchmark(
+            test_name="bench_bus_messages_get",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_bus_messages_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_bus_events_get",
@@ -582,16 +613,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("bus_events_get")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_bus_events_get disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_bus_events_get", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -621,32 +642,30 @@ class LoadTestPlugin(NekoPluginBase):
                 timeout=float(timeout),
             )
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                max_count,
+                plugin_id,
+                timeout,
+                stats.get("workers", workers),
+            )
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_bus_events_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    max_count,
-                    plugin_id,
-                    timeout,
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_bus_events_get", **stats})
+        stats = self._run_benchmark(
+            test_name="bench_bus_events_get",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_bus_events_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_bus_lifecycle_get",
@@ -672,16 +691,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("bus_lifecycle_get")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_bus_lifecycle_get disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_bus_lifecycle_get", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -711,32 +720,30 @@ class LoadTestPlugin(NekoPluginBase):
                 timeout=float(timeout),
             )
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                max_count,
+                plugin_id,
+                timeout,
+                stats.get("workers", workers),
+            )
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_bus_lifecycle_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    max_count,
-                    plugin_id,
-                    timeout,
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_bus_lifecycle_get", **stats})
+        stats = self._run_benchmark(
+            test_name="bench_bus_lifecycle_get",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_bus_lifecycle_get duration={}s iterations={} qps={} errors={} max_count={} plugin_id={} timeout={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_buslist_filter",
@@ -762,16 +769,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("buslist_filter")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_buslist_filter disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_buslist_filter", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -783,14 +780,6 @@ class LoadTestPlugin(NekoPluginBase):
                 timeout = float(timeout_cfg)
         except Exception:
             pass
-
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else duration_seconds
-        except Exception:
-            duration = duration_seconds
 
         base_list = self.ctx.bus.messages.get(
             plugin_id=None,
@@ -827,31 +816,33 @@ class LoadTestPlugin(NekoPluginBase):
         def _op() -> None:
             _ = base_list.filter(strict=False, **flt_kwargs)
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
+        def _extra_data_builder(stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
+            return {"base_size": len(base_list)}
 
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                len(base_list),
+                flt_kwargs,
+                stats.get("workers", workers),
+            )
 
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_buslist_filter duration={}s iterations={} qps={} errors={} base_size={} filter={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    len(base_list),
-                    flt_kwargs,
-                    stats.get("workers", workers),
-                )
-            except Exception:
-                pass
-        return ok(data={"test": "bench_buslist_filter", "base_size": len(base_list), **stats})
+        stats = self._run_benchmark(
+            test_name="bench_buslist_filter",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_buslist_filter duration={}s iterations={} qps={} errors={} base_size={} filter={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+            extra_data_builder=_extra_data_builder,
+        )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_buslist_reload",
@@ -881,16 +872,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("buslist_reload")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            try:
-                self.logger.info("[load_tester] bench_buslist_reload disabled by config")
-            except Exception:
-                pass
-            return ok(data={"test": "bench_buslist_reload", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -953,66 +934,49 @@ class LoadTestPlugin(NekoPluginBase):
         right = base_list.filter(strict=False, **flt_kwargs)
         expr = (left + right) - left
 
-        def _get_rev_diag() -> Dict[str, Any]:
-            if not bool(incremental):
-                return {}
-            try:
-                from plugin.sdk.bus import types as bus_types
-
-                latest = None
-                try:
-                    latest = int(getattr(bus_types, "_BUS_LATEST_REV", {}).get("messages", 0))
-                except Exception:
-                    latest = None
-                last_seen = getattr(expr, "_last_seen_bus_rev", None)
-                fast_hits = getattr(expr, "_incremental_fast_hits", None)
-                return {"latest_rev": latest, "last_seen_rev": last_seen, "fast_hits": fast_hits}
-            except Exception:
-                return {}
-
         def _op() -> None:
             ctx = cast(BusReplayContext, self.ctx)
             _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=bool(incremental))
 
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
-
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        if log_summary:
-            try:
-                diag = _get_rev_diag()
-                self.logger.info(
-                    "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} incremental={} workers={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    len(base_list),
-                    flt_kwargs,
-                    bool(inplace),
-                    bool(incremental),
-                    stats.get("workers", workers),
-                )
-                if diag:
-                    self.logger.info("[load_tester] bench_buslist_reload incremental diag: {}", diag)
-            except Exception:
-                pass
-        return ok(
-            data={
-                "test": "bench_buslist_reload",
+        def _extra_data_builder(stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
+            data: Dict[str, Any] = {
                 "base_size": len(base_list),
                 "inplace": bool(inplace),
                 "incremental": bool(incremental),
-                **_get_rev_diag(),
-                **stats,
             }
+            try:
+                if bool(incremental):
+                    data.update(self._get_incremental_diagnostics(expr))
+            except Exception:
+                pass
+            return data
+
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                len(base_list),
+                flt_kwargs,
+                bool(inplace),
+                bool(incremental),
+                stats.get("workers", workers),
+            )
+
+        stats = self._run_benchmark(
+            test_name="bench_buslist_reload",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_buslist_reload duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} incremental={} workers={}"
+            ),
+            build_log_args=_build_log_args,
+            extra_data_builder=_extra_data_builder,
         )
+        return ok(data=stats)
 
     @plugin_entry(
         id="bench_buslist_reload_nochange",
@@ -1040,12 +1004,6 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("buslist_reload")
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
-            return ok(data={"test": "bench_buslist_reload_nochange", "enabled": False, "skipped": True})
-
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
         timeout_cfg = None
         if sec_cfg:
@@ -1103,62 +1061,47 @@ class LoadTestPlugin(NekoPluginBase):
         except Exception:
             pass
 
-        def _get_rev_diag() -> Dict[str, Any]:
-            try:
-                from plugin.sdk.bus import types as bus_types
-
-                latest = None
-                try:
-                    latest = int(getattr(bus_types, "_BUS_LATEST_REV", {}).get("messages", 0))
-                except Exception:
-                    latest = None
-                last_seen = getattr(expr, "_last_seen_bus_rev", None)
-                fast_hits = getattr(expr, "_incremental_fast_hits", None)
-                return {"latest_rev": latest, "last_seen_rev": last_seen, "fast_hits": fast_hits}
-            except Exception:
-                return {}
-
         def _op() -> None:
             ctx = cast(BusReplayContext, self.ctx)
             _ = expr.reload_with(ctx, inplace=bool(inplace), incremental=True)
 
-        if workers > 1:
-            # No-change fast-path is single-thread friendly; keep workers=1 by default.
-            stats = self._bench_loop_concurrent(duration, workers, _op)
-        else:
-            stats = self._bench_loop(duration, _op)
-
-        try:
-            stats.update(self._sample_latency_ms(_op, samples=100))
-        except Exception:
-            pass
-
-        diag = _get_rev_diag()
-        if log_summary:
-            try:
-                self.logger.info(
-                    "[load_tester] bench_buslist_reload_nochange duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} diag={}",
-                    duration,
-                    stats["iterations"],
-                    stats["qps"],
-                    stats["errors"],
-                    len(base_list),
-                    flt_kwargs,
-                    bool(inplace),
-                    diag,
-                )
-            except Exception:
-                pass
-
-        return ok(
-            data={
-                "test": "bench_buslist_reload_nochange",
+        def _extra_data_builder(stats: Dict[str, Any], _duration: float, _workers: int) -> Dict[str, Any]:
+            data: Dict[str, Any] = {
                 "base_size": len(base_list),
                 "inplace": bool(inplace),
-                **diag,
-                **stats,
             }
+            try:
+                data.update(self._get_incremental_diagnostics(expr))
+            except Exception:
+                pass
+            return data
+
+        def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):
+            diag = self._get_incremental_diagnostics(expr)
+            return (
+                duration,
+                stats["iterations"],
+                stats["qps"],
+                stats["errors"],
+                len(base_list),
+                flt_kwargs,
+                bool(inplace),
+                diag,
+            )
+
+        stats = self._run_benchmark(
+            test_name="bench_buslist_reload_nochange",
+            root_cfg=root_cfg,
+            sec_cfg=sec_cfg,
+            default_duration=duration_seconds,
+            op_fn=_op,
+            log_template=(
+                "[load_tester] bench_buslist_reload_nochange duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} diag={}"
+            ),
+            build_log_args=_build_log_args,
+            extra_data_builder=_extra_data_builder,
         )
+        return ok(data=stats)
 
     @plugin_entry(
         id="run_all_benchmarks",
@@ -1274,7 +1217,7 @@ class LoadTestPlugin(NekoPluginBase):
                     ]
                 )
 
-            cols = list(zip(*([headers] + rows))) if rows else [headers]
+            cols = list(zip(*([headers] + rows), strict=True)) if rows else [headers]
             widths = [max(len(str(x)) for x in col) for col in cols]
 
             def _line(parts: list[str]) -> str:

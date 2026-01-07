@@ -185,19 +185,31 @@ def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
         )
     
     config_path = get_plugin_config_path(plugin_id)
-    
+
     try:
         with open(config_path, 'rb') as f:
             config_data = tomllib.load(f)
-        
+
+        # Apply optional user profile overlay defined in plugin.toml.
+        # The [plugin] section remains server-facing and is not overridden by
+        # user profiles; all other top-level sections may be customized.
+        merged_config = _apply_user_config_profiles(
+            plugin_id=plugin_id,
+            base_config=config_data,
+            config_path=config_path,
+        )
+
         stat = config_path.stat()
-        
+
         return {
             "plugin_id": plugin_id,
-            "config": config_data,
+            "config": merged_config,
             "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             "config_path": str(config_path)
         }
+    except HTTPException:
+        # 直接透传由下层抛出的 HTTPException（例如用户 profile 覆盖 plugin 段等配置错误）
+        raise
     except Exception as e:
         logger.exception(f"Failed to load config for plugin {plugin_id}")
         raise HTTPException(
@@ -240,6 +252,172 @@ def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         else:
             result[key] = value
     return result
+
+
+def _resolve_profile_path(path_str: str, base_dir: Path) -> Optional[Path]:
+    """解析用户配置 profile 的路径，支持 Python 风格的路径写法。
+
+    支持特性：
+    - 环境变量：如 "${HOME}/.neko/profiles/dev.toml"
+    - 用户目录："~/.neko/profiles/dev.toml"
+    - 绝对路径："/etc/neko/dev.toml" 或 "C:\\neko\\dev.toml"
+    - 相对路径："dev.toml" 或 "profiles/dev.toml"（相对于插件配置目录）
+    """
+
+    try:
+        # 展开环境变量和 ~
+        expanded = os.path.expandvars(os.path.expanduser(str(path_str)))
+        p = Path(expanded)
+        if not p.is_absolute():
+            p = base_dir / p
+        return p.resolve()
+    except Exception:
+        logger.warning("Failed to resolve user profile path %r for base_dir %s", path_str, base_dir)
+        return None
+
+
+def _apply_user_config_profiles(
+    *, plugin_id: str, base_config: Dict[str, Any], config_path: Path
+) -> Dict[str, Any]:
+    """根据 plugin.toml 中声明的用户 profile 叠加配置。
+
+    约定结构（可选）：
+
+    [plugin.config_profiles]
+    active = "default"              # 当前激活的 profile 名称，可被环境变量覆盖
+
+    [plugin.config_profiles.files]
+    default = "profiles/default.toml"   # 可以是绝对/相对/~ 路径
+    work    = "~/neko/work.toml"
+
+    行为：
+    - [plugin] 段保持不变，仅覆盖其他顶层段（如 [load_test]）。
+    - 如果未配置 config_profiles，或 active/file 未找到，返回 base_config 原样。
+    - 如果 profile 文件不存在或解析失败，记录 warning，返回 base_config。
+    """
+
+    if not isinstance(base_config, dict):
+        return base_config
+
+    plugin_section = base_config.get("plugin")
+    if not isinstance(plugin_section, dict):
+        return base_config
+
+    profiles_cfg = plugin_section.get("config_profiles")
+    if not isinstance(profiles_cfg, dict):
+        return base_config
+
+    # 解析当前激活的 profile 名称，支持环境变量覆盖
+    active_name: Optional[str] = None
+    raw_active = profiles_cfg.get("active")
+    if isinstance(raw_active, str):
+        active_name = raw_active.strip() or None
+
+    env_key = f"NEKO_PLUGIN_{plugin_id.upper()}_PROFILE"
+    env_override = os.getenv(env_key)
+    if isinstance(env_override, str) and env_override.strip():
+        active_name = env_override.strip()
+
+    if not active_name:
+        # 未指定激活 profile，直接返回基础配置
+        return base_config
+
+    files_map = profiles_cfg.get("files")
+    if not isinstance(files_map, dict):
+        logger.warning(
+            "Plugin %s: [plugin.config_profiles.files] must be a table mapping profile names to paths; "
+            "got %r",
+            plugin_id,
+            type(files_map).__name__ if files_map is not None else None,
+        )
+        return base_config
+
+    raw_path = files_map.get(active_name)
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        logger.warning(
+            "Plugin %s: active profile '%s' not found in [plugin.config_profiles.files]",
+            plugin_id,
+            active_name,
+        )
+        return base_config
+
+    base_dir = config_path.parent
+    profile_path = _resolve_profile_path(raw_path, base_dir)
+    if profile_path is None:
+        return base_config
+
+    if not profile_path.exists():
+        logger.warning(
+            "Plugin %s: user profile file '%s' (resolved: %s) does not exist; using base config only",
+            plugin_id,
+            raw_path,
+            profile_path,
+        )
+        return base_config
+
+    if tomllib is None:
+        logger.warning(
+            "Plugin %s: TOML library not available; cannot load user profile %s",
+            plugin_id,
+            profile_path,
+        )
+        return base_config
+
+    try:
+        with profile_path.open("rb") as pf:
+            overlay = tomllib.load(pf)
+    except Exception as e:
+        logger.warning(
+            "Plugin %s: failed to load user profile %s: %s; using base config only",
+            plugin_id,
+            profile_path,
+            e,
+        )
+        return base_config
+
+    if not isinstance(overlay, dict):
+        logger.warning(
+            "Plugin %s: user profile %s is not a TOML table at root; got %r",
+            plugin_id,
+            profile_path,
+            type(overlay).__name__,
+        )
+        return base_config
+
+    # 安全约束：禁止用户 profile 覆盖 [plugin] 段
+    if "plugin" in overlay:
+        logger.error(
+            "Plugin %s: user profile %s attempts to override [plugin] section; rejecting config",
+            plugin_id,
+            profile_path,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"User profile for plugin '{plugin_id}' must not define a top-level 'plugin' section; "
+                f"found in {profile_path}"
+            ),
+        )
+
+    # 执行叠加：保留 [plugin]，仅覆盖其他顶层段
+    merged: Dict[str, Any] = dict(base_config)
+    for key, value in overlay.items():
+        if key == "plugin":
+            # [plugin] 段由服务器管理，不允许通过用户 profile 覆盖
+            continue
+        if isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+
+    logger.info(
+        "Plugin %s: applied user config profile '%s' from %s",
+        plugin_id,
+        active_name,
+        profile_path,
+    )
+
+    return merged
 
 
 def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[str, Any]:
