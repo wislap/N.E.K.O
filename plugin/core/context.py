@@ -316,6 +316,52 @@ class PluginContext:
             raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
 
         deadline = time.time() + timeout
+        response_queue = getattr(self, "_response_queue", None)
+        pending = getattr(self, "_response_pending", None)
+        if pending is None:
+            pending = {}
+            try:
+                object.__setattr__(self, "_response_pending", pending)
+            except Exception:
+                self._response_pending = pending
+
+        if isinstance(pending, dict) and request_id in pending:
+            response = pending.pop(request_id)
+            if isinstance(response, dict) and response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+            result = response.get("result") if isinstance(response, dict) else None
+            if wrap_result:
+                return result if isinstance(result, dict) else {"result": result}
+            return result
+
+        if response_queue is not None:
+            loop = asyncio.get_running_loop()
+            while time.time() < deadline:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = await loop.run_in_executor(
+                        None,
+                        lambda: response_queue.get(timeout=min(0.05, remaining)),
+                    )
+                except Empty:
+                    continue
+                except Exception:
+                    break
+                if not isinstance(msg, dict):
+                    continue
+                rid = msg.get("request_id")
+                if rid == request_id:
+                    if msg.get("error"):
+                        raise RuntimeError(str(msg.get("error")))
+                    result = msg.get("result")
+                    if wrap_result:
+                        return result if isinstance(result, dict) else {"result": result}
+                    return result
+                if isinstance(pending, dict) and rid:
+                    pending[str(rid)] = msg
+
         check_interval = 0.01
         while time.time() < deadline:
             response = state.get_plugin_response(request_id)

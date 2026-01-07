@@ -17,9 +17,9 @@ conflicts = [
 ]
 
 [load_test]
-enable = true
+enable = false
 duration_seconds = 5
-auto_start = true
+auto_start = false
 log_summary = true
 worker_threads = 1
 

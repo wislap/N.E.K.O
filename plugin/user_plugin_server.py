@@ -1302,7 +1302,7 @@ if __name__ == "__main__":
             selected_port,
         )
     else:
-        logger.info("User plugin server starting on {}:{}", host, selected_port)
+        logger.info("User plugin server starting on %s:%s", host, selected_port)
     
     try:
         uvicorn.run(app, host=host, port=selected_port, log_config=None)

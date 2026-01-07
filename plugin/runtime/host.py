@@ -120,22 +120,23 @@ def _plugin_process_runner(
         logger.info("[Plugin Process] Resolved project_root: {}", project_root)
         logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
 
+        InterceptHandler = None
         try:
-            from utils.logger_config import InterceptHandler
-        except ModuleNotFoundError:
-            import importlib.util
+            from utils.logger_config import InterceptHandler as _IH
 
-            _p = project_root / "utils" / "logger_config.py"
-            if not _p.is_file():
-                raise ModuleNotFoundError(
-                    f"utils.logger_config not found; expected file={_p} project_root={project_root} sys.path_head={sys.path[:3]}"
-                ) from None
-            spec = importlib.util.spec_from_file_location("utils.logger_config", _p)
-            if spec is None or spec.loader is None:
-                raise
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            InterceptHandler = getattr(mod, "InterceptHandler")
+            InterceptHandler = _IH
+        except Exception:
+            InterceptHandler = None
+
+        if InterceptHandler is None:
+            class InterceptHandler(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    try:
+                        level = record.levelname
+                        msg = record.getMessage()
+                        logger.opt(depth=6, exception=record.exc_info).log(level, msg)
+                    except Exception:
+                        pass
 
         logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
 

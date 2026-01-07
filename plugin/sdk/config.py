@@ -68,6 +68,8 @@ class PluginConfig:
     def _unwrap(self, value: Any, *, operation: str) -> Dict[str, Any]:
         if not isinstance(value, dict):
             raise PluginConfigError(f"Invalid config type: {type(value)}", operation=operation)
+        if "data" in value and isinstance(value.get("data"), dict):
+            value = value["data"]
         # The runtime returns a wrapper like:
         # {"success": ..., "plugin_id": ..., "config": <toml_root>, ...}
         # SDK exposes only the toml root to plugin authors.

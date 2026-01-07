@@ -1044,21 +1044,66 @@ class LoadTestPlugin(NekoPluginBase):
         We only spawn a daemon thread here.
         """
 
+        try:
+            try:
+                self.ctx.logger.info("[load_tester] lifecycle.startup invoked")
+            except Exception:
+                self.logger.info("[load_tester] lifecycle.startup invoked")
+        except Exception:
+            pass
+
         def _runner() -> None:
             try:
+                try:
+                    raw = self.ctx.get_own_config(timeout=2.0)
+                    data = raw.get("data") if isinstance(raw, dict) else None
+                    inner = data if isinstance(data, dict) else raw
+                    cfg_root = inner.get("config") if isinstance(inner, dict) else None
+                    lt = None
+                    if isinstance(cfg_root, dict):
+                        lt = cfg_root.get("load_test")
+                    cfg_path = inner.get("config_path") if isinstance(inner, dict) else None
+                    self.ctx.logger.info(
+                        "[load_tester] get_own_config diag: config_path={} load_test={} raw_keys={}",
+                        cfg_path,
+                        lt,
+                        list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
+                    )
+                except Exception as e:
+                    try:
+                        self.ctx.logger.warning("[load_tester] get_own_config diag failed: {}", e)
+                    except Exception:
+                        pass
+
                 root_cfg = self._get_load_test_section(None)
                 enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
                 auto_start = bool(root_cfg.get("auto_start", False)) if root_cfg else False
+                try:
+                    self.ctx.logger.info(
+                        "[load_tester] auto_start thread begin: enabled={} auto_start={} stop={}",
+                        enabled,
+                        auto_start,
+                        self._stop_event.is_set(),
+                    )
+                except Exception:
+                    pass
                 if not enabled or not auto_start:
                     return
                 if self._stop_event.is_set():
                     return
                 self.run_all_benchmarks()
-            except Exception as e:
                 try:
-                    self.logger.warning("[load_tester] startup auto_start failed: {}", e)
+                    self.ctx.logger.info("[load_tester] auto_start thread finished")
                 except Exception:
                     pass
+            except Exception as e:
+                try:
+                    self.ctx.logger.warning("[load_tester] startup auto_start failed: {}", e)
+                except Exception:
+                    try:
+                        self.logger.warning("[load_tester] startup auto_start failed: {}", e)
+                    except Exception:
+                        pass
 
         try:
             t = threading.Thread(target=_runner, daemon=True, name="load_tester-auto")
@@ -1066,7 +1111,10 @@ class LoadTestPlugin(NekoPluginBase):
             t.start()
         except Exception as e:
             try:
-                self.logger.warning("[load_tester] startup: failed to start background thread: {}", e)
+                try:
+                    self.ctx.logger.warning("[load_tester] startup: failed to start background thread: {}", e)
+                except Exception:
+                    self.logger.warning("[load_tester] startup: failed to start background thread: {}", e)
             except Exception:
                 pass
         return ok(data={"status": "startup_started"})
