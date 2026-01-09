@@ -94,6 +94,30 @@ class PluginContext:
     def bus(self) -> _BusHub:
         return _BusHub(self)
 
+    def close(self) -> None:
+        """Release per-context resources such as the ZeroMQ push batcher.
+
+        This is safe to call multiple times.
+        """
+        batcher = getattr(self, "_push_batcher", None)
+        if batcher is not None:
+            try:
+                # Give the batcher a bounded window to flush and stop.
+                batcher.stop(timeout=2.0)
+            except Exception:
+                # Cleanup should be best-effort and never raise.
+                pass
+            try:
+                self._push_batcher = None
+            except Exception:
+                pass
+
+    def __del__(self) -> None:  # pragma: no cover - best-effort safety net
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
         raise RuntimeError(
             "PluginContext.get_user_context() is no longer supported. "

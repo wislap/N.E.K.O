@@ -1,6 +1,5 @@
 import time
 import threading
-import atexit
 from collections import Counter
 from typing import Any, Dict, Optional, cast
 
@@ -20,18 +19,18 @@ class LoadTestPlugin(NekoPluginBase):
         self._stop_event = threading.Event()
         self._auto_thread: Optional[threading.Thread] = None
 
-        # Register a process-exit cleanup hook for this plugin instance instead of
-        # installing process-wide signal handlers per instance.
-        try:
-            atexit.register(self._cleanup)
-        except Exception:
-            pass
-
     def _cleanup(self) -> None:
         try:
             self._stop_event.set()
         except Exception:
             pass
+        t = getattr(self, "_auto_thread", None)
+        if t is not None:
+            try:
+                t.join(timeout=2.0)
+            except Exception:
+                # 避免 join 异常中断清理
+                pass
 
     def _bench_loop(self, duration_seconds: float, fn, *args, **kwargs) -> Dict[str, Any]:
         start = time.perf_counter()
@@ -894,7 +893,6 @@ class LoadTestPlugin(NekoPluginBase):
             all_latencies_ms: list[float] = []
             total_calls = 0
             total_errors = 0
-            peak_qps = 0.0
             table_rows: list[Dict[str, Any]] = []
 
             for tq in targets:
@@ -945,19 +943,6 @@ class LoadTestPlugin(NekoPluginBase):
 
                 elapsed = time.perf_counter() - start
                 achieved_qps = float(calls) / elapsed if elapsed > 0 else 0.0
-                peak_qps_local = achieved_qps
-
-                nonlocal_peak = peak_qps  # for mypy type hints; actual update below
-                del nonlocal_peak
-                if achieved_qps > peak_qps:
-                    peak_qps_val = achieved_qps
-                else:
-                    peak_qps_val = peak_qps
-
-                # Update outer aggregates
-                peak_qps_nonlocal = peak_qps_val
-                del peak_qps_nonlocal
-                # Simpler: recompute after loop; we keep track via list instead
 
                 total_calls += calls
                 total_errors += errors
@@ -1353,7 +1338,7 @@ class LoadTestPlugin(NekoPluginBase):
             test_name="bench_buslist_reload_nochange",
             root_cfg=root_cfg,
             sec_cfg=sec_cfg,
-            default_duration=duration_seconds,
+            default_duration=duration,
             op_fn=_op,
             log_template=(
                 "[load_tester] bench_buslist_reload_nochange duration={}s iterations={} qps={} errors={} base_size={} filter={} inplace={} diag={}"
@@ -1582,14 +1567,5 @@ class LoadTestPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_: Any):
-        try:
-            self._stop_event.set()
-        except Exception:
-            pass
-        t = getattr(self, "_auto_thread", None)
-        if t is not None:
-            try:
-                t.join(timeout=2.0)
-            except Exception:
-                pass
+        self._cleanup()
         return ok(data={"status": "shutdown_signaled"})
