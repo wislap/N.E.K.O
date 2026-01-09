@@ -1066,6 +1066,7 @@ def push_message_to_queue(
     binary_data: Optional[bytes] = None,
     binary_url: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    mode: str = "unknown",
 ) -> str:
     """
     将消息推送到队列
@@ -1101,7 +1102,7 @@ def push_message_to_queue(
             _msg_push_suppressed = 0
             if n <= 1:
                 loguru_logger.info(
-                    f"[MESSAGE PUSH] Plugin: {plugin_id} | "
+                    f"[MESSAGE PUSH] mode={mode} Plugin: {plugin_id} | "
                     f"Source: {source} | "
                     f"Type: {message_type} | "
                     f"Priority: {priority} | "
@@ -1110,7 +1111,7 @@ def push_message_to_queue(
                 )
             else:
                 loguru_logger.info(
-                    f"[MESSAGE PUSH] Plugin: {plugin_id} | "
+                    f"[MESSAGE PUSH] mode={mode} Plugin: {plugin_id} | "
                     f"Source: {source} | "
                     f"Type: {message_type} | "
                     f"Priority: {priority} | "

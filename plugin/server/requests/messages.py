@@ -94,6 +94,7 @@ async def handle_message_push(request: Dict[str, Any], send_response: SendRespon
             binary_data=binary_data if isinstance(binary_data, (bytes, type(None))) else None,
             binary_url=str(binary_url) if isinstance(binary_url, str) and binary_url else None,
             metadata=dict(metadata) if isinstance(metadata, dict) else None,
+            mode="zmq-sync",
         )
         send_response(from_plugin, request_id, {"message_id": mid}, None, timeout=timeout)
     except Exception as e:

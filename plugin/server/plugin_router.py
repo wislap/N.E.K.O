@@ -179,6 +179,7 @@ class PluginRouter:
                                 binary_data=it.get("binary_data"),
                                 binary_url=it.get("binary_url"),
                                 metadata=meta,
+                                mode="zmq-fast",
                             )
                         except Exception:
                             continue
@@ -268,17 +269,6 @@ class PluginRouter:
         handler = self._handlers.get(str(request_type))
         from_plugin = request.get("from_plugin")
         request_id = request.get("request_id")
-
-        # 记录 ZeroMQ MESSAGE_PUSH 请求的入口，便于排查特定插件的 push 问题
-        try:
-            if str(request_type) == "MESSAGE_PUSH":
-                logger.warning(
-                    "[ZeroMQ IPC] handling MESSAGE_PUSH from=%s req_id=%s",
-                    str(from_plugin),
-                    str(request_id),
-                )
-        except Exception:
-            pass
 
         if not isinstance(from_plugin, str) or not from_plugin:
             return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": "", "request_id": str(request_id or ""), "result": None, "error": "missing from_plugin"}
