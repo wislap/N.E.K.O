@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ from plugin.settings import (
     MESSAGE_CONSUMER_SLEEP_INTERVAL,
     RESULT_CONSUMER_SLEEP_INTERVAL,
     PLUGIN_LOG_MESSAGE_FORWARD,
+    PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS,
 )
 from plugin.api.exceptions import PluginExecutionError
 from plugin.utils.logging import format_log_text as _format_log_text
@@ -60,6 +62,9 @@ class PluginCommunicationResourceManager:
     _executor: Optional[ThreadPoolExecutor] = None
     _message_target_queue: Optional[asyncio.Queue] = None  # 主进程的消息队列
     _background_tasks: set[asyncio.Task] = field(default_factory=set)
+    _last_forward_log_key: Optional[tuple] = field(default=None, init=False, repr=False)
+    _last_forward_log_time: float = field(default=0.0, init=False, repr=False)
+    _last_forward_log_repeat_count: int = field(default=0, init=False, repr=False)
     
     def __post_init__(self):
         """初始化异步资源"""
@@ -529,13 +534,51 @@ class PluginCommunicationResourceManager:
                             # 主队列可能被阻塞/不再消费，直接丢弃以保证 shutdown 及时。
                             continue
                         if PLUGIN_LOG_MESSAGE_FORWARD:
+                            log_content = _format_log_text(msg.get("content", ""))
+                            window = PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS
+                            if window and window > 0:
+                                now_ts = time.monotonic()
+                                key = (
+                                    self.plugin_id,
+                                    msg.get("source", "unknown"),
+                                    msg.get("priority", 0),
+                                    msg.get("description", ""),
+                                    log_content,
+                                )
+                                last_key = self._last_forward_log_key
+                                last_ts = self._last_forward_log_time
+                                if (
+                                    last_key == key
+                                    and last_ts > 0.0
+                                    and (now_ts - last_ts) <= window
+                                ):
+                                    # 在去重时间窗口内的重复日志，累加计数并跳过，避免刷屏和性能损耗
+                                    self._last_forward_log_repeat_count += 1
+                                    continue
+
+                                # 输出上一条日志的重复统计（如果有）
+                                if last_key is not None and self._last_forward_log_repeat_count > 0:
+                                    self.logger.info(
+                                        "[MESSAGE FORWARD] (suppressed %d duplicate messages for Plugin: %s | Source: %s | Priority: %s | Description: %s)",
+                                        self._last_forward_log_repeat_count,
+                                        last_key[0],
+                                        last_key[1],
+                                        last_key[2],
+                                        last_key[3],
+                                    )
+
+                                # 切换到当前日志 key，重置计数
+                                self._last_forward_log_key = key
+                                self._last_forward_log_time = now_ts
+                                self._last_forward_log_repeat_count = 0
+
                             self.logger.info(
-                            f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
-                            f"Source: {msg.get('source', 'unknown')} | "
-                            f"Priority: {msg.get('priority', 0)} | "
-                            f"Description: {msg.get('description', '')} | "
-                            f"Content: {_format_log_text(msg.get('content', ''))}"
-                        )
+                                f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
+                                f"Source: {msg.get('source', 'unknown')} | "
+                                f"Priority: {msg.get('priority', 0)} | "
+                                f"Description: {msg.get('description', '')} | "
+                                f"Content: {log_content}"
+                            )
                 except asyncio.QueueFull:
                     self.logger.warning(
                         f"Main message queue is full, dropping message from plugin {self.plugin_id}"

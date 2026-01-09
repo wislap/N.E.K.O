@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from plugin.core.state import state
-from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIPTIONS
+from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIPTIONS, PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS
 
 logger = logging.getLogger("plugin.bus_subscriptions")
 
@@ -26,6 +26,9 @@ class BusSubscriptionManager:
         self._task: Optional[asyncio.Task] = None
         self._queue: asyncio.Queue[BusDelta] = asyncio.Queue(maxsize=1000)
         self._unsubs: list[Any] = []
+        self._last_log_key: Optional[tuple] = None
+        self._last_log_time: float = 0.0
+        self._last_log_repeat_count: int = 0
 
     async def start(self) -> None:
         if self._task is not None:
@@ -120,6 +123,32 @@ class BusSubscriptionManager:
                 continue
             if PLUGIN_LOG_BUS_SUBSCRIPTIONS:
                 try:
+                    window = PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS
+                    if window and window > 0:
+                        now_ts = time.monotonic()
+                        key = (plugin_id, sub_id, delta.bus, delta.op)
+                        last_key = self._last_log_key
+                        last_ts = self._last_log_time
+                        if last_key == key and last_ts > 0.0 and (now_ts - last_ts) <= window:
+                            # 窗口内重复日志，累加计数并跳过
+                            self._last_log_repeat_count += 1
+                            continue
+
+                        # 输出上一条日志的重复统计（如果有）
+                        if last_key is not None and self._last_log_repeat_count > 0:
+                            logger.info(
+                                "Pushed bus.change (suppressed %d duplicate entries for plugin=%s sub_id=%s bus=%s op=%s)",
+                                self._last_log_repeat_count,
+                                last_key[0],
+                                last_key[1],
+                                last_key[2],
+                                last_key[3],
+                            )
+
+                        self._last_log_key = key
+                        self._last_log_time = now_ts
+                        self._last_log_repeat_count = 0
+
                     logger.info(
                         "Pushed bus.change to plugin=%s sub_id=%s bus=%s op=%s",
                         plugin_id,

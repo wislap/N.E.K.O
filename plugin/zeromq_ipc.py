@@ -4,15 +4,39 @@ import asyncio
 import time
 import threading
 import queue
+import os
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import ormsgpack
 
-try:
-    import zmq
-    import zmq.asyncio
-except Exception:  # pragma: no cover
+
+_ENV_VAL = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED")
+if _ENV_VAL is None:
+    _ZMQ_ENABLED = True
+else:
+    _ZMQ_ENABLED = _ENV_VAL.lower() in ("true", "1", "yes", "on")
+
+if _ZMQ_ENABLED:
+    try:
+        import zmq
+        import zmq.asyncio
+    except Exception as e:  # pragma: no cover
+        zmq = None
+        zmq_asyncio = None
+
+        # ZeroMQ IPC is enabled but pyzmq is missing; emit an explicit error log
+        try:
+            logging.getLogger("plugin.zmq").error(
+                "ZeroMQ IPC is enabled (NEKO_PLUGIN_ZMQ_IPC_ENABLED) but pyzmq is not available: %s",
+                type(e).__name__,
+            )
+        except Exception:
+            # Logging failures must never break import path
+            pass
+else:
+    # Explicitly disabled; never attempt to import pyzmq
     zmq = None
     zmq_asyncio = None
 
