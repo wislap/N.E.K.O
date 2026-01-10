@@ -275,6 +275,13 @@ PLUGIN_ENABLE_DEPENDENCY_CHECK = os.getenv("PLUGIN_ENABLE_DEPENDENCY_CHECK", "fa
 PLUGIN_ENABLE_ID_CONFLICT_CHECK = os.getenv("PLUGIN_ENABLE_ID_CONFLICT_CHECK", "false").lower() in ("true", "1", "yes")
 
 
+# ========== 主进程 loguru 配置 ==========
+
+# 主进程 loguru 日志等级（仅影响主进程；插件子进程会各自配置 loguru）
+# Env: NEKO_LOGURU_LEVEL, default="INFO"
+NEKO_LOGURU_LEVEL = os.getenv("NEKO_LOGURU_LEVEL", "INFO")
+
+
 # ========== 配置验证 ==========
 
 def validate_config() -> None:

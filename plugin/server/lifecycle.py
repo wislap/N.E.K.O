@@ -24,6 +24,7 @@ from plugin.server.services import _enqueue_lifecycle, start_bus_ingestion_loop,
 from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
+    NEKO_LOGURU_LEVEL,
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_SHUTDOWN_TOTAL_TIMEOUT,
 )
@@ -42,6 +43,16 @@ async def startup() -> None:
     2. 启动插件的通信资源
     3. 启动状态消费任务
     """
+    # 统一主进程 loguru 日志等级：默认只输出 INFO 及以上，避免 debug 诊断日志刷屏。
+    # 注意：插件子进程会在各自进程内单独配置 loguru，本处只影响主进程。
+    try:
+        import sys
+
+        logger.remove()
+        logger.add(sys.stdout, level=NEKO_LOGURU_LEVEL)
+    except Exception:
+        pass
+
     # 确保插件响应映射在主进程中提前初始化，避免子进程各自创建新的 Manager 字典
     _ = state.plugin_response_map  # 预初始化共享响应映射
     
