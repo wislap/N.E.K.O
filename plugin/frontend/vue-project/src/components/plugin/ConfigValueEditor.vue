@@ -296,7 +296,7 @@ function restoreArrayIndex(idx: number) {
   const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
   if (idx >= 0 && idx < b.length) {
-    while (a.length < idx) a.push('')
+    while (a.length < idx) a.push(b[a.length])
     if (a.length === idx) a.push(b[idx])
     else a[idx] = b[idx]
     emitUpdate(a)

@@ -173,8 +173,59 @@ const selectedProfileName = ref<string | null>(null)
 const profileDraftConfig = ref<Record<string, any> | null>(null)
 const originalProfileConfig = ref<Record<string, any> | null>(null)
 
+function cloneDeep<T>(input: T, seen = new WeakMap<object, any>()): T {
+  if (input === null || typeof input !== 'object') return input
+
+  if (input instanceof Date) return new Date(input.getTime()) as any
+  if (input instanceof RegExp) return new RegExp(input.source, input.flags) as any
+
+  if (seen.has(input as any)) return seen.get(input as any)
+
+  if (Array.isArray(input)) {
+    const out: any[] = []
+    seen.set(input as any, out)
+    for (const item of input as any[]) out.push(cloneDeep(item, seen))
+    return out as any
+  }
+
+  if (input instanceof Map) {
+    const out = new Map()
+    seen.set(input as any, out)
+    for (const [k, v] of input.entries()) out.set(cloneDeep(k as any, seen), cloneDeep(v as any, seen))
+    return out as any
+  }
+
+  if (input instanceof Set) {
+    const out = new Set()
+    seen.set(input as any, out)
+    for (const v of input.values()) out.add(cloneDeep(v as any, seen))
+    return out as any
+  }
+
+  const proto = Object.getPrototypeOf(input)
+  const out = Object.create(proto)
+  seen.set(input as any, out)
+  for (const key of Reflect.ownKeys(input as any)) {
+    const desc = Object.getOwnPropertyDescriptor(input as any, key)
+    if (!desc) continue
+    if ('value' in desc) {
+      desc.value = cloneDeep((input as any)[key], seen)
+    }
+    Object.defineProperty(out, key, desc)
+  }
+  return out
+}
+
 function deepClone<T>(v: T): T {
-  return JSON.parse(JSON.stringify(v ?? null)) as T
+  const sc = (globalThis as any).structuredClone as undefined | ((x: any) => any)
+  if (typeof sc === 'function') {
+    try {
+      return sc(v) as T
+    } catch {
+      // fall through
+    }
+  }
+  return cloneDeep(v)
 }
 
 const profileNames = computed<string[]>(() => {
@@ -297,6 +348,7 @@ function applyProfileOverlay(base: any, overlay: any): any {
   if (!base) return deepClone(overlay)
   const result: any = deepClone(base)
   for (const [k, v] of Object.entries(overlay)) {
+    // Profile cannot modify the 'plugin' section; skip it — shown only in JSON preview
     if (k === 'plugin') continue
     const cur = (result as any)[k]
     if (
@@ -401,9 +453,9 @@ async function selectProfile(name: string) {
 
 async function addProfile() {
   try {
-    const { value } = await ElMessageBox.prompt('请输入新的 Profile 名称', '新增 Profile', {
+    const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
       inputPattern: /^\S+$/,
-      inputErrorMessage: '名称不能为空且不能包含空白字符'
+      inputErrorMessage: t('plugin.addProfile.inputError')
     })
     const name = String(value || '').trim()
     if (!name) return
@@ -422,7 +474,7 @@ async function addProfile() {
 
 async function removeProfile(name: string) {
   try {
-    await ElMessageBox.confirm(`确定要删除 Profile "${name}" 吗？`, '删除 Profile', {
+    await ElMessageBox.confirm(t('plugin.removeProfile.confirm', { name }), t('plugin.removeProfile.title'), {
       type: 'warning'
     })
     await deletePluginProfileConfig(props.pluginId, name)

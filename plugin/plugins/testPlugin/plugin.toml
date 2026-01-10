@@ -6,6 +6,9 @@ id = "testPlugin"
 entry = "plugins.testPlugin:HelloPlugin"
 
 [plugin.author]
+name = "Test Author"
+email = "test.author@example.com"
+url = "https://example.com"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
