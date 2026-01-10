@@ -150,6 +150,13 @@ const objectKeys = computed(() => {
   const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
   const keys = new Set<string>([...Object.keys(a || {}), ...Object.keys(b || {})])
+
+  // 在根节点编辑 profile 覆盖配置时，隐藏顶层的 plugin 段，避免在 diff 视图中被标记为“已删除”
+  // plugin 段仍通过上方 JSON 预览完整展示，并且 profile 不能修改 plugin
+  if (!props.path) {
+    keys.delete('plugin')
+  }
+
   return Array.from(keys).sort()
 })
 
@@ -205,7 +212,9 @@ function rowClassForKey(k: string) {
   const inA = k in (a as any)
   const inB = k in (b as any)
   if (inA && !inB) return 'diff-added'
-  if (!inA && inB) return 'diff-deleted'
+  // 对于只存在于基础配置、但未在当前覆盖中显式设置的字段，表示“继承基础配置”，
+  // 不应在 UI 上标记为已删除，因此不返回 diff-deleted 样式
+  if (!inA && inB) return ''
   if (inA && inB) {
     const av = (a as any)[k]
     const bv = (b as any)[k]

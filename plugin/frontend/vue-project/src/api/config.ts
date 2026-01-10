@@ -1,7 +1,7 @@
 /**
  * 配置管理相关 API
  */
-import { get, put, post } from './index'
+import { get, put, post, del } from './index'
 import type { PluginConfig } from '@/types/api'
 
 export interface PluginConfigToml {
@@ -9,6 +9,36 @@ export interface PluginConfigToml {
   toml: string
   last_modified: string
   config_path?: string
+}
+
+export interface PluginBaseConfig extends PluginConfig {}
+
+export interface PluginProfilesState {
+  plugin_id: string
+  profiles_path: string
+  profiles_exists: boolean
+  config_profiles: null | {
+    active: string | null
+    files: Record<
+      string,
+      {
+        path: string
+        resolved_path: string | null
+        exists: boolean
+      }
+    >
+  }
+}
+
+export interface PluginProfileConfig {
+  plugin_id: string
+  profile: {
+    name: string
+    path: string
+    resolved_path: string | null
+    exists: boolean
+  }
+  config: Record<string, any>
 }
 
 /**
@@ -23,6 +53,13 @@ export function getPluginConfig(pluginId: string): Promise<PluginConfig> {
  */
 export function getPluginConfigToml(pluginId: string): Promise<PluginConfigToml> {
   return get(`/plugin/${pluginId}/config/toml`)
+}
+
+/**
+ * 获取插件基础配置（直接来自 plugin.toml，不包含 profile 叠加）
+ */
+export function getPluginBaseConfig(pluginId: string): Promise<PluginBaseConfig> {
+  return get(`/plugin/${pluginId}/config/base`)
 }
 
 /**
@@ -81,5 +118,61 @@ export function renderPluginConfigToml(
   toml: string
 }> {
   return post(`/plugin/${pluginId}/config/render_toml`, { config })
+}
+
+/**
+ * 获取 profile 配置总体状态
+ */
+export function getPluginProfilesState(pluginId: string): Promise<PluginProfilesState> {
+  return get(`/plugin/${pluginId}/config/profiles`)
+}
+
+/**
+ * 获取单个 profile 的配置
+ */
+export function getPluginProfileConfig(
+  pluginId: string,
+  profileName: string
+): Promise<PluginProfileConfig> {
+  return get(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`)
+}
+
+/**
+ * 创建或更新 profile 配置
+ */
+export function upsertPluginProfileConfig(
+  pluginId: string,
+  profileName: string,
+  config: Record<string, any>,
+  makeActive?: boolean
+): Promise<PluginProfileConfig> {
+  return put(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`, {
+    config,
+    make_active: makeActive
+  })
+}
+
+/**
+ * 删除 profile 配置映射
+ */
+export function deletePluginProfileConfig(
+  pluginId: string,
+  profileName: string
+): Promise<{
+  plugin_id: string
+  profile: string
+  removed: boolean
+}> {
+  return del(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}`)
+}
+
+/**
+ * 设置当前激活的 profile
+ */
+export function setPluginActiveProfile(
+  pluginId: string,
+  profileName: string
+): Promise<PluginProfilesState> {
+  return post(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}/activate`, {})
 }
 
