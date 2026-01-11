@@ -221,7 +221,7 @@ class ZmqIpcServer:
                     self._last_log_ts = float(now_ts)
                     import logging
 
-                    logging.getLogger("plugin.router").warning(
+                    logging.getLogger("plugin.router").debug(
                         "[ZeroMQ IPC] recv=%d last_type=%s from=%s",
                         int(self._recv_count),
                         str(request.get("type")),
@@ -410,7 +410,7 @@ class ZmqMessagePushPullConsumer:
                     self._last_log_ts = float(now_ts)
                     import logging
 
-                    logging.getLogger("plugin.router").warning(
+                    logging.getLogger("plugin.router").debug(
                         "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
                         int(self._recv_count),
                         str(msg.get("type")),

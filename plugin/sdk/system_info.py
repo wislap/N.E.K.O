@@ -18,6 +18,19 @@ class SystemInfo:
             return {"result": result}
         return result
 
+    def get_server_settings(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return a flat dict of plugin server settings.
+
+        This is a convenience wrapper around ``ctx.get_system_config`` that
+        extracts the ``config`` field from the IPC response.
+        """
+
+        result = self.get_system_config(timeout=timeout)
+        if "data" in result and isinstance(result.get("data"), dict):
+            result = result["data"]
+        cfg = result.get("config") if isinstance(result, dict) else None
+        return cfg if isinstance(cfg, dict) else {}
+
     def get_python_env(self) -> Dict[str, Any]:
         impl = platform.python_implementation()
 

@@ -137,7 +137,7 @@ class WebInterfacePlugin(NekoPluginBase):
                     "port": self.port,
                     "status": "started"
                 },
-                fast_mode=True,
+                fast_mode=False,
             )
             
             self.logger.info(f"Web server started at http://{self.host}:{self.port}")

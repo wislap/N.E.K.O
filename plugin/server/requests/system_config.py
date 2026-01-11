@@ -37,16 +37,16 @@ async def handle_plugin_system_config_get(request: Dict[str, Any], send_response
         }
 
         keys = getattr(settings, "__all__", None)
-        if isinstance(keys, (list, tuple)):
-            for k in keys:
-                if not isinstance(k, str):
-                    continue
-                try:
-                    payload["config"][k] = _jsonify_value(getattr(settings, k))
-                except Exception:
-                    continue
-        else:
-            payload["config"] = {}
+        if not isinstance(keys, (list, tuple)):
+            keys = [k for k in dir(settings) if isinstance(k, str) and k.isupper()]
+
+        for k in keys:
+            if not isinstance(k, str):
+                continue
+            try:
+                payload["config"][k] = _jsonify_value(getattr(settings, k))
+            except Exception:
+                continue
 
         send_response(from_plugin, request_id, payload, None, timeout=timeout)
     except Exception as e:
