@@ -77,15 +77,18 @@ class WebInterfacePlugin(NekoPluginBase):
                     try:
                         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         s.bind((self.host, p))
-                        return p
                     except OSError:
                         continue
+                    else:
+                        return p
                     finally:
                         try:
                             s.close()
                         except OSError:
                             pass
-                return start_port
+                raise RuntimeError(
+                    f"无法在 {start_port} 到 {start_port + max_tries - 1} 范围内找到可用端口"
+                )
 
             selected_port = _find_available_port(self.port)
             if selected_port != self.port:
@@ -125,7 +128,6 @@ class WebInterfacePlugin(NekoPluginBase):
                 "url": f"http://{self.host}:{self.port}"
             })
             
-            # 推送消息（使用 fast_mode=True 经过 ZeroMQ PUSH/PULL 批量通道，避免同步等待响应）
             self.ctx.push_message(
                 source="web_interface",
                 message_type="url",

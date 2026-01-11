@@ -124,6 +124,8 @@ export default {
     fieldName: 'Field Name',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',
+    profiles: 'Profiles',
+    active: 'Active',
     diffPreview: 'Diff Preview'
   },
   metrics: {

@@ -40,7 +40,7 @@
     <div v-else class="config-layout">
       <div class="profiles-pane">
         <div class="profiles-header">
-          <span class="profiles-title">Profiles</span>
+          <span class="profiles-title">{{ t('plugins.profiles') }}</span>
           <el-button type="primary" size="small" :icon="Plus" @click="addProfile">
             {{ t('common.add') }}
           </el-button>
@@ -63,7 +63,7 @@
               type="success"
               style="margin-left: 6px"
             >
-              active
+              {{ t('plugins.active') }}
             </el-tag>
             <el-button
               type="danger"
@@ -706,82 +706,5 @@ watch(
 
 .diff-row.diff-modified {
   background: rgba(56, 139, 253, 0.16);
-}
-
-.source-editor {
-  display: flex;
-  width: 100%;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--el-fill-color-lighter);
-}
-
-.gutter {
-  flex: 0 0 56px;
-  padding: 10px 0;
-  border-right: 1px solid var(--el-border-color-lighter);
-  background: rgba(0, 0, 0, 0.02);
-  overflow: hidden;
-}
-
-.gutter-line {
-  height: 20px;
-  line-height: 20px;
-  padding: 0 10px;
-  font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
-  font-size: 12px;
-  text-align: right;
-  color: var(--el-text-color-secondary);
-  user-select: none;
-  white-space: nowrap;
-}
-
-.gutter-line.mark-add {
-  background: rgba(46, 160, 67, 0.14);
-}
-
-.gutter-line.mark-mod {
-  background: rgba(210, 153, 34, 0.16);
-}
-
-.gutter-line.mark-del {
-  background: rgba(248, 81, 73, 0.12);
-}
-
-.gutter-line.mark-err {
-  background: rgba(248, 81, 73, 0.22);
-  box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.35);
-}
-
-.source-textarea {
-  flex: 1 1 auto;
-  border: none;
-  outline: none;
-  resize: vertical;
-  padding: 10px 12px;
-  margin: 0;
-  font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
-  font-size: 13px;
-  line-height: 20px;
-  background: transparent;
-  color: var(--el-text-color-primary);
-  width: 100%;
-  min-height: 280px;
-  overflow: auto;
-}
-
-.diff-title {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-bottom: 6px;
-}
-
-.diff-body .add {
-  background: rgba(46, 160, 67, 0.14);
-}
-
-.diff-body .del {
-  background: rgba(248, 81, 73, 0.12);
 }
 </style>
