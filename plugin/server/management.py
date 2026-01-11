@@ -112,19 +112,29 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     
     # 检测并解决插件 ID 冲突
     from plugin.runtime.registry import _resolve_plugin_id_conflict
+    from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
+
     original_plugin_id = plugin_id
-    plugin_id = _resolve_plugin_id_conflict(
+    resolved_pid = _resolve_plugin_id_conflict(
         plugin_id,
         logger,
         config_path=config_path,
         entry_point=entry,
-        plugin_data=pdata
+        plugin_data=pdata,
+        purpose="load",
+        enable_rename=bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK),
     )
+    if resolved_pid is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Plugin '{plugin_id}' is already loaded (duplicate detected)",
+        )
+    plugin_id = resolved_pid
     if plugin_id != original_plugin_id:
         logger.debug(
             "Plugin ID changed from '{}' to '{}' due to conflict (detailed warning logged above)",
             original_plugin_id,
-            plugin_id
+            plugin_id,
         )
     
     # 创建并启动插件进程

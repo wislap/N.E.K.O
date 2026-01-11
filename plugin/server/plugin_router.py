@@ -69,7 +69,7 @@ class PluginRouter:
                     request_handler=self._handle_zmq_request,
                 )
                 self._zmq_task = asyncio.create_task(self._zmq_server.serve_forever(shutdown_event))
-                logger.warning("ZeroMQ IPC server started at {}", PLUGIN_ZMQ_IPC_ENDPOINT)
+                logger.info("ZeroMQ IPC server started at {}", PLUGIN_ZMQ_IPC_ENDPOINT)
             except Exception as e:
                 self._zmq_server = None
                 self._zmq_task = None
@@ -185,7 +185,7 @@ class PluginRouter:
 
                 self._push_pull_server = ZmqMessagePushPullConsumer(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, _handle_push_batch)
                 self._push_pull_task = asyncio.create_task(self._push_pull_server.serve_forever(shutdown_event))
-                logger.warning("ZeroMQ PUSH server started at {}", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
+                logger.info("ZeroMQ PUSH server started at {}", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
             except Exception as e:
                 self._push_pull_server = None
                 self._push_pull_task = None

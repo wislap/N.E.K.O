@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Callable, Type, Optional
+from typing import Any, Dict, List, Callable, Type, Optional, cast
 
 from loguru import logger as loguru_logger
 
@@ -53,7 +53,7 @@ class SimpleEntryMeta:
 plugin_entry_method_map: Dict[tuple, str] = {}
 
 
-def _parse_specifier(spec: Optional[str], logger: logging.Logger) -> Optional[SpecifierSet]:
+def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
     if not spec or SpecifierSet is None:
         return None
     try:
@@ -63,7 +63,7 @@ def _parse_specifier(spec: Optional[str], logger: logging.Logger) -> Optional[Sp
         return None
 
 
-def _version_matches(spec: Optional[SpecifierSet], version: Version) -> bool:
+def _version_matches(spec: Optional[Any], version: Any) -> bool:
     if spec is None:
         return False
     try:
@@ -611,7 +611,10 @@ def _resolve_plugin_id_conflict(
     logger: Any,  # loguru.Logger or logging.Logger
     config_path: Optional[Path] = None,
     entry_point: Optional[str] = None,
-    plugin_data: Optional[Dict[str, Any]] = None
+    plugin_data: Optional[Dict[str, Any]] = None,
+    *,
+    purpose: str = "load",
+    enable_rename: Optional[bool] = None,
 ) -> Optional[str]:
     """
     检测并解决插件 ID 冲突
@@ -630,263 +633,99 @@ def _resolve_plugin_id_conflict(
     Returns:
         解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
-    def _is_id_taken(pid: str) -> bool:
-        """检查 ID 是否已被占用"""
-        with state.plugins_lock:
-            if pid in state.plugins:
-                return True
-        with state.plugin_hosts_lock:
-            if pid in state.plugin_hosts:
-                return True
-        return False
-    
-    # 检查ID是否被占用
-    is_taken = _is_id_taken(plugin_id)
-    if not is_taken:
-        return plugin_id
-    
-    # ID已被占用，记录详细信息用于调试
+    from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
+
+    if enable_rename is None:
+        enable_rename = bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK)
+
+    purpose_norm = str(purpose).strip().lower() if isinstance(purpose, str) else "load"
+    if purpose_norm not in ("load", "register"):
+        purpose_norm = "load"
+
+    cur_path: Optional[Path] = None
+    if config_path is not None:
+        try:
+            cur_path = Path(config_path).resolve()
+        except (OSError, RuntimeError):
+            cur_path = Path(config_path)
+
     with state.plugins_lock:
-        in_plugins = plugin_id in state.plugins
+        plugins_snapshot = dict(state.plugins)
     with state.plugin_hosts_lock:
-        in_hosts = plugin_id in state.plugin_hosts
-    logger.info(
-        "Plugin ID '{}' conflict detected: in_plugins={}, in_hosts={}, current_config_path={}",
-        plugin_id, in_plugins, in_hosts, config_path
-    )
-    
-    # 首先检查路径是否相同（最可靠的判断方式）
-    existing_info = _get_existing_plugin_info(plugin_id)
-    logger.info(
-        "Existing plugin info for '{}': has_config_path={}, has_entry_point={}, has_plugin_meta={}, config_path={}",
-        plugin_id,
-        existing_info.get("config_path") is not None if existing_info else False,
-        existing_info.get("entry_point") is not None if existing_info else False,
-        existing_info.get("plugin_meta") is not None if existing_info else False,
-        str(existing_info.get("config_path")) if existing_info and existing_info.get("config_path") else None,
-    )
-    
-    if existing_info and config_path:
-        existing_config_path = existing_info.get("config_path")
-        if existing_config_path:
+        hosts_snapshot = dict(state.plugin_hosts)
+
+    def _resolve_existing_path(v: Any) -> Optional[Path]:
+        if v is None:
+            return None
+        try:
+            return Path(v).resolve()
+        except (OSError, RuntimeError, TypeError, ValueError):
             try:
-                # 规范化路径进行比较
-                existing_resolved = Path(existing_config_path).resolve()
-                current_resolved = Path(config_path).resolve()
-                logger.info(
-                    "Comparing paths for plugin_id={}: existing='{}', current='{}', match={}",
-                    plugin_id, existing_resolved, current_resolved, existing_resolved == current_resolved
-                )
-                if existing_resolved == current_resolved:
-                    # 路径相同，但需要检查是否是同一个插件（避免自检测）
-                    existing_entry_point = existing_info.get("entry_point")
-                    
-                    # 检查插件是否只在 plugin_hosts 中（不在 plugins 中）
-                    # 注意：按统一顺序获取锁以避免死锁（先 plugins_lock，后 plugin_hosts_lock）
-                    with state.plugins_lock:
-                        not_in_plugins = plugin_id not in state.plugins
-                        with state.plugin_hosts_lock:
-                            in_hosts = plugin_id in state.plugin_hosts
-                    
-                    # 如果插件在 plugin_hosts 中但不在 plugins 中，且 config_path 相同
-                    # 这很可能是自检测的情况（register_plugin 检测到刚注册的插件）
-                    if in_hosts and not_in_plugins:
-                        logger.debug(
-                            "Plugin '{}' detected in plugin_hosts but not in plugins with same config path '{}'. "
-                            "This is likely self-detection during registration. Allowing to continue.",
-                            plugin_id, current_resolved
-                        )
-                        # 返回原始ID，允许继续注册
-                        return plugin_id
-                    
-                    # 如果 existing_entry_point 与当前 entry_point 相同，说明是同一个插件
-                    # 无论插件在 plugins 还是 plugin_hosts 中，都应该允许继续
-                    if entry_point and existing_entry_point and existing_entry_point == entry_point:
-                        # 这是同一个插件，不是重复加载
-                        logger.debug(
-                            "Plugin '{}' with same config path and entry point detected, but this is the same plugin (not a duplicate)",
-                            plugin_id
-                        )
-                        # 返回原始ID，允许继续
-                        return plugin_id
-                    
-                    # 如果 existing_entry_point 缺失，需要根据插件的位置判断
-                    if existing_entry_point is None:
-                        # 如果插件已经在 plugins 中，且 config_path 相同
-                        # 这应该是同一个插件的重复注册，应该允许继续（返回原始ID）
-                        if not not_in_plugins:
-                            logger.debug(
-                                "Plugin '{}' already exists in plugins registry with same config path '{}', "
-                                "but existing entry_point is missing. "
-                                "This is likely the same plugin being re-registered. Allowing to continue.",
-                                plugin_id, current_resolved
-                            )
-                            return plugin_id
-                        # 如果只在 plugin_hosts 中，允许继续（自检测）
-                        else:
-                            logger.debug(
-                                "Plugin '{}' in plugin_hosts with same config path but missing entry_point. "
-                                "Treating as self-detection, allowing to continue.",
-                                plugin_id
-                            )
-                            return plugin_id
-                    
-                    # 如果当前 entry_point 缺失，但 existing 有 entry_point
-                    if not entry_point and existing_entry_point:
-                        # 如果插件在 plugin_hosts 中但不在 plugins 中，允许继续（自检测）
-                        if in_hosts and not_in_plugins:
-                            logger.debug(
-                                "Plugin '{}' in plugin_hosts with same config path, current entry_point missing but existing has '{}'. "
-                                "Treating as self-detection, allowing to continue.",
-                                plugin_id, existing_entry_point
-                            )
-                            return plugin_id
-                        # 如果插件已经在 plugins 中，可能是信息不完整，允许继续
-                        else:
-                            logger.debug(
-                                "Plugin '{}' already exists in plugins with same config path, current entry_point missing but existing has '{}'. "
-                                "Allowing to continue.",
-                                plugin_id, existing_entry_point
-                            )
-                            return plugin_id
-                    
-                    # 路径相同但 entry_point 不同，说明是真正的重复加载
-                    logger.warning(
-                        "Plugin ID conflict detected: '{}' already exists with same config path '{}' but different entry_point. "
-                        "Existing entry_point: '{}', Current entry_point: '{}'. "
-                        "This appears to be a duplicate load of the same plugin. "
-                        "Skipping duplicate load.",
-                        plugin_id, current_resolved, existing_entry_point, entry_point
-                    )
-                    # 返回 None 作为特殊标记，表示这是重复加载，应该跳过
+                return Path(v)
+            except Exception:
+                return None
+
+    def _get_id_ref(pid: str) -> tuple[Optional[Path], Optional[str]]:
+        host = hosts_snapshot.get(pid)
+        if host is not None:
+            hp = _resolve_existing_path(getattr(host, "config_path", None))
+            he = getattr(host, "entry_point", None)
+            return hp, str(he) if isinstance(he, str) and he else None
+        meta = plugins_snapshot.get(pid)
+        if isinstance(meta, dict):
+            mp = _resolve_existing_path(meta.get("config_path"))
+            me = meta.get("entry_point")
+            return mp, str(me) if isinstance(me, str) and me else None
+        return None, None
+
+    def _find_id_by_path(p: Path) -> Optional[str]:
+        for pid, host in hosts_snapshot.items():
+            hp = _resolve_existing_path(getattr(host, "config_path", None))
+            if hp is not None and hp == p:
+                return str(pid)
+        for pid, meta in plugins_snapshot.items():
+            if not isinstance(meta, dict):
+                continue
+            mp = _resolve_existing_path(meta.get("config_path"))
+            if mp is not None and mp == p:
+                return str(pid)
+        return None
+
+    if cur_path is not None:
+        existing_by_path = _find_id_by_path(cur_path)
+        if isinstance(existing_by_path, str) and existing_by_path:
+            if existing_by_path == str(plugin_id):
+                if purpose_norm == "load" and str(plugin_id) in hosts_snapshot:
                     return None
-                else:
-                    logger.warning(
-                        "Paths are different for plugin_id={}: existing='{}' vs current='{}'",
-                        plugin_id, existing_resolved, current_resolved
-                    )
-            except (OSError, RuntimeError) as e:
-                logger.warning("Failed to resolve paths for comparison: {}", e)
-        else:
-            logger.warning(
-                "Existing plugin '{}' has no config_path, cannot compare paths. existing_info={}",
-                plugin_id, existing_info
-            )
-    
-    # 计算当前插件的哈希值
-    current_hash = _calculate_plugin_hash(config_path, entry_point, plugin_data)
-    
-    # 调试：记录当前插件的哈希计算数据
-    logger.debug(
-        "Current plugin hash calculation - plugin_id={}, config_path={}, entry_point={}, plugin_data={}",
-        plugin_id, config_path, entry_point, plugin_data
-    )
-    
-    existing_hash = None
-    if existing_info:
-        existing_config_path = existing_info.get("config_path")
-        existing_entry_point = existing_info.get("entry_point")
-        existing_plugin_meta = existing_info.get("plugin_meta")
-        
-        # 规范化路径（如果存在）
-        if existing_config_path and isinstance(existing_config_path, Path):
-            try:
-                existing_config_path = existing_config_path.resolve()
-            except (OSError, RuntimeError):
-                pass  # 如果解析失败，使用原始路径
-        
-        # 构建已存在插件的 plugin_data（用于哈希计算，格式与当前插件一致）
-        existing_plugin_data = None
-        if existing_plugin_meta:
-            # 从 PluginMeta 对象或字典中提取数据
-            if isinstance(existing_plugin_meta, dict):
-                # 如果是字典（model_dump()的结果）
-                existing_plugin_data = {
-                    "id": existing_plugin_meta.get("id"),
-                    "name": existing_plugin_meta.get("name"),
-                    "version": existing_plugin_meta.get("version"),
-                    "entry": existing_entry_point or "",
-                }
-            else:
-                # 如果是 PluginMeta 对象
-                existing_plugin_data = {
-                    "id": getattr(existing_plugin_meta, 'id', None),
-                    "name": getattr(existing_plugin_meta, 'name', None),
-                    "version": getattr(existing_plugin_meta, 'version', None),
-                    "entry": existing_entry_point or "",
-                }
-        elif existing_entry_point:
-            # 如果没有 plugin_meta，至少使用 entry_point
-            existing_plugin_data = {
-                "entry": existing_entry_point,
-            }
-        
-        # 调试：记录已存在插件的哈希计算数据
-        logger.debug(
-            "Existing plugin hash calculation - plugin_id=%s, config_path=%s, entry_point=%s, plugin_data=%s",
-            plugin_id, existing_config_path, existing_entry_point, existing_plugin_data
-        )
-        
-        existing_hash = _calculate_plugin_hash(
-            existing_config_path,
-            existing_entry_point,
-            existing_plugin_data
-        )
-        
-        # 调试：详细比较
-        logger.debug(
-            "Hash comparison for plugin_id=%s: existing_hash=%s, current_hash=%s, match=%s",
-            plugin_id, existing_hash, current_hash, existing_hash == current_hash
-        )
-    
-    # ID 冲突，生成新的唯一 ID
+                return str(plugin_id)
+            return None
+
+    desired = str(plugin_id)
+    if desired not in plugins_snapshot and desired not in hosts_snapshot:
+        return desired
+
+    existing_path, existing_entry = _get_id_ref(desired)
+    if cur_path is not None and existing_path is not None and cur_path == existing_path:
+        if purpose_norm == "load" and desired in hosts_snapshot:
+            return None
+        return desired
+
+    if purpose_norm == "register" and desired in hosts_snapshot and desired not in plugins_snapshot:
+        return desired
+
+    if not bool(enable_rename):
+        return desired
+
     counter = 1
-    new_id = f"{plugin_id}_{counter}"
-    while _is_id_taken(new_id):
+    new_id = f"{desired}_{counter}"
+    while new_id in plugins_snapshot or new_id in hosts_snapshot:
         counter += 1
-        new_id = f"{plugin_id}_{counter}"
-    
-    # 根据哈希值是否相同，记录不同详细程度的日志
-    if existing_hash and current_hash == existing_hash:
-        # 哈希值相同，说明是同一个插件的重复加载
-        logger.warning(
-            "Plugin ID conflict detected: '{}' already exists with identical content (hash: {}). "
-            "This appears to be a duplicate load of the same plugin. "
-            "Renaming to '{}' to avoid conflict. "
-            "Please check if the plugin is being loaded multiple times from different locations.",
-            plugin_id,
-            current_hash,
-            new_id
-        )
-        if config_path and existing_info and existing_info.get("config_path"):
-            logger.warning(
-                "Duplicate plugin locations: existing='{}', current='{}'",
-                existing_info.get("config_path"),
-                config_path
-            )
-    else:
-        # 哈希值不同，说明是不同的插件使用了相同的 ID，或者信息不完整导致哈希不同
-        # 记录详细信息以便调试
-        logger.warning(
-            "Plugin ID conflict detected: '{}' already exists with different content. "
-            "This is a different plugin using the same ID, or the same plugin with incomplete information. "
-            "Renaming to '{}' to avoid conflict. "
-            "Please update the plugin configuration to use a unique ID.",
-            plugin_id,
-            new_id
-        )
-        if existing_hash and current_hash:
-            logger.warning(
-                "Content hash comparison: existing='{}', current='{}'",
-                existing_hash,
-                current_hash
-            )
-            # 记录详细信息以便调试
-            logger.debug(
-                "Conflict details for plugin_id={}: existing_info={}, current_config_path={}, current_entry_point={}, current_plugin_data={}",
-                plugin_id, existing_info, config_path, entry_point, plugin_data
-            )
-    
+        new_id = f"{desired}_{counter}"
+    logger.warning(
+        "Plugin ID conflict detected: '{}' is already taken by a different plugin. Renaming to '{}'",
+        desired,
+        new_id,
+    )
     return new_id
 
 
@@ -919,13 +758,17 @@ def register_plugin(
         "entry": entry_point or "",
     }
     
+    from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
+
     # 检测并解决 ID 冲突
     resolved_id = _resolve_plugin_id_conflict(
         plugin.id,
         logger,
         config_path=config_path,
         entry_point=entry_point,
-        plugin_data=plugin_data
+        plugin_data=plugin_data,
+        purpose="register",
+        enable_rename=bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK),
     )
     
     # 如果返回 None，说明是重复加载，不应该注册
@@ -1010,7 +853,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 description=ent.get("description", "") if isinstance(ent, dict) else "",
                 input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
             )
-            eh = EventHandler(meta=entry_meta, handler=handler_fn)
+            eh = EventHandler(meta=cast(Any, entry_meta), handler=handler_fn)
             with state.event_handlers_lock:
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
@@ -1408,71 +1251,32 @@ def load_plugins_from_toml(
         
         original_pid = pid
         
-        # ID 冲突检查（可通过配置禁用）
         from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
-        
-        if PLUGIN_ENABLE_ID_CONFLICT_CHECK:
-            # 在调用 _resolve_plugin_id_conflict 之前，检查插件是否已经在 plugin_hosts 中
-            # 如果已经在 plugin_hosts 中，说明这是重复加载，应该跳过
-            with state.plugin_hosts_lock:
-                if pid in state.plugin_hosts:
-                    existing_host = state.plugin_hosts[pid]
-                    existing_config = getattr(existing_host, 'config_path', None)
-                    if existing_config:
-                        try:
-                            if Path(existing_config).resolve() == toml_path.resolve():
-                                logger.info(
-                                    "Plugin {} from {} is already loaded in plugin_hosts (same config path), skipping duplicate load",
-                                    pid, toml_path
-                                )
-                                continue
-                        except (OSError, RuntimeError):
-                            pass
-            
-            resolved_pid = _resolve_plugin_id_conflict(
-                pid,
-                logger,
-                config_path=toml_path,
-                entry_point=entry,
-                plugin_data=plugin_data_for_hash
+
+        resolved_pid = _resolve_plugin_id_conflict(
+            pid,
+            logger,
+            config_path=toml_path,
+            entry_point=entry,
+            plugin_data=plugin_data_for_hash,
+            purpose="load",
+            enable_rename=bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK),
+        )
+
+        if resolved_pid is None:
+            logger.info(
+                "Plugin {} from {} is already loaded (duplicate detected), skipping",
+                original_pid,
+                toml_path,
             )
-            
-            # 如果返回 None，说明检测到重复加载（路径相同），应该跳过
-            if resolved_pid is None:
-                logger.info(
-                    "Plugin {} from {} is already loaded (duplicate detected in conflict resolution), skipping duplicate load",
-                    original_pid, toml_path
-                )
-                continue
-        
-            # 如果返回的ID与原始ID相同，需要检查是否是重复加载
-            if resolved_pid == original_pid:
-                # 检查ID是否已被占用
-                def _check_id_taken(pid: str) -> bool:
-                    with state.plugins_lock:
-                        if pid in state.plugins:
-                            return True
-                    with state.plugin_hosts_lock:
-                        if pid in state.plugin_hosts:
-                            return True
-                    return False
-                
-                is_still_taken = _check_id_taken(original_pid)
-                if is_still_taken:
-                    # ID已被占用，说明是重复加载，跳过
-                    logger.info(
-                        "Plugin {} from {} is already loaded (ID already taken), skipping duplicate load",
-                        original_pid, toml_path
-                    )
-                    continue
-                # 如果ID未被占用，说明这是第一次加载，继续处理
-            
-            pid = resolved_pid
-            if pid != original_pid:
-                logger.warning(
-                    "Plugin {} from {}: ID changed from '{}' to '{}' due to conflict",
-                    original_pid, toml_path, pid
-                )
+            continue
+
+        pid = resolved_pid
+        if pid != original_pid:
+            logger.warning(
+                "Plugin {} from {}: ID changed from '{}' to '{}' due to conflict",
+                original_pid, toml_path, original_pid, pid
+            )
 
         # 在创建 host 之前，先检查插件是否已注册
         # 如果已注册，检查是否已有运行的 host
