@@ -666,6 +666,75 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
+    def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        try:
+            return self._send_request_and_wait(
+                method_name="get_own_base_config",
+                request_type="PLUGIN_CONFIG_BASE_GET",
+                request_data={"plugin_id": self.plugin_id},
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
+
+    def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
+        try:
+            return self._send_request_and_wait(
+                method_name="get_own_profiles_state",
+                request_type="PLUGIN_CONFIG_PROFILES_GET",
+                request_data={"plugin_id": self.plugin_id},
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin profiles state get timed out after {timeout}s") from e
+
+    def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        try:
+            return self._send_request_and_wait(
+                method_name="get_own_profile_config",
+                request_type="PLUGIN_CONFIG_PROFILE_GET",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "profile_name": profile_name.strip(),
+                },
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin profile config get timed out after {timeout}s") from e
+
+    def get_own_effective_config(self, profile_name: Optional[str] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        """Get effective config.
+
+        - profile_name is None: returns active profile overlay (same as get_own_config).
+        - profile_name is a string: returns base overlaid by that profile name.
+        """
+
+        request_data: Dict[str, Any] = {"plugin_id": self.plugin_id}
+        if profile_name is not None:
+            if not isinstance(profile_name, str) or not profile_name.strip():
+                raise ValueError("profile_name must be a non-empty string")
+            request_data["profile_name"] = profile_name.strip()
+
+        try:
+            return self._send_request_and_wait(
+                method_name="get_own_effective_config",
+                request_type="PLUGIN_CONFIG_EFFECTIVE_GET",
+                request_data=request_data,
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin effective config get timed out after {timeout}s") from e
+
     def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
             return self._send_request_and_wait(

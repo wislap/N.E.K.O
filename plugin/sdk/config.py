@@ -89,6 +89,73 @@ class PluginConfig:
             raise PluginConfigError(f"Failed to read config: {e}", operation="dump") from e
         return self._unwrap(cfg, operation="dump")
 
+    def dump_base(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return base config (plugin.toml without profile overlay)."""
+
+        if not hasattr(self.ctx, "get_own_base_config"):
+            raise PluginConfigError("ctx.get_own_base_config is not available", operation="dump_base")
+        try:
+            res = self.ctx.get_own_base_config(timeout=timeout)
+        except Exception as e:
+            raise PluginConfigError(f"Failed to read base config: {e}", operation="dump_base") from e
+        return self._unwrap(res, operation="dump_base")
+
+    def get_profiles_state(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return profiles.toml state (active + files mapping)."""
+
+        if not hasattr(self.ctx, "get_own_profiles_state"):
+            raise PluginConfigError("ctx.get_own_profiles_state is not available", operation="get_profiles_state")
+        try:
+            res = self.ctx.get_own_profiles_state(timeout=timeout)
+        except Exception as e:
+            raise PluginConfigError(f"Failed to read profiles state: {e}", operation="get_profiles_state") from e
+        if not isinstance(res, dict):
+            raise PluginConfigError(f"Invalid profiles state type: {type(res)}", operation="get_profiles_state")
+        if "data" in res and isinstance(res.get("data"), dict):
+            res = res["data"]
+        return res
+
+    def get_profile(self, profile_name: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return a single profile overlay config."""
+
+        if not hasattr(self.ctx, "get_own_profile_config"):
+            raise PluginConfigError("ctx.get_own_profile_config is not available", operation="get_profile")
+        try:
+            res = self.ctx.get_own_profile_config(profile_name, timeout=timeout)
+        except Exception as e:
+            raise PluginConfigError(f"Failed to read profile '{profile_name}': {e}", operation="get_profile") from e
+        if not isinstance(res, dict):
+            raise PluginConfigError(f"Invalid profile response type: {type(res)}", operation="get_profile")
+        if "data" in res and isinstance(res.get("data"), dict):
+            res = res["data"]
+        cfg = res.get("config")
+        if cfg is None:
+            return {}
+        if not isinstance(cfg, dict):
+            raise PluginConfigError(f"Invalid profile config type: {type(cfg)}", operation="get_profile")
+        return cfg
+
+    def dump_effective(self, profile_name: Optional[str] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """Return effective config.
+
+        - profile_name is None: same as dump() (active profile + env override).
+        - profile_name is a string: base + that profile overlay.
+        """
+
+        if profile_name is None:
+            return self.dump(timeout=timeout)
+
+        if not hasattr(self.ctx, "get_own_effective_config"):
+            raise PluginConfigError("ctx.get_own_effective_config is not available", operation="dump_effective")
+        try:
+            res = self.ctx.get_own_effective_config(profile_name, timeout=timeout)
+        except Exception as e:
+            raise PluginConfigError(
+                f"Failed to read effective config for profile '{profile_name}': {e}",
+                operation="dump_effective",
+            ) from e
+        return self._unwrap(res, operation="dump_effective")
+
     def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
         cfg = self.dump(timeout=timeout)
         try:
