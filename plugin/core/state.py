@@ -250,7 +250,23 @@ class PluginRuntimeState:
             self._message_store.append(record)
         try:
             rev = self._bump_bus_rev("messages")
-            self.bus_change_hub.emit("messages", "add", {"record": dict(record), "rev": rev})
+            payload: Dict[str, Any] = {"rev": rev}
+            if isinstance(mid, str) and mid:
+                payload["message_id"] = mid
+            try:
+                payload["priority"] = int(record.get("priority", 0))
+            except Exception:
+                payload["priority"] = 0
+            try:
+                src = record.get("source")
+                if isinstance(src, str) and src:
+                    payload["source"] = src
+            except Exception:
+                pass
+            # Optional visibility/export hint (future use)
+            if "export" in record:
+                payload["export"] = record.get("export")
+            self.bus_change_hub.emit("messages", "add", payload)
         except Exception:
             pass
 
@@ -273,7 +289,23 @@ class PluginRuntimeState:
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
-                self.bus_change_hub.emit("messages", "add", {"record": dict(rec), "rev": rev})
+                mid = rec.get("message_id")
+                payload: Dict[str, Any] = {"rev": rev}
+                if isinstance(mid, str) and mid:
+                    payload["message_id"] = mid
+                try:
+                    payload["priority"] = int(rec.get("priority", 0))
+                except Exception:
+                    payload["priority"] = 0
+                try:
+                    src = rec.get("source")
+                    if isinstance(src, str) and src:
+                        payload["source"] = src
+                except Exception:
+                    pass
+                if "export" in rec:
+                    payload["export"] = rec.get("export")
+                self.bus_change_hub.emit("messages", "add", payload)
             except Exception:
                 pass
         return len(kept)

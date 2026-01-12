@@ -4,7 +4,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger
 
@@ -28,6 +28,13 @@ class BusSubscriptionManager:
         self._last_log_key: Optional[tuple] = None
         self._last_log_time: float = 0.0
         self._last_log_repeat_count: int = 0
+        # Dispatch control: bounded concurrency + slow subscriber isolation.
+        self._dispatch_sem = asyncio.Semaphore(64)
+        self._push_timeout_s: float = 1.0
+        self._fail_threshold: int = 3
+        self._pause_seconds: float = 5.0
+        self._sub_failures: Dict[Tuple[str, str], int] = {}
+        self._sub_paused_until: Dict[Tuple[str, str], float] = {}
 
     async def start(self) -> None:
         if self._task is not None:
@@ -87,39 +94,61 @@ class BusSubscriptionManager:
         if not subs:
             return
 
-        for sub_id, info in subs.items():
+        async def _send_one(sub_id: str, info: Dict[str, Any]) -> None:
             plugin_id = info.get("from_plugin")
             if not isinstance(plugin_id, str) or not plugin_id:
-                continue
+                return
+
+            key2 = (plugin_id, str(sub_id))
+            now_m = time.monotonic()
+            try:
+                until = float(self._sub_paused_until.get(key2, 0.0))
+            except Exception:
+                until = 0.0
+            if until > now_m:
+                return
 
             with state.plugin_hosts_lock:
                 host = state.plugin_hosts.get(plugin_id)
             if not host:
-                continue
+                return
 
-            args: Dict[str, Any] = {
-                "sub_id": sub_id,
-                "bus": delta.bus,
-                "op": delta.op,
-                "delta": dict(delta.payload or {}),
-            }
-
+            d: Dict[str, Any] = dict(delta.payload or {})
             try:
-                d = args.get("delta")
-                if isinstance(d, dict) and "rev" not in d:
+                if "rev" not in d:
                     d["rev"] = int(state.get_bus_rev(delta.bus))
             except Exception:
                 pass
 
+            async with self._dispatch_sem:
+                try:
+                    await asyncio.wait_for(
+                        host.push_bus_change(
+                            sub_id=str(sub_id or ""),
+                            bus=str(delta.bus or ""),
+                            op=str(delta.op or ""),
+                            delta=d,
+                        ),
+                        timeout=float(self._push_timeout_s),
+                    )
+                except Exception:
+                    # Failure tracking + circuit breaker
+                    try:
+                        nfail = int(self._sub_failures.get(key2, 0)) + 1
+                        self._sub_failures[key2] = nfail
+                        if nfail >= int(self._fail_threshold):
+                            self._sub_paused_until[key2] = time.monotonic() + float(self._pause_seconds)
+                            self._sub_failures[key2] = 0
+                    except Exception:
+                        pass
+                    return
+
+            # Success -> reset failures
             try:
-                await host.push_bus_change(
-                    sub_id=str(args.get("sub_id") or ""),
-                    bus=str(args.get("bus") or ""),
-                    op=str(args.get("op") or ""),
-                    delta=args.get("delta") if isinstance(args.get("delta"), dict) else None,
-                )
+                self._sub_failures[key2] = 0
             except Exception:
-                continue
+                pass
+
             if PLUGIN_LOG_BUS_SUBSCRIPTIONS:
                 try:
                     window = PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS
@@ -129,11 +158,9 @@ class BusSubscriptionManager:
                         last_key = self._last_log_key
                         last_ts = self._last_log_time
                         if last_key == key and last_ts > 0.0 and (now_ts - last_ts) <= window:
-                            # 窗口内重复日志，累加计数并跳过
                             self._last_log_repeat_count += 1
-                            continue
+                            return
 
-                        # 输出上一条日志的重复统计（如果有）
                         if last_key is not None and self._last_log_repeat_count > 0:
                             logger.info(
                                 "Pushed bus.change (suppressed {} duplicate entries for plugin={} sub_id={} bus={} op={})",
@@ -157,6 +184,18 @@ class BusSubscriptionManager:
                     )
                 except Exception:
                     pass
+
+        tasks = []
+        for sid, info in subs.items():
+            if not isinstance(info, dict):
+                continue
+            tasks.append(asyncio.create_task(_send_one(str(sid), dict(info)), name="bus-dispatch-one"))
+        if not tasks:
+            return
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception:
+            return
 
 
 bus_subscription_manager = BusSubscriptionManager()

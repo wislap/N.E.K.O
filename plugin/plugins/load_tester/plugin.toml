@@ -17,8 +17,8 @@ conflicts = [
 ]
 
 [plugin_runtime]
-enabled = false
-auto_start = false
+enabled = true
+auto_start = true
 
 [load_test]
 enable = false

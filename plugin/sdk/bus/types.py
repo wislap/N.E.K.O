@@ -24,6 +24,7 @@ from typing import (
     TYPE_CHECKING,
     overload,
     Union,
+    cast,
 )
 
 if TYPE_CHECKING:
@@ -239,6 +240,19 @@ class BusHubProtocol(Protocol):
 
 class BusReplayContext(Protocol):
     bus: BusHubProtocol
+
+    # Internal helper used by SDK when running inside plugin process.
+    # Exposed here for typing completeness; actual implementation lives on PluginContext.
+    def _send_request_and_wait(
+        self,
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: Dict[str, Any],
+        timeout: float,
+        wrap_result: bool = True,
+        **kwargs: Any,
+    ) -> Any: ...
 
 
 def parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -1568,7 +1582,12 @@ class BusList(Generic[TRecord]):
                                 if str(rec.get("source") or "") == str(src):
                                     return True
                             else:
-                                # Without record payload we must assume it may affect the query.
+                                # Lightweight delta may omit record. If it carries a source hint, use it;
+                                # otherwise be conservative.
+                                if isinstance(d0, dict) and isinstance(d0.get("source"), str):
+                                    if str(d0.get("source") or "") == str(src):
+                                        return True
+                                    continue
                                 return True
                         # If we have no delta history for this rev window, be conservative.
                         if not found and int(to_rev) != int(from_rev):
@@ -1718,7 +1737,7 @@ class BusList(Generic[TRecord]):
 
                         try:
                             for rec in delta_list.dump_records():
-                                k = self._dedupe_key(rec)
+                                k = self._dedupe_key(cast(Any, rec))
                                 if k in base_keys:
                                     continue
                                 base_keys.add(k)
@@ -2111,16 +2130,6 @@ class BusListWatcher(Generic[TRecord]):
 
         return _wrapped
 
-    def _infer_bus(self, plan: TraceNode) -> str:
-        if isinstance(plan, GetNode):
-            return str(plan.params.get("bus") or "").strip()
-        if isinstance(plan, UnaryNode):
-            return self._infer_bus(plan.child)
-        if isinstance(plan, BinaryNode):
-            # prefer left branch
-            return self._infer_bus(plan.left)
-        return ""
-
     def subscribe(
         self,
         *,
@@ -2339,8 +2348,13 @@ class BusListWatcher(Generic[TRecord]):
         current_items = self._list.dump_records()
         base_items: List[TRecord] = list(current_items)
 
-        if str(op) == "add" and isinstance(payload.get("record"), dict):
-            rec = self._record_from_raw(payload.get("record"))
+        if str(op) == "add":
+            # Fast path only works when full record payload is included.
+            # With lightweight deltas (no record), fall back to reload+diff.
+            rec_raw = payload.get("record")
+            if not isinstance(rec_raw, dict):
+                return None
+            rec = self._record_from_raw(rec_raw)
             if rec is None:
                 return None
             base_items.append(rec)

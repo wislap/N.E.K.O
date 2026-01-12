@@ -81,7 +81,7 @@ def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
         _push_expected_seq[pid] = int(expected) + 1
 
 
-_BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "0").lower() in ("1", "true", "yes", "on")
+_BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "1").lower() in ("1", "true", "yes", "on")
 _bus_ingest_stop: Optional[asyncio.Event] = None
 _bus_ingest_task: Optional[asyncio.Task[None]] = None
 
@@ -131,6 +131,7 @@ def _validate_message_payload(payload: Dict[str, Any], *, mode: str) -> Dict[str
         "type",
         "message_id",
         "time",
+        "_bus_stored",
 
         "plugin_id",
         "source",
@@ -389,12 +390,42 @@ async def start_bus_ingestion_loop() -> None:
 
     async def _loop() -> None:
         assert _bus_ingest_stop is not None
+        last_stats_ts = time.monotonic()
+        drained_in_window = 0
         while not _bus_ingest_stop.is_set():
-            drained = _bus_ingest_flush_once(limit_per_queue=256)
+            drained = 0
+            t0 = time.monotonic()
+            # Time-bounded flush to avoid starving the event loop.
+            while True:
+                drained += _bus_ingest_flush_once(limit_per_queue=2048)
+                if drained == 0:
+                    break
+                if (time.monotonic() - t0) >= 0.005:
+                    break
+
+            drained_in_window += drained
+            now = time.monotonic()
+            if (now - last_stats_ts) >= 5.0:
+                last_stats_ts = now
+                try:
+                    qsz = None
+                    try:
+                        qsz = int(state.message_queue.qsize())
+                    except Exception:
+                        qsz = None
+                    logger.debug(
+                        "[bus.ingest] drained_5s={} message_queue_size={}",
+                        int(drained_in_window),
+                        qsz,
+                    )
+                except Exception:
+                    pass
+                drained_in_window = 0
+
             if drained > 0:
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0)
             else:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.005)
 
     _bus_ingest_task = asyncio.create_task(_loop(), name="bus-ingestion-loop")
 
@@ -864,34 +895,61 @@ def get_messages_from_queue(
                 return False
         return True
 
-    # Fast path: iterate from the newest backwards and stop once we have max_count matches.
-    # This preserves semantics (return the most recent max_count matches) but avoids window-expansion rescans.
     picked_rev: List[Dict[str, Any]] = []
-    try:
-        it = state.iter_message_records_reverse()
-    except Exception:
-        it = reversed(state.list_message_records())
-    for msg in it:
-        if plugin_id and msg.get("plugin_id") != plugin_id:
-            continue
-        if source and msg.get("source") != source:
-            continue
-        if priority_min is not None:
-            try:
-                if int(msg.get("priority", 0)) < int(priority_min):
+    want = int(max_count)
+    if want <= 0:
+        want = 1
+
+    # Avoid copying the entire store on every call: scan tail windows and expand only when needed.
+    scanned = 0
+    window = max(256, want * 4)
+    if store_size > 0 and window > store_size:
+        window = store_size
+
+    while True:
+        picked_rev.clear()
+        try:
+            tail_items = state.list_message_records_tail(int(window))
+        except Exception:
+            tail_items = state.list_message_records()
+
+        for msg in reversed(tail_items):
+            if plugin_id and msg.get("plugin_id") != plugin_id:
+                continue
+            if source and msg.get("source") != source:
+                continue
+            if priority_min is not None:
+                try:
+                    if int(msg.get("priority", 0)) < int(priority_min):
+                        continue
+                except Exception:
                     continue
-            except Exception:
+            if since_ts is not None:
+                ts = _parse_iso_ts(msg.get("time"))
+                if ts is None or ts <= float(since_ts):
+                    continue
+            if not _match_message(msg):
                 continue
-        if since_ts is not None:
-            ts = _parse_iso_ts(msg.get("time"))
-            if ts is None or ts <= float(since_ts):
-                continue
-        if not _match_message(msg):
-            continue
-        picked_rev.append(msg)
-        if len(picked_rev) >= int(max_count):
+            picked_rev.append(msg)
+            if len(picked_rev) >= want:
+                break
+
+        picked_rev.reverse()
+
+        scanned = len(tail_items)
+        if len(picked_rev) >= want:
             break
-    picked_rev.reverse()
+        if store_size > 0 and scanned >= store_size:
+            break
+        if store_size <= 0 and scanned >= int(window):
+            # Unknown store size; fall back after one expansion.
+            pass
+        if store_size > 0:
+            window = min(int(store_size), int(window) * 2)
+        else:
+            window = int(window) * 2
+        if window <= scanned:
+            break
 
     if bool(raw):
         out: List[Dict[str, Any]] = []
@@ -1209,6 +1267,7 @@ def push_message_to_queue(
         "metadata": metadata or {},
         "unsafe": bool(unsafe),
         "time": now_iso(),
+        "_bus_stored": True,
     }
 
     # Validate schema (strict by default; may be bypassed when unsafe is enabled).

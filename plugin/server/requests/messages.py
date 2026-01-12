@@ -20,8 +20,16 @@ async def handle_message_get(request: Dict[str, Any], send_response: SendRespons
     if not isinstance(request_id, str) or not request_id:
         return
 
-    plugin_id = request.get("plugin_id")
-    if not isinstance(plugin_id, str) or not plugin_id:
+    _sentinel = object()
+    plugin_id = request.get("plugin_id", _sentinel)
+    # Semantics:
+    # - plugin_id omitted / empty string => default to from_plugin
+    # - plugin_id == "*" or None => treat as wildcard (all)
+    if plugin_id is _sentinel:
+        plugin_id = from_plugin
+    elif plugin_id is None:
+        plugin_id = None
+    elif not isinstance(plugin_id, str) or not plugin_id:
         plugin_id = from_plugin
     if isinstance(plugin_id, str) and plugin_id.strip() == "*":
         plugin_id = None
