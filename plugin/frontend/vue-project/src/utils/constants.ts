@@ -43,11 +43,11 @@ export const STATUS_COLORS = {
 } as const
 
 // 状态文本映射
-export const STATUS_TEXT = {
-  [PluginStatus.RUNNING]: '运行中',
-  [PluginStatus.STOPPED]: '已停止',
-  [PluginStatus.CRASHED]: '已崩溃',
-  [PluginStatus.LOADING]: '加载中'
+export const STATUS_TEXT_KEYS = {
+  [PluginStatus.RUNNING]: 'status.running',
+  [PluginStatus.STOPPED]: 'status.stopped',
+  [PluginStatus.CRASHED]: 'status.crashed',
+  [PluginStatus.LOADING]: 'status.loading'
 } as const
 
 // 日志级别颜色映射

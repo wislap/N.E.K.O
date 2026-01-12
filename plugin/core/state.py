@@ -647,6 +647,10 @@ class PluginRuntimeState:
                 time.sleep(min(0.01, remaining))
             else:
                 try:
+                    try:
+                        notify_ev.clear()
+                    except Exception:
+                        pass
                     notify_ev.wait(timeout=remaining)
                 except Exception:
                     time.sleep(min(0.01, remaining))
