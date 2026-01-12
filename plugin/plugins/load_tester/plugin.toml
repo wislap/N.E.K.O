@@ -21,9 +21,9 @@ enabled = true
 auto_start = true
 
 [load_test]
-enable = false
+enable = true
 duration_seconds = 10
-auto_start = false
+auto_start = true
 log_summary = true
 worker_threads = 1
 timeout = 0.5

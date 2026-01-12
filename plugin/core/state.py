@@ -394,9 +394,15 @@ class PluginRuntimeState:
         nn = int(n)
         if nn <= 0:
             return []
+        for _i in range(3):
+            try:
+                tail_rev = list(itertools.islice(reversed(self._message_store), nn))
+                tail_rev.reverse()
+                return tail_rev
+            except Exception:
+                continue
         with self._bus_store_lock:
             try:
-                # Avoid list(self._message_store) full copy; only materialize the last nn items.
                 tail_rev = list(itertools.islice(reversed(self._message_store), nn))
                 tail_rev.reverse()
                 return tail_rev
@@ -404,8 +410,11 @@ class PluginRuntimeState:
                 return list(self._message_store)
 
     def message_store_len(self) -> int:
-        with self._bus_store_lock:
+        try:
             return len(self._message_store)
+        except Exception:
+            with self._bus_store_lock:
+                return len(self._message_store)
 
     def iter_message_records_reverse(self):
         with self._bus_store_lock:
@@ -429,8 +438,11 @@ class PluginRuntimeState:
                 return list(self._event_store)
 
     def event_store_len(self) -> int:
-        with self._bus_store_lock:
+        try:
             return len(self._event_store)
+        except Exception:
+            with self._bus_store_lock:
+                return len(self._event_store)
 
     def iter_event_records_reverse(self):
         with self._bus_store_lock:
@@ -454,8 +466,11 @@ class PluginRuntimeState:
                 return list(self._lifecycle_store)
 
     def lifecycle_store_len(self) -> int:
-        with self._bus_store_lock:
+        try:
             return len(self._lifecycle_store)
+        except Exception:
+            with self._bus_store_lock:
+                return len(self._lifecycle_store)
 
     def iter_lifecycle_records_reverse(self):
         with self._bus_store_lock:

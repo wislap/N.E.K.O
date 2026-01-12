@@ -515,6 +515,10 @@ class LoadTestPlugin(NekoPluginBase):
             ),
             build_log_args=_build_log_args,
         )
+        try:
+            self.ctx.close()
+        except Exception:
+            pass
         return ok(data=stats)
 
     @plugin_entry(

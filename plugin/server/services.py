@@ -955,7 +955,25 @@ def get_messages_from_queue(
         out: List[Dict[str, Any]] = []
         for msg in picked_rev:
             if isinstance(msg, dict):
-                out.append(msg)
+                try:
+                    bd = msg.get("binary_data")
+                except Exception:
+                    bd = None
+                keep_bd = False
+                if isinstance(bd, (bytes, bytearray)):
+                    try:
+                        keep_bd = len(bd) <= 16384
+                    except Exception:
+                        keep_bd = False
+                if bd is None or keep_bd:
+                    out.append(msg)
+                else:
+                    try:
+                        m = dict(msg)
+                        m["binary_data"] = None
+                        out.append(m)
+                    except Exception:
+                        out.append(msg)
         return out
 
     messages: List[Dict[str, Any]] = []

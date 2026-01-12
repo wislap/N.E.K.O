@@ -267,24 +267,74 @@ class MessageClient:
             messages = []
 
         records: List[MessageRecord] = []
-        for item in messages:
-            if isinstance(item, dict):
-                records.append(MessageRecord.from_raw(item))
-            else:
-                records.append(MessageRecord.from_raw({"content": item}))
+        if bool(raw):
+            for item in messages:
+                if isinstance(item, dict):
+                    # Fast path: avoid dict() copy + timestamp parsing + normalization.
+                    try:
+                        record_type = item.get("message_type") or item.get("type") or "MESSAGE"
+                    except Exception:
+                        record_type = "MESSAGE"
+                    try:
+                        pid = item.get("plugin_id")
+                    except Exception:
+                        pid = None
+                    try:
+                        src = item.get("source")
+                    except Exception:
+                        src = None
+                    try:
+                        pr = item.get("priority", 0)
+                        pr_i = int(pr) if pr is not None else 0
+                    except Exception:
+                        pr_i = 0
+                    try:
+                        mid = item.get("message_id")
+                    except Exception:
+                        mid = None
+                    records.append(
+                        MessageRecord(
+                            kind="message",
+                            type=str(record_type),
+                            timestamp=None,
+                            plugin_id=str(pid) if pid is not None else None,
+                            source=str(src) if src is not None else None,
+                            priority=pr_i,
+                            content=None,
+                            metadata={},
+                            raw=item,
+                            message_id=str(mid) if mid is not None else None,
+                            message_type=str(record_type) if record_type is not None else None,
+                            description=None,
+                        )
+                    )
+                else:
+                    records.append(MessageRecord.from_raw({"content": item}))
+        else:
+            for item in messages:
+                if isinstance(item, dict):
+                    records.append(MessageRecord.from_raw(item))
+                else:
+                    records.append(MessageRecord.from_raw({"content": item}))
 
-        get_params = {
-            "plugin_id": pid_norm,
-            "max_count": max_count,
-            "priority_min": priority_min,
-            "source": str(source) if isinstance(source, str) and source else None,
-            "filter": dict(filter) if isinstance(filter, dict) else None,
-            "strict": bool(strict),
-            "since_ts": since_ts,
-            "timeout": timeout,
-        }
-        trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
-        plan = GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
+        trace: Optional[List[BusOp]]
+        plan: Optional[Any]
+        if bool(raw):
+            trace = None
+            plan = None
+        else:
+            get_params = {
+                "plugin_id": pid_norm,
+                "max_count": max_count,
+                "priority_min": priority_min,
+                "source": str(source) if isinstance(source, str) and source else None,
+                "filter": dict(filter) if isinstance(filter, dict) else None,
+                "strict": bool(strict),
+                "since_ts": since_ts,
+                "timeout": timeout,
+            }
+            trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
+            plan = GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
         if pid_norm == "*":
             effective_plugin_id = "*"
         else:
