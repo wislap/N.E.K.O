@@ -118,7 +118,22 @@ class WebInterfacePlugin(NekoPluginBase):
             self.server_thread.start()
             
             # 等待服务器启动
-            time.sleep(0.5)
+            startup_timeout_s = float(os.getenv("NEKO_WEB_INTERFACE_STARTUP_TIMEOUT", "5"))
+            deadline = time.monotonic() + max(0.0, startup_timeout_s)
+            while True:
+                try:
+                    with socket.create_connection((self.host, self.port), timeout=0.5):
+                        break
+                except (ConnectionRefusedError, OSError):
+                    if time.monotonic() >= deadline:
+                        self.logger.warning(
+                            "Web server may not be ready yet (host=%s, port=%s, timeout=%ss)",
+                            self.host,
+                            self.port,
+                            startup_timeout_s,
+                        )
+                        break
+                    time.sleep(0.1)
             
             # 上报状态
             self.report_status({
@@ -488,7 +503,7 @@ class WebInterfacePlugin(NekoPluginBase):
                 <span>消息总数: {message_count}</span>
             </div>
             <div class="status-item">
-                <span>更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
+                <span>更新时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}</span>
             </div>
         </div>
         

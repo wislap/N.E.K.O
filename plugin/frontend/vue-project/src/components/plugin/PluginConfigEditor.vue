@@ -138,6 +138,7 @@ import { ref, onMounted, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Check, Plus, Delete } from '@element-plus/icons-vue'
+import * as Diff from 'diff'
 
 import {
   getPluginConfig,
@@ -287,34 +288,73 @@ const diffRows = computed<DiffRow[]>(() => {
     }
   }
 
-  const leftLines = left.split('\n')
-  const rightLines = right.split('\n')
-  const maxLen = Math.max(leftLines.length, rightLines.length)
+  const toLines = (v: string) => {
+    if (!v) return ['']
+    const lines = v.split('\n')
+    if (v.endsWith('\n') && lines.length > 0) lines.pop()
+    return lines
+  }
 
+  const changes = Diff.diffLines(left, right)
   const rows: DiffRow[] = []
   let leftNo = 1
   let rightNo = 1
 
-  for (let i = 0; i < maxLen; i++) {
-    const l = i < leftLines.length ? leftLines[i] : null
-    const r = i < rightLines.length ? rightLines[i] : null
+  for (let i = 0; i < changes.length; i++) {
+    const cur = changes[i]
+    const next = i + 1 < changes.length ? changes[i + 1] : undefined
 
-    let type: DiffRow['type']
-    if (l !== null && r !== null) {
-      type = l === r ? 'equal' : 'mod'
-    } else if (l !== null && r === null) {
-      type = 'del'
-    } else {
-      type = 'add'
+    // treat adjacent removed+added as a modification block so the UI aligns them
+    if (cur.removed && next?.added) {
+      const leftLines = toLines(cur.value)
+      const rightLines = toLines(next.value)
+      const maxLen = Math.max(leftLines.length, rightLines.length)
+
+      for (let j = 0; j < maxLen; j++) {
+        const l = j < leftLines.length ? leftLines[j] : null
+        const r = j < rightLines.length ? rightLines[j] : null
+        rows.push({
+          leftText: l ?? '',
+          rightText: r ?? '',
+          leftLineNo: l !== null ? leftNo++ : null,
+          rightLineNo: r !== null ? rightNo++ : null,
+          type: l !== null && r !== null ? (l === r ? 'equal' : 'mod') : l !== null ? 'del' : 'add'
+        })
+      }
+
+      i++
+      continue
     }
 
-    rows.push({
-      leftText: l ?? '',
-      rightText: r ?? '',
-      leftLineNo: l !== null ? leftNo++ : null,
-      rightLineNo: r !== null ? rightNo++ : null,
-      type
-    })
+    const lines = toLines(cur.value)
+
+    for (const line of lines) {
+      if (cur.added) {
+        rows.push({
+          leftText: '',
+          rightText: line,
+          leftLineNo: null,
+          rightLineNo: rightNo++,
+          type: 'add'
+        })
+      } else if (cur.removed) {
+        rows.push({
+          leftText: line,
+          rightText: '',
+          leftLineNo: leftNo++,
+          rightLineNo: null,
+          type: 'del'
+        })
+      } else {
+        rows.push({
+          leftText: line,
+          rightText: line,
+          leftLineNo: leftNo++,
+          rightLineNo: rightNo++,
+          type: 'equal'
+        })
+      }
+    }
   }
 
   return rows
