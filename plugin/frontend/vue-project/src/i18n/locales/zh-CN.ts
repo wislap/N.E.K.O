@@ -123,6 +123,7 @@ export default {
     addItem: '新增项',
     fieldName: '字段名',
     fieldNameRequired: '字段名不能为空',
+    invalidFieldKey: '字段名不合法',
     fieldType: '字段类型',
     duplicateFieldKey: '字段名已存在，请换一个',
     profiles: '配置方案',

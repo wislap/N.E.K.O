@@ -123,6 +123,7 @@ export default {
     addItem: 'Add Item',
     fieldName: 'Field Name',
     fieldNameRequired: 'Field name is required',
+    invalidFieldKey: 'Invalid field name',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',
     profiles: 'Profiles',

@@ -488,6 +488,17 @@ function updateProfileDraft(v: Record<string, any> | null) {
 
 async function selectProfile(name: string) {
   if (selectedProfileName.value === name) return
+  if (hasChanges.value) {
+    try {
+      await ElMessageBox.confirm(
+        t('plugins.unsavedChangesWarning'),
+        t('common.warning'),
+        { type: 'warning' }
+      )
+    } catch {
+      return
+    }
+  }
   selectedProfileName.value = name
   await loadProfileDraft(name)
 }
@@ -507,7 +518,7 @@ async function addProfile() {
 
     // 重新加载所有配置与 profiles 状态，并选中新建的 profile
     await loadAll()
-    selectedProfileName.value = name
+    await selectProfile(name)
   } catch {
     // 用户取消或请求失败时忽略，由上层错误提示负责
   }
@@ -716,7 +727,7 @@ watch(
   font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
   font-size: 12px;
   line-height: 1.5;
-  background: var(--el-color-white);
+  background: var(--el-bg-color);
   white-space: pre;
 }
 

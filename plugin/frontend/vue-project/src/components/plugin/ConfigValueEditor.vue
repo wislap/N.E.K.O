@@ -136,6 +136,15 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: any): void }>()
 const { t } = useI18n()
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+function isValidKeySegment(key: string) {
+  if (!key) return false
+  if (key.includes('.')) return false
+  if (FORBIDDEN_KEYS.has(key)) return false
+  if (!props.path && key === 'plugin') return false
+  return true
+}
+
 const kind = computed<'object' | 'array' | 'string' | 'number' | 'boolean'>(() => {
   const v = props.modelValue
   if (Array.isArray(v)) return 'array'
@@ -182,7 +191,7 @@ watch(
   (v) => {
     if (kind.value === 'string') strVal.value = v == null ? '' : String(v)
     if (kind.value === 'number') numVal.value = typeof v === 'number' ? v : undefined
-    if (kind.value === 'boolean') boolVal.value = Boolean(v)
+    if (kind.value === 'boolean') boolVal.value = typeof v === 'boolean' ? v : false
   },
   { immediate: true }
 )
@@ -201,7 +210,9 @@ function isKeyDeleted(k: string) {
   if (kind.value !== 'object') return false
   const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
-  return !(k in (a as any)) && k in (b as any)
+  const inA = Object.prototype.hasOwnProperty.call(a, k)
+  const inB = Object.prototype.hasOwnProperty.call(b, k)
+  return !inA && inB
 }
 
 function rowClassForKey(k: string) {
@@ -209,8 +220,8 @@ function rowClassForKey(k: string) {
   const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
   const b = props.baselineValue && typeof props.baselineValue === 'object' ? props.baselineValue : {}
 
-  const inA = k in (a as any)
-  const inB = k in (b as any)
+  const inA = Object.prototype.hasOwnProperty.call(a, k)
+  const inB = Object.prototype.hasOwnProperty.call(b, k)
   if (inA && !inB) return 'diff-added'
   // 对于只存在于基础配置、但未在当前覆盖中显式设置的字段，表示“继承基础配置”，
   // 不应在 UI 上标记为已删除，因此不返回 diff-deleted 样式
@@ -246,27 +257,33 @@ const indentStyle = computed(() => {
 })
 
 function updateObjectKey(k: string, v: any) {
+  if (!isValidKeySegment(k)) return
   const next = { ...(props.modelValue || {}) }
   next[k] = v
   emitUpdate(next)
 }
 
 function removeObjectKey(k: string) {
+  if (!isValidKeySegment(k)) return
   const next = { ...(props.modelValue || {}) }
   delete next[k]
   emitUpdate(next)
 }
 
 function restoreObjectKey(k: string) {
+  if (!isValidKeySegment(k)) return
   const next = { ...(props.modelValue || {}) }
   next[k] = baselineChild(k)
   emitUpdate(next)
 }
 
 function updateArrayIndex(idx: number, v: any) {
-  const next = Array.isArray(props.modelValue) ? [...props.modelValue] : []
-  next[idx] = v
-  emitUpdate(next)
+  const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+  const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
+  while (a.length < idx) a.push(b[a.length])
+  if (a.length === idx) a.push(v)
+  else a[idx] = v
+  emitUpdate(a)
 }
 
 function removeArrayIndex(idx: number) {
@@ -331,6 +348,11 @@ function confirmAddKey() {
   const key = (newKey.value || '').trim()
   if (!key) {
     ElMessage.warning(t('plugins.fieldNameRequired'))
+    return
+  }
+
+  if (!isValidKeySegment(key)) {
+    ElMessage.warning(t('plugins.invalidFieldKey'))
     return
   }
 

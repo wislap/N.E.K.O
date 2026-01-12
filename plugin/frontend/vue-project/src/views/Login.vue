@@ -35,7 +35,6 @@
             @click="handleLogin"
             size="large"
             class="login-button"
-            block
           >
             {{ loading ? '验证中...' : '登录' }}
           </el-button>
@@ -184,6 +183,7 @@ async function handleLogin() {
 
 .login-button {
   margin-top: 20px;
+  width: 100%;
 }
 
 .login-hint {
