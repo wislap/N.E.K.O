@@ -1,5 +1,0 @@
-[config_profiles]
-active = "default"
-
-[config_profiles.files]
-default = "profiles/default.toml"
