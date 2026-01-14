@@ -264,9 +264,9 @@ class PluginRuntimeState:
         if not isinstance(record, dict):
             return
         mid = record.get("message_id")
-        if isinstance(mid, str) and mid in self._deleted_message_ids:
-            return
         with self._bus_store_lock:
+            if isinstance(mid, str) and mid in self._deleted_message_ids:
+                return
             self._message_store.append(record)
         try:
             rev = self._bump_bus_rev("messages")
@@ -293,19 +293,22 @@ class PluginRuntimeState:
     def extend_message_records(self, records: List[Dict[str, Any]]) -> int:
         if not isinstance(records, list) or not records:
             return 0
-        kept: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            mid = rec.get("message_id")
-            if isinstance(mid, str) and mid in self._deleted_message_ids:
-                continue
-            kept.append(rec)
+            candidates.append(rec)
+
+        kept: List[Dict[str, Any]] = []
+        with self._bus_store_lock:
+            for rec in candidates:
+                mid = rec.get("message_id")
+                if isinstance(mid, str) and mid in self._deleted_message_ids:
+                    continue
+                self._message_store.append(rec)
+                kept.append(rec)
         if not kept:
             return 0
-        with self._bus_store_lock:
-            for rec in kept:
-                self._message_store.append(rec)
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
@@ -334,9 +337,9 @@ class PluginRuntimeState:
         if not isinstance(record, dict):
             return
         eid = record.get("event_id") or record.get("trace_id")
-        if isinstance(eid, str) and eid in self._deleted_event_ids:
-            return
         with self._bus_store_lock:
+            if isinstance(eid, str) and eid in self._deleted_event_ids:
+                return
             self._event_store.append(record)
         try:
             rev = self._bump_bus_rev("events")
@@ -347,19 +350,22 @@ class PluginRuntimeState:
     def extend_event_records(self, records: List[Dict[str, Any]]) -> int:
         if not isinstance(records, list) or not records:
             return 0
-        kept: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            eid = rec.get("event_id") or rec.get("trace_id")
-            if isinstance(eid, str) and eid in self._deleted_event_ids:
-                continue
-            kept.append(rec)
+            candidates.append(rec)
+
+        kept: List[Dict[str, Any]] = []
+        with self._bus_store_lock:
+            for rec in candidates:
+                eid = rec.get("event_id") or rec.get("trace_id")
+                if isinstance(eid, str) and eid in self._deleted_event_ids:
+                    continue
+                self._event_store.append(rec)
+                kept.append(rec)
         if not kept:
             return 0
-        with self._bus_store_lock:
-            for rec in kept:
-                self._event_store.append(rec)
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("events")
@@ -372,9 +378,9 @@ class PluginRuntimeState:
         if not isinstance(record, dict):
             return
         lid = record.get("lifecycle_id") or record.get("trace_id")
-        if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
-            return
         with self._bus_store_lock:
+            if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+                return
             self._lifecycle_store.append(record)
         try:
             rev = self._bump_bus_rev("lifecycle")
@@ -385,19 +391,22 @@ class PluginRuntimeState:
     def extend_lifecycle_records(self, records: List[Dict[str, Any]]) -> int:
         if not isinstance(records, list) or not records:
             return 0
-        kept: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            lid = rec.get("lifecycle_id") or rec.get("trace_id")
-            if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
-                continue
-            kept.append(rec)
+            candidates.append(rec)
+
+        kept: List[Dict[str, Any]] = []
+        with self._bus_store_lock:
+            for rec in candidates:
+                lid = rec.get("lifecycle_id") or rec.get("trace_id")
+                if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+                    continue
+                self._lifecycle_store.append(rec)
+                kept.append(rec)
         if not kept:
             return 0
-        with self._bus_store_lock:
-            for rec in kept:
-                self._lifecycle_store.append(rec)
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("lifecycle")

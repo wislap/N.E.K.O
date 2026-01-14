@@ -938,6 +938,23 @@ def load_plugins_from_toml(
                 logger.warning("Plugin config {} has no 'id' field, skipping", toml_path)
                 continue
 
+            # Apply user profile overlay (including [plugin_runtime]) before making runtime decisions.
+            try:
+                from plugin.server.config_service import _apply_user_config_profiles
+
+                if isinstance(conf, dict):
+                    conf = _apply_user_config_profiles(
+                        plugin_id=str(pid),
+                        base_config=conf,
+                        config_path=toml_path,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
+                    pid,
+                    e,
+                )
+
             logger.info("Plugin ID: {}", pid)
             
             # 检查配置文件路径是否已经被处理过（检测重复扫描）

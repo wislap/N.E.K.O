@@ -438,8 +438,12 @@ async function loadProfileDraft(name: string) {
   }
 }
 
+let loadVersion = 0
+
 async function loadAll() {
   if (!props.pluginId) return
+
+  const currentVersion = ++loadVersion
 
   loading.value = true
   error.value = null
@@ -450,6 +454,8 @@ async function loadAll() {
       getPluginConfig(props.pluginId),
       getPluginProfilesState(props.pluginId)
     ])
+
+    if (currentVersion !== loadVersion) return
 
     configPath.value = (baseRes as any).config_path || (effectiveRes as any).config_path
     lastModified.value = (baseRes as any).last_modified || (effectiveRes as any).last_modified
@@ -477,9 +483,12 @@ async function loadAll() {
       originalProfileConfig.value = null
     }
   } catch (e: any) {
+    if (currentVersion !== loadVersion) return
     error.value = e?.message || t('plugins.configLoadFailed')
   } finally {
-    loading.value = false
+    if (currentVersion === loadVersion) {
+      loading.value = false
+    }
   }
 }
 

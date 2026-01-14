@@ -6,7 +6,7 @@
 import asyncio
 import importlib
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, cast
 
 from fastapi import HTTPException
 from loguru import logger
@@ -81,6 +81,20 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     
     with open(config_path, 'rb') as f:
         conf = tomllib.load(f)
+
+    # Apply user profile overlay (including [plugin_runtime]) so manual start
+    # respects the same runtime gating rules as startup load.
+    try:
+        from plugin.server.config_service import _apply_user_config_profiles
+
+        if isinstance(conf, dict):
+            conf = _apply_user_config_profiles(
+                plugin_id=str(plugin_id),
+                base_config=conf,
+                config_path=config_path,
+            )
+    except Exception:
+        pass
     
     pdata = conf.get("plugin") or {}
 
@@ -222,13 +236,13 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 )
             
             # 解析并检查插件依赖
-            dependencies = _parse_plugin_dependencies(conf, logger, plugin_id)
+            dependencies = _parse_plugin_dependencies(conf, cast(Any, logger), plugin_id)
             dependency_check_failed = False
             if dependencies:
                 logger.info("Plugin {}: found {} dependency(ies)", plugin_id, len(dependencies))
                 for dep in dependencies:
                     # 检查依赖（包括简化格式和完整格式）
-                    satisfied, error_msg = _check_plugin_dependency(dep, logger, plugin_id)
+                    satisfied, error_msg = _check_plugin_dependency(dep, cast(Any, logger), plugin_id)
                     if not satisfied:
                         logger.error(
                             "Plugin {}: dependency check failed: {}; cannot start",

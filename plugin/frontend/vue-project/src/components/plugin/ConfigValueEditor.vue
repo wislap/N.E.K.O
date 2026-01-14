@@ -400,7 +400,6 @@ function confirmAddKey() {
   const next = { ...(props.modelValue || {}) }
   if (Object.prototype.hasOwnProperty.call(next, key)) {
     ElMessage.warning(t('plugins.duplicateFieldKey'))
-    addKeyDialog.value = false
     return
   }
 
