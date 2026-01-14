@@ -6,20 +6,25 @@ import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosErr
 import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
 import { useAuthStore } from '@/stores/auth'
+import { useConnectionStore } from '@/stores/connection'
 
-// 处理认证失败的辅助函数
-async function handleAuthError() {
+let lastNetworkErrorShownAt = 0
+
+async function handleAuthError(message?: string) {
   try {
     const authStore = useAuthStore()
     authStore.clearAuthCode()
   } catch (err) {
     console.debug('Auth store not available:', err)
   }
-  // 动态导入 router 避免循环依赖
-  import('@/router').then(({ default: router }) => {
-    router.push('/login')
-  })
-  // 不显示错误消息，因为会自动跳转
+
+  try {
+    const connectionStore = useConnectionStore()
+    connectionStore.requireAuth(message)
+  } catch (err) {
+    console.debug('Connection store not available:', err)
+  }
+
   ElMessage.closeAll()
 }
 
@@ -57,6 +62,12 @@ service.interceptors.request.use(
 // 响应拦截器
 service.interceptors.response.use(
   (response: AxiosResponse) => {
+    try {
+      const connectionStore = useConnectionStore()
+      connectionStore.markConnected()
+    } catch (err) {
+      console.debug('Connection store not available:', err)
+    }
     // Axios 默认只会把 2xx 响应放到这里，直接返回 data 即可
     return response.data
   },
@@ -71,6 +82,12 @@ service.interceptors.response.use(
     let message = '请求失败'
     
     if (error.response) {
+      try {
+        const connectionStore = useConnectionStore()
+        connectionStore.markConnected()
+      } catch (err) {
+        console.debug('Connection store not available:', err)
+      }
       // 服务器返回了错误状态码
       const data = error.response.data as any
 
@@ -80,11 +97,11 @@ service.interceptors.response.use(
           break
         case 401:
           message = '未授权，请重新登录'
-          await handleAuthError()
+          await handleAuthError(message)
           break
         case 403:
           message = data.detail || '拒绝访问：验证码错误或已过期'
-          await handleAuthError()
+          await handleAuthError(message)
           break
         case 404:
           message = data.detail || '请求的资源不存在'
@@ -103,6 +120,18 @@ service.interceptors.response.use(
     } else if (error.request) {
       // 请求已发出，但没有收到响应
       message = '网络错误，请检查网络连接'
+      try {
+        const connectionStore = useConnectionStore()
+        const wasDisconnected = connectionStore.disconnected
+        connectionStore.markDisconnected()
+        const now = Date.now()
+        if (!wasDisconnected && now - lastNetworkErrorShownAt > 15000) {
+          lastNetworkErrorShownAt = now
+          ElMessage.error(message)
+        }
+      } catch (err) {
+        console.debug('Connection store not available:', err)
+      }
     } else {
       // 其他错误
       message = error.message || '请求失败'
@@ -113,6 +142,10 @@ service.interceptors.response.use(
       return Promise.reject(error)
     }
     
+    if (error.request && !error.response) {
+      return Promise.reject(error)
+    }
+
     ElMessage.error(message)
     return Promise.reject(error)
   }

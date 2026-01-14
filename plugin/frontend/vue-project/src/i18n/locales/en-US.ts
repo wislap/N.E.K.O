@@ -27,6 +27,7 @@ export default {
     darkMode: 'Dark Mode',
     lightMode: 'Light Mode',
     logoutConfirmTitle: 'Notice'
+    ,disconnected: 'Server disconnected'
   },
   nav: {
     dashboard: 'Dashboard',
@@ -49,6 +50,8 @@ export default {
     forbidden: 'Access denied: Invalid or expired code',
     logoutConfirm: 'Are you sure you want to logout?',
     logoutSuccess: 'Logged out'
+    ,reAuthRequired: 'Authentication expired. Please enter the admin code again.'
+    ,goToLogin: 'Go to Login'
   },
   plugin: {
     addProfile: {
