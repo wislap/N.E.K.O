@@ -25,7 +25,7 @@
                 </el-tag>
               </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.autoStart')">
-                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'" :disabled="!plugin.enabled">
+                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'" :class="{ 'is-disabled': !plugin.enabled }">
                   {{ plugin.autoStart ? $t('plugins.autoStart') : $t('plugins.manualStart') }}
                 </el-tag>
               </el-descriptions-item>
@@ -120,6 +120,11 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .header-left h2 {

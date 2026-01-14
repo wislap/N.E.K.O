@@ -437,6 +437,10 @@ def _apply_user_config_profiles(
         return base_config
 
     raw_path = files_map.get(active_name)
+    if (not isinstance(raw_path, str) or not raw_path.strip()) and active_name.isdigit():
+        # tomllib may parse unquoted numeric keys as int (e.g. 1 = "..."), while active_name is a str.
+        # Try int(active_name) for better interoperability.
+        raw_path = files_map.get(int(active_name))
     if not isinstance(raw_path, str) or not raw_path.strip():
         logger.warning(
             "Plugin {}: active profile '{}' not found in [plugin.config_profiles.files]",

@@ -152,7 +152,11 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
     with state.plugins_lock:
         for pid in found_plugin_ids:
             if pid in state.plugins:
-                matching_plugins.append((pid, state.plugins[pid]))
+                meta = state.plugins[pid]
+                # Disabled plugins are visible but should not participate in dependency satisfaction.
+                if isinstance(meta, dict) and meta.get("runtime_enabled") is False:
+                    continue
+                matching_plugins.append((pid, meta))
     
     return matching_plugins
 
@@ -292,19 +296,22 @@ def _check_plugin_dependency(
             elif len(parts) == 3:
                 # 格式：plugin_id:event_type:event_id（指定插件必须提供该事件）
                 target_plugin_id, event_type, event_id = parts
+                # 先在锁内检查插件是否存在，并读取元数据（避免后续嵌套 plugins_lock 导致死锁）
                 with state.plugins_lock:
-                    if target_plugin_id not in state.plugins:
-                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' not found"
-                    # 查找指定插件是否提供该事件
-                    matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
-                    if not any(pid == target_plugin_id for pid, _ in matching_plugins):
-                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
-                    # Ensure disabled plugins do not satisfy dependencies.
-                    with state.plugins_lock:
-                        dep_meta = state.plugins.get(target_plugin_id)
-                    if isinstance(dep_meta, dict) and dep_meta.get("runtime_enabled") is False:
-                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
-                    plugins_to_check = [(target_plugin_id, dep_meta)] if dep_meta is not None else []
+                    dep_meta = state.plugins.get(target_plugin_id)
+                if dep_meta is None:
+                    return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' not found"
+                # Ensure disabled plugins do not satisfy dependencies.
+                if isinstance(dep_meta, dict) and dep_meta.get("runtime_enabled") is False:
+                    return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
+
+                # 在锁外调用，避免 _find_plugins_by_custom_event 内部再次获取 plugins_lock 造成死锁
+                matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
+                if not any(pid == target_plugin_id for pid, _ in matching_plugins):
+                    return False, (
+                        f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
+                    )
+                plugins_to_check = [(target_plugin_id, dep_meta)]
             else:
                 return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
         else:

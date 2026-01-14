@@ -27,10 +27,10 @@
         </div>
         <!-- 默认模式：显示描述和元数据 -->
         <div v-else key="default" class="plugin-default-content">
-          <p class="plugin-description">{{ plugin.description || '暂无描述' }}</p>
+          <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
           <div class="plugin-meta">
             <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
-            <span class="plugin-entries">入口点: {{ entryCount }}</span>
+            <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
           </div>
         </div>
       </Transition>
