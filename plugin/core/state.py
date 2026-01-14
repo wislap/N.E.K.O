@@ -637,28 +637,24 @@ class PluginRuntimeState:
             响应数据，如果不存在或已过期则返回 None
         """
         current_time = time.time()
-        
-        # 先查看响应是否存在（不删除）
+
         resp_map = self.plugin_response_map
-        response_data = resp_map.get(request_id, None)
-        
+        response_data = resp_map.pop(request_id, None)
+
         if response_data is None:
             return None
-        
-        # 检查是否过期
+
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
-            # 响应已过期，删除它
-            resp_map.pop(request_id, None)
             return None
-        
-        # 响应有效，删除并返回
-        resp_map.pop(request_id, None)
         try:
             event_map = self.plugin_response_event_map
             event_map.pop(request_id, None)
         except Exception:
-            pass
+
+            logging.getLogger("user_plugin_server").debug(
+                f"Failed to remove response event for request_id={request_id}", exc_info=True
+            )
         # 返回实际的响应数据
         return response_data.get("response")
 

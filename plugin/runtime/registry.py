@@ -1107,6 +1107,8 @@ def load_plugins_from_toml(
                 "sdk_recommended_str": sdk_recommended_str,
                 "sdk_untested_str": sdk_untested_str,
                 "sdk_conflicts_list": sdk_conflicts_list,
+                "enabled": enabled_val,
+                "auto_start": auto_start_val,
             }
             plugin_contexts.append(context)
             pid_to_context[pid] = context
@@ -1198,7 +1200,20 @@ def load_plugins_from_toml(
     if len(final_order) != len(plugin_contexts):
         loaded_set = set(final_order)
         missing = [ctx["pid"] for ctx in plugin_contexts if ctx["pid"] not in loaded_set]
-        logger.error("Circular dependency detected or failed sort! Missing plugins: {}", missing)
+        cycle_info = []
+        try:
+            for pid in missing:
+                deps = [d for d in graph.get(pid, set()) if d in missing]
+                if deps:
+                    cycle_info.append(f"{pid} -> {deps}")
+        except Exception:
+            cycle_info = []
+        logger.error(
+            "Circular dependency detected or failed sort! Missing plugins: {}. Dependency chains: {}. "
+            "These plugins will be loaded in undefined order and may fail.",
+            missing,
+            cycle_info,
+        )
         # 这种情况下，我们将未排序的插件追加到后面，尝试尽力加载
         final_order.extend(missing)
     
@@ -1222,36 +1237,9 @@ def load_plugins_from_toml(
         
         logger.info("Loading plugin: {}", pid)
 
-        # 运行时控制开关来自原始 plugin.toml：
-        # - enabled: 决定插件是否被启用（允许运行）。禁用插件仍然会注册元数据，
-        #   但不会在服务器启动时创建进程，也不允许通过 API 手动启动。
-        # - auto_start: 仅控制服务器启动时是否自动创建插件进程；不影响元数据注册，
-        #   也不阻止通过 API 手动启动。
-        runtime_cfg = conf.get("plugin_runtime")
-        enabled_val = True
-        auto_start_val = True
-        if isinstance(runtime_cfg, dict):
-            v_enabled = runtime_cfg.get("enabled")
-            v_auto = runtime_cfg.get("auto_start")
+        enabled_val = context.get("enabled", True)
+        auto_start_val = context.get("auto_start", True)
 
-            if isinstance(v_enabled, bool):
-                enabled_val = v_enabled
-            elif isinstance(v_enabled, str):
-                s = v_enabled.strip().lower()
-                if s in ("0", "false", "no", "off"):
-                    enabled_val = False
-                elif s in ("1", "true", "yes", "on"):
-                    enabled_val = True
-
-            if isinstance(v_auto, bool):
-                auto_start_val = v_auto
-            elif isinstance(v_auto, str):
-                s = v_auto.strip().lower()
-                if s in ("0", "false", "no", "off"):
-                    auto_start_val = False
-                elif s in ("1", "true", "yes", "on"):
-                    auto_start_val = True
-        
         # 依赖检查（可通过配置禁用）
         from plugin.settings import PLUGIN_ENABLE_DEPENDENCY_CHECK
         dependency_check_failed = False
@@ -1530,24 +1518,32 @@ def load_plugins_from_toml(
                 "Plugin %s from %s detected as duplicate in register_plugin, removing from plugin_hosts",
                 pid, toml_path
             )
+            existing_host = None
             # 移除刚注册的 host
             with state.plugin_hosts_lock:
                 if pid in state.plugin_hosts:
                     existing_host = state.plugin_hosts.pop(pid)
-                    # 尝试关闭进程
-                    try:
-                        if hasattr(existing_host, 'shutdown'):
-                            import asyncio
-                            # 如果是异步的，需要处理
-                            if asyncio.iscoroutinefunction(existing_host.shutdown):
-                                logger.debug("Plugin {} host shutdown is async, skipping in sync context", pid)
-                            else:
-                                existing_host.shutdown(timeout=1.0)
-                        elif hasattr(existing_host, 'process') and existing_host.process:
-                            existing_host.process.terminate()
-                            existing_host.process.join(timeout=1.0)
-                    except Exception as e:
-                        logger.debug("Error shutting down duplicate plugin {}: {}", pid, e)
+
+            # 尝试关闭进程
+            if existing_host is not None:
+                try:
+                    if hasattr(existing_host, 'shutdown'):
+                        import asyncio
+                        # 如果是异步的，需要处理
+                        if asyncio.iscoroutinefunction(existing_host.shutdown):
+                            try:
+                                loop = asyncio.get_running_loop()
+                                loop.create_task(existing_host.shutdown(timeout=1.0))
+                                logger.debug("Plugin {} scheduled async shutdown", pid)
+                            except RuntimeError:
+                                asyncio.run(existing_host.shutdown(timeout=1.0))
+                        else:
+                            existing_host.shutdown(timeout=1.0)
+                    elif hasattr(existing_host, 'process') and existing_host.process:
+                        existing_host.process.terminate()
+                        existing_host.process.join(timeout=1.0)
+                except Exception as e:
+                    logger.debug("Error shutting down duplicate plugin {}: {}", pid, e)
             logger.info("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
             continue
         
@@ -1578,4 +1574,4 @@ def load_plugins_from_toml(
 
             _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
         except Exception:
-            pass
+            logger.debug("Failed to enqueue lifecycle event for plugin {}", pid, exc_info=True)
