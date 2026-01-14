@@ -54,7 +54,6 @@ class BusChangeHub:
             try:
                 cb(str(op), dict(payload) if isinstance(payload, dict) else {})
             except Exception:
-                import logging
                 logging.getLogger("user_plugin_server").debug(
                     f"BusChangeHub callback error for bus={bus}, op={op}", exc_info=True
                 )
@@ -251,7 +250,9 @@ class PluginRuntimeState:
                     if existing is not None:
                         ev = existing
                 except Exception:
-                    pass
+                    logging.getLogger("user_plugin_server").debug(
+                        f"Failed to retrieve response event for request_id={rid}", exc_info=True
+                    )
             except Exception:
                 logging.getLogger("user_plugin_server").debug(
                     f"Failed to store response event for request_id={rid}", exc_info=True

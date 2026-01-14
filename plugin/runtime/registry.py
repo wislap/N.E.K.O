@@ -12,6 +12,9 @@ from typing import Any, Dict, List, Callable, Type, Optional, cast
 
 from loguru import logger as loguru_logger
 
+
+_pending_async_shutdown_tasks: set = set()
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
@@ -464,7 +467,13 @@ def _parse_plugin_dependencies(
                         dep_config,
                     )
                 except Exception:
-                    pass
+                    import sys
+                    try:
+                        sys.stderr.write(
+                            f"[registry] Failed to log exception for plugin {plugin_id!s} (conflicts=true)\n"
+                        )
+                    except Exception:
+                        pass
             continue
         
         # 完整格式：解析所有字段
@@ -1533,7 +1542,19 @@ def load_plugins_from_toml(
                         if asyncio.iscoroutinefunction(existing_host.shutdown):
                             try:
                                 loop = asyncio.get_running_loop()
-                                loop.create_task(existing_host.shutdown(timeout=1.0))
+                                task = loop.create_task(existing_host.shutdown(timeout=1.0))
+                                _pending_async_shutdown_tasks.add(task)
+
+                                def _on_done(t: asyncio.Task) -> None:
+                                    _pending_async_shutdown_tasks.discard(t)
+                                    try:
+                                        _ = t.exception()
+                                    except asyncio.CancelledError:
+                                        pass
+                                    except Exception:
+                                        pass
+
+                                task.add_done_callback(_on_done)
                                 logger.debug("Plugin {} scheduled async shutdown", pid)
                             except RuntimeError:
                                 asyncio.run(existing_host.shutdown(timeout=1.0))
