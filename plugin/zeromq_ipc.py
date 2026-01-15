@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 
 import ormsgpack
 
+from plugin.settings import PLUGIN_ZMQ_PUSH_QUEUE_MAX, PLUGIN_ZMQ_PUSH_WORKERS
+
 
 _ENV_VAL = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENABLED")
 if _ENV_VAL is None:
@@ -384,45 +386,138 @@ class ZmqMessagePushPullConsumer:
         self._running = True
         self._recv_count = 0
         self._last_log_ts = 0.0
+        try:
+            self._workers = max(1, int(PLUGIN_ZMQ_PUSH_WORKERS))
+        except Exception:
+            self._workers = 1
+        try:
+            self._queue_max = max(1, int(PLUGIN_ZMQ_PUSH_QUEUE_MAX))
+        except Exception:
+            self._queue_max = 1024
 
     async def serve_forever(self, shutdown_event) -> None:
-        while self._running and not shutdown_event.is_set():
-            try:
-                raw = await asyncio.wait_for(self._sock.recv(), timeout=0.2)
-            except asyncio.TimeoutError:
-                continue
-            except Exception:
-                await _async_sleep(0.01)
-                continue
-            try:
-                msg = _loads(raw)
-            except Exception:
-                continue
-            if not isinstance(msg, dict):
-                continue
-            if str(msg.get("type")) != "MESSAGE_PUSH_BATCH":
-                continue
+        if int(self._workers) <= 1:
+            while self._running and not shutdown_event.is_set():
+                try:
+                    raw = await asyncio.wait_for(self._sock.recv(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    await _async_sleep(0.01)
+                    continue
+                try:
+                    msg = _loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("type")) != "MESSAGE_PUSH_BATCH":
+                    continue
 
-            self._recv_count += 1
-            try:
-                now_ts = time.time()
-                if now_ts - float(self._last_log_ts) >= 5.0:
-                    self._last_log_ts = float(now_ts)
-                    import logging
+                self._recv_count += 1
+                try:
+                    now_ts = time.time()
+                    if now_ts - float(self._last_log_ts) >= 5.0:
+                        self._last_log_ts = float(now_ts)
+                        import logging
 
-                    logging.getLogger("plugin.router").debug(
-                        "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
-                        int(self._recv_count),
-                        str(msg.get("type")),
-                        str(msg.get("from_plugin")),
-                    )
+                        logging.getLogger("plugin.router").debug(
+                            "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
+                            int(self._recv_count),
+                            str(msg.get("type")),
+                            str(msg.get("from_plugin")),
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    await self._handler(msg)
+                except Exception:
+                    continue
+            return
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=int(self._queue_max))
+
+        async def _recv_loop() -> None:
+            while self._running and not shutdown_event.is_set():
+                try:
+                    raw = await asyncio.wait_for(self._sock.recv(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    await _async_sleep(0.01)
+                    continue
+                try:
+                    msg = _loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("type")) != "MESSAGE_PUSH_BATCH":
+                    continue
+
+                self._recv_count += 1
+                try:
+                    now_ts = time.time()
+                    if now_ts - float(self._last_log_ts) >= 5.0:
+                        self._last_log_ts = float(now_ts)
+                        import logging
+
+                        logging.getLogger("plugin.router").debug(
+                            "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
+                            int(self._recv_count),
+                            str(msg.get("type")),
+                            str(msg.get("from_plugin")),
+                        )
+                except Exception:
+                    pass
+
+                try:
+                    q.put_nowait(msg)
+                except Exception:
+                    # Backpressure: drop batch when overloaded.
+                    continue
+
+        async def _worker_loop() -> None:
+            while self._running and not shutdown_event.is_set():
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=0.2)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    continue
+                try:
+                    await self._handler(msg)
+                except Exception:
+                    continue
+                finally:
+                    try:
+                        q.task_done()
+                    except Exception:
+                        pass
+
+        recv_task = asyncio.create_task(_recv_loop())
+        worker_tasks = [asyncio.create_task(_worker_loop()) for _ in range(int(self._workers))]
+        try:
+            await asyncio.gather(recv_task, *worker_tasks)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            try:
+                recv_task.cancel()
             except Exception:
                 pass
-
+            for t in worker_tasks:
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
             try:
-                await self._handler(msg)
+                await asyncio.gather(recv_task, *worker_tasks, return_exceptions=True)
             except Exception:
-                continue
+                pass
 
     def close(self) -> None:
         self._running = False

@@ -175,15 +175,25 @@ class PluginRouter:
                             continue
                         meta_raw = it.get("metadata")
                         if isinstance(meta_raw, dict):
-                            meta: Dict[str, Any] = {}
-                            for k, v in meta_raw.items():
-                                try:
-                                    kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                                except Exception:
-                                    kk = str(k)
-                                meta[kk] = v
-                            it = dict(it)
-                            it["metadata"] = meta
+                            needs_fix = False
+                            try:
+                                for k in meta_raw.keys():
+                                    if not isinstance(k, str):
+                                        needs_fix = True
+                                        break
+                            except Exception:
+                                needs_fix = True
+
+                            if needs_fix:
+                                meta: Dict[str, Any] = {}
+                                for k, v in meta_raw.items():
+                                    try:
+                                        kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                                    except Exception:
+                                        kk = str(k)
+                                    meta[kk] = v
+                                it = dict(it)
+                                it["metadata"] = meta
                         batch_items.append(it)
 
                     try:
