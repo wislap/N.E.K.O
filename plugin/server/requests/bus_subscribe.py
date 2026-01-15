@@ -14,7 +14,7 @@ logger = logging.getLogger("plugin.router")
 
 def _norm_bus(v: Any) -> Optional[str]:
     s = str(v).strip() if v is not None else ""
-    return s if s in ("messages", "events", "lifecycle") else None
+    return s if s in ("messages", "events", "lifecycle", "runs", "export") else None
 
 
 async def handle_bus_subscribe(request: Dict[str, Any], send_response: SendResponse) -> None:

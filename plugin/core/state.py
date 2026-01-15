@@ -27,6 +27,8 @@ class BusChangeHub:
             "messages": {},
             "events": {},
             "lifecycle": {},
+            "runs": {},
+            "export": {},
         }
 
     def subscribe(self, bus: str, callback: Callable[[str, Dict[str, Any]], None]) -> Callable[[], None]:
@@ -103,6 +105,8 @@ class PluginRuntimeState:
             "messages": 0,
             "events": 0,
             "lifecycle": 0,
+            "runs": 0,
+            "export": 0,
         }
 
         self.bus_change_hub = BusChangeHub()
@@ -112,6 +116,8 @@ class PluginRuntimeState:
             "messages": {},
             "events": {},
             "lifecycle": {},
+            "runs": {},
+            "export": {},
         }
 
         self._user_context_lock = threading.Lock()

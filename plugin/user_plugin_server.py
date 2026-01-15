@@ -67,6 +67,18 @@ from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 from plugin.api.exceptions import PluginError
 
+from plugin.server.runs import (
+    RunCreateRequest,
+    RunCreateResponse,
+    RunCancelRequest,
+    RunRecord,
+    ExportListResponse,
+    create_run,
+    get_run,
+    cancel_run,
+    list_export_for_run,
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -299,6 +311,66 @@ async def list_plugins():
     except Exception as e:
         logger.exception("Failed to list plugins: Unexpected error")
         raise handle_plugin_error(e, "Failed to list plugins", 500) from e
+
+
+# ========== Run Protocol (new primary invocation API) ==========
+
+@app.post("/runs", response_model=RunCreateResponse)
+async def runs_create(payload: RunCreateRequest, request: Request):
+    try:
+        client_host = request.client.host if request.client else None
+        return await create_run(payload, client_host=client_host)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create run")
+        raise handle_plugin_error(e, "Failed to create run", 500) from e
+
+
+@app.get("/runs/{run_id}", response_model=RunRecord)
+async def runs_get(run_id: str):
+    try:
+        rec = get_run(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return rec
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get run")
+        raise handle_plugin_error(e, "Failed to get run", 500) from e
+
+
+@app.post("/runs/{run_id}/cancel", response_model=RunRecord)
+async def runs_cancel(run_id: str, payload: RunCancelRequest = Body(default=RunCancelRequest())):
+    try:
+        rec = cancel_run(run_id, reason=payload.reason)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return rec
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to cancel run")
+        raise handle_plugin_error(e, "Failed to cancel run", 500) from e
+
+
+@app.get("/runs/{run_id}/export", response_model=ExportListResponse)
+async def runs_export(
+    run_id: str,
+    after: Optional[str] = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+):
+    try:
+        rec = get_run(run_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return list_export_for_run(run_id=run_id, after=after, limit=int(limit))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to list export items")
+        raise handle_plugin_error(e, "Failed to list export items", 500) from e
 
 
 @app.post("/plugin/trigger", response_model=PluginTriggerResponse)

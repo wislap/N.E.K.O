@@ -53,6 +53,8 @@ class BusSubscriptionManager:
             self._unsubs.append(state.bus_change_hub.subscribe("messages", _on_change_factory("messages")))
             self._unsubs.append(state.bus_change_hub.subscribe("events", _on_change_factory("events")))
             self._unsubs.append(state.bus_change_hub.subscribe("lifecycle", _on_change_factory("lifecycle")))
+            self._unsubs.append(state.bus_change_hub.subscribe("runs", _on_change_factory("runs")))
+            self._unsubs.append(state.bus_change_hub.subscribe("export", _on_change_factory("export")))
         except Exception as e:
             logger.opt(exception=True).exception("Failed to subscribe bus_change_hub: {}", e)
 

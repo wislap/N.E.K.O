@@ -35,6 +35,14 @@ Non-goals:
   - `trace_id`: optional cross-service trace identifier.
   - `task_id`: optional business identifier.
 
+Additional identifiers (recommended):
+
+- `idempotency_key`: caller-provided key to deduplicate network retries / duplicate triggers.
+- `root_run_id`: stable identifier for a logical invocation across retries (attempts).
+- `parent_run_id`: the previous attempt run that the new run retries from (if any).
+- `attempt`: integer attempt index within a `root_run_id` sequence (starting at 1).
+- `export_item_id`: unique identifier for a single exported output item.
+
 
 ## 3. Design Summary
 
@@ -77,6 +85,10 @@ Optional intermediate statuses (implementation-dependent):
 
 - `cancel_requested`: cancellation requested but not yet observed/terminated.
 
+Recommendation:
+
+- Implementations SHOULD support `cancel_requested` to represent two-phase cancellation (§7.3, §8.2).
+
 ### 4.2 State transitions
 
 Allowed transitions:
@@ -90,6 +102,11 @@ Terminal states:
 
 - `succeeded`, `failed`, `canceled`, `timeout` are terminal.
 - Terminal states MUST be immutable once committed.
+
+Partial results under cancellation:
+
+- A Run that ends in `canceled` MAY still have exported items.
+- If partial results are intended to be user-visible and treated as “final”, they MUST be referenced by `result_refs` when committing the terminal state (see §5.2).
 
 ### 4.3 Progress semantics
 
@@ -115,11 +132,16 @@ A RunStore record SHOULD contain:
 
 - `task_id: string | null`
 - `trace_id: string | null`
+- `idempotency_key: string | null`
+- `root_run_id: string | null` (defaults to `run_id` if not set)
+- `parent_run_id: string | null` (set when created via retry)
+- `attempt: int | null` (starting at 1)
 - `started_at: float | null`
 - `finished_at: float | null`
 - `progress: float | null`
 - `cancel_requested: bool`
 - `cancel_reason: string | null`
+- `cancel_requested_at: float | null`
 - `error: object | null` (see §9)
 - `result_refs: list[ExportRef]` (only final/committed refs)
 
@@ -128,6 +150,10 @@ A RunStore record SHOULD contain:
 - `result_refs` MUST represent the “final result set” for the run.
 - `result_refs` MUST only be committed when the Run reaches a terminal state.
 - During `running`, intermediate outputs MAY exist in the export channel, but they MUST NOT be treated as the final result set unless referenced by `result_refs`.
+
+Export replay requirement:
+
+- The system SHOULD provide a way to replay/export items for a run by querying storage (see §7.5), because the export channel itself may be lossy or best-effort.
 
 
 ## 6. Channels
@@ -143,6 +169,10 @@ Properties:
 - Payloads are lightweight and structured.
 - The channel is not authoritative; RunStore is.
 - Observers MUST be able to recover by calling `GET /runs/{run_id}`.
+
+Filtering requirement:
+
+- Implementations SHOULD support filtered subscription (at least by `run_id` and optionally by `task_id`, `plugin_id`, `status`) to avoid forcing observers to consume all runs.
 
 Recommended delta payload:
 
@@ -168,12 +198,57 @@ Properties:
 - Each item MUST include `run_id`.
 - Large payloads SHOULD be referenced by URL.
 
+Reliability requirement:
+
+- Export items SHOULD be persisted before notification is emitted, so observers can recover by replay (see §7.5).
+
+Recommended ExportItem schema (informative):
+
+```json
+{
+  "export_item_id": "...",
+  "run_id": "...",
+  "type": "text|url|binary_url|binary",
+  "created_at": 1730000000.0,
+  "description": "optional",
+  "text": "...",
+  "url": "...",
+  "binary_url": "...",
+  "binary": "base64...",
+  "mime": "optional",
+  "metadata": {}
+}
+```
+
+Filtering requirement:
+
+- Implementations SHOULD support filtered subscription at least by `run_id`.
+
 ExportItem types:
 
 - `text`
 - `url`
 - `binary_url`
 - `binary` (allowed only for small payloads; size limit required)
+
+### 6.3 Implementation note: mapping channels onto an existing bus/watch system (informative)
+
+If the system already has a bus-style pub/sub with:
+
+- per-bus subscriptions
+- delta delivery (`add|change|del`)
+- optional client-side watchers (reload+diff)
+
+then implementations MAY map:
+
+- `runs` channel -> a `runs` bus that emits lightweight delta payloads (see §6.1).
+- `export` channel -> an `export` bus that emits append-only notifications (preferably only IDs + metadata; see §6.2).
+
+To reduce fanout and client load, the bus subscription layer SHOULD support filtering at least by `run_id`.
+If the bus system supports query plans (e.g., filter/where/limit) or debounce/coalesce, it SHOULD be used to:
+
+- coalesce high-frequency progress updates on `runs`
+- avoid dropping `export` result items by relying on replay via storage (§7.5)
 
 
 ## 7. HTTP API (External-facing)
@@ -194,6 +269,11 @@ Optional:
 - `trace_id`
 - `idempotency_key`
 - `mode`: `"async" | "sync"` (default: `async`)
+
+Idempotency semantics:
+
+- If `idempotency_key` is provided, the server SHOULD deduplicate requests and return the same `run_id` for repeated submissions with the same key (within an implementation-defined window).
+- The server SHOULD validate that the deduplicated run matches `plugin_id`/`entry_id` to avoid accidental key collisions.
 
 Response:
 
@@ -218,11 +298,51 @@ Behavior:
 - If `queued`, server MAY directly transition to `canceled`.
 - If `running`, plugin is expected to cooperate (§8). Server MAY enforce a timeout and mark as `timeout`/`canceled`.
 
+Two-phase cancellation (recommended):
+
+- On cancel request for a `running` run, the server SHOULD transition `running -> cancel_requested` immediately.
+- The server SHOULD keep `cancel_requested=true`, set `cancel_requested_at`, and record `cancel_reason` when provided.
+- When the plugin acknowledges cancellation (e.g., raises `RunCancelled`) or the host terminates execution, the server commits terminal `canceled`.
+
 ### 7.4 List runs (optional)
 
 `GET /runs?task_id=...&plugin_id=...&status=...`
 
 This endpoint is optional and intended for UI/operations.
+
+### 7.5 List/export replay (recommended)
+
+`GET /runs/{run_id}/export`
+
+Purpose:
+
+- Replay export items for reliable clients (UI/agent/external callers).
+
+Query parameters (recommended):
+
+- `after`: opaque cursor or `export_item_id` / monotonic offset (implementation-defined)
+- `limit`: max items
+
+Response (recommended):
+
+- `items: list[ExportItem]`
+- `next_after: string | null`
+
+### 7.6 Retry a run (recommended)
+
+`POST /runs/{run_id}/retry`
+
+Behavior:
+
+- Creates a new Run attempt with a new `run_id`.
+- The new run SHOULD inherit `root_run_id` from the original run (or set it to the original `run_id` if missing).
+- The new run MUST set `parent_run_id` to the retried run.
+- The new run SHOULD set `attempt = parent.attempt + 1` when available.
+
+Notes:
+
+- This endpoint is for intentional re-execution after a terminal state.
+- Network retries should use `idempotency_key` instead of creating new attempts.
 
 
 ## 8. Plugin-side Contract (Developer Experience)
@@ -240,11 +360,21 @@ The plugin SDK SHOULD expose:
 - `ctx.run.export_binary_url(url: str, description: str | None = None)`
 - `ctx.run.check_cancelled()`
 
+Additional recommended APIs:
+
+- `ctx.run.status(status: str, message: str | None = None)` (optional structured stage updates; mapped to `runs` channel)
+- `ctx.run.export_id(ref: str)` (optional: let plugins reference existing stored artifacts by ID)
+
 ### 8.2 Cooperative cancellation
 
 - The plugin runtime MUST make cancellation status observable to the running entry.
 - `check_cancelled()` SHOULD raise a well-known exception (e.g., `RunCancelled`) or return a boolean.
 - Long loops SHOULD call `check_cancelled()` periodically.
+
+Cancellation contract:
+
+- If cancellation is requested, the runtime SHOULD make it visible quickly enough that cooperative code can respond within a bounded time.
+- When `RunCancelled` is raised/observed, the host SHOULD commit terminal `canceled` (not `failed`).
 
 ### 8.3 Default behavior
 
@@ -277,6 +407,10 @@ RunStore `error` SHOULD follow a structured model:
   - `runs` updates: at most once per 100ms per run.
   - `export` progress items: disabled by default; if enabled, at most once per 500ms per run.
 
+Coalescing recommendation:
+
+- For `runs` updates, coalescing by `run_id` is preferred (keep only the latest state/progress in a short window).
+
 ### 10.2 Large payload handling
 
 - `binary` inline export MUST have a strict max size (e.g., 64KB).
@@ -296,6 +430,10 @@ If channels are implemented on top of bus queues:
 - All logs related to a run SHOULD include `run_id`.
 - If present, `trace_id` SHOULD be propagated into plugin logs and exported items.
 - UI SHOULD group items by `run_id`.
+
+Attempt correlation:
+
+- UIs/agents SHOULD group attempts by `root_run_id` and show `attempt` to present retry history.
 
 
 ## 12. Compatibility & Migration Plan
