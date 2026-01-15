@@ -81,6 +81,7 @@ class PluginRouter:
                 from plugin.server.services import (
                     push_messages_to_queue_batch,
                     validate_and_advance_push_seq_batch,
+                    validate_and_advance_push_seq_range,
                 )
 
                 async def _handle_push_batch(msg: Dict[str, Any]) -> None:
@@ -100,60 +101,73 @@ class PluginRouter:
                             len(items),
                         )
 
-                    seq_list: list[int] = []
-                    for it in items:
-                        if not isinstance(it, dict):
-                            continue
-                        s = it.get("seq")
-                        if isinstance(s, int):
-                            seq_list.append(int(s))
-                        else:
-                            try:
-                                if s is not None:
-                                    seq_list.append(int(s))
-                            except Exception:
-                                pass
-
+                    # Prefer O(1) seq validation using batch header.
                     first_seq = msg.get("first_seq")
                     last_seq = msg.get("last_seq")
-                    if seq_list:
-                        if first_seq is not None:
-                            try:
-                                if int(first_seq) != int(seq_list[0]):
-                                    logger.warning(
-                                        "[MESSAGE_PUSH_BATCH] first_seq mismatch from={} declared={} actual={}",
-                                        from_plugin,
-                                        first_seq,
-                                        seq_list[0],
-                                    )
-                            except Exception:
-                                pass
-                        if last_seq is not None:
-                            try:
-                                if int(last_seq) != int(seq_list[-1]):
-                                    logger.warning(
-                                        "[MESSAGE_PUSH_BATCH] last_seq mismatch from={} declared={} actual={}",
-                                        from_plugin,
-                                        last_seq,
-                                        seq_list[-1],
-                                    )
-                            except Exception:
-                                pass
+                    seq_ok = False
+                    try:
+                        if first_seq is not None and last_seq is not None and isinstance(declared_count, int):
+                            validate_and_advance_push_seq_range(
+                                plugin_id=str(from_plugin),
+                                first_seq=int(first_seq),
+                                last_seq=int(last_seq),
+                                count=int(declared_count),
+                            )
+                            seq_ok = True
+                    except Exception:
+                        seq_ok = False
 
-                        for i in range(1, len(seq_list)):
-                            if seq_list[i] <= seq_list[i - 1]:
-                                logger.warning(
-                                    "[MESSAGE_PUSH_BATCH] seq not strictly increasing from={} prev={} curr={}",
-                                    from_plugin,
-                                    seq_list[i - 1],
-                                    seq_list[i],
-                                )
-                                break
-                    if seq_list:
-                        try:
-                            validate_and_advance_push_seq_batch(plugin_id=str(from_plugin), seq_list=seq_list)
-                        except Exception:
-                            pass
+                    # Fallback: build seq_list only when range validation is not available.
+                    if not seq_ok:
+                        seq_list: list[int] = []
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            s = it.get("seq")
+                            if isinstance(s, int):
+                                seq_list.append(int(s))
+                            else:
+                                try:
+                                    if s is not None:
+                                        seq_list.append(int(s))
+                                except Exception:
+                                    pass
+                        if seq_list:
+                            if first_seq is not None:
+                                try:
+                                    if int(first_seq) != int(seq_list[0]):
+                                        logger.warning(
+                                            "[MESSAGE_PUSH_BATCH] first_seq mismatch from={} declared={} actual={}",
+                                            from_plugin,
+                                            first_seq,
+                                            seq_list[0],
+                                        )
+                                except Exception:
+                                    pass
+                            if last_seq is not None:
+                                try:
+                                    if int(last_seq) != int(seq_list[-1]):
+                                        logger.warning(
+                                            "[MESSAGE_PUSH_BATCH] last_seq mismatch from={} declared={} actual={}",
+                                            from_plugin,
+                                            last_seq,
+                                            seq_list[-1],
+                                        )
+                                except Exception:
+                                    pass
+                            for i in range(1, len(seq_list)):
+                                if seq_list[i] <= seq_list[i - 1]:
+                                    logger.warning(
+                                        "[MESSAGE_PUSH_BATCH] seq not strictly increasing from={} prev={} curr={}",
+                                        from_plugin,
+                                        seq_list[i - 1],
+                                        seq_list[i],
+                                    )
+                                    break
+                            try:
+                                validate_and_advance_push_seq_batch(plugin_id=str(from_plugin), seq_list=seq_list)
+                            except Exception:
+                                pass
 
                     batch_items: list[Dict[str, Any]] = []
                     for it in items:

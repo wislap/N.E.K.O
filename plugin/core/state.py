@@ -334,6 +334,62 @@ class PluginRuntimeState:
                 pass
         return len(kept)
 
+    def extend_message_records_coalesced(self, records: List[Dict[str, Any]]) -> int:
+        if not isinstance(records, list) or not records:
+            return 0
+        candidates: List[Dict[str, Any]] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            candidates.append(rec)
+
+        kept: List[Dict[str, Any]] = []
+        last_mid: Optional[str] = None
+        last_priority: int = 0
+        last_source: Optional[str] = None
+        with self._bus_store_lock:
+            for rec in candidates:
+                mid = rec.get("message_id")
+                if isinstance(mid, str) and mid in self._deleted_message_ids:
+                    continue
+                kept.append(rec)
+                if isinstance(mid, str) and mid:
+                    last_mid = mid
+                try:
+                    last_priority = int(rec.get("priority", 0))
+                except Exception:
+                    last_priority = last_priority
+                try:
+                    src = rec.get("source")
+                    if isinstance(src, str) and src:
+                        last_source = src
+                except Exception:
+                    last_source = last_source
+            try:
+                if kept:
+                    self._message_store.extend(kept)
+            except Exception:
+                for rec in kept:
+                    self._message_store.append(rec)
+        if not kept:
+            return 0
+        try:
+            rev = self._bump_bus_rev("messages")
+            payload: Dict[str, Any] = {
+                "rev": rev,
+                "count": int(len(kept)),
+                "batch": True,
+            }
+            if isinstance(last_mid, str) and last_mid:
+                payload["message_id"] = last_mid
+            payload["priority"] = int(last_priority)
+            if isinstance(last_source, str) and last_source:
+                payload["source"] = last_source
+            self.bus_change_hub.emit("messages", "add", payload)
+        except Exception:
+            pass
+        return int(len(kept))
+
     def append_event_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return

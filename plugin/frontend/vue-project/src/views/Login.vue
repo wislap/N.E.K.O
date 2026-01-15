@@ -28,16 +28,26 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button
-            type="primary"
-            :loading="loading"
-            :disabled="!isCodeValid"
-            @click="handleLogin"
-            size="large"
-            class="login-button"
-          >
-            {{ loading ? '验证中...' : '登录' }}
-          </el-button>
+          <div class="login-actions">
+            <el-button
+              type="primary"
+              :loading="loading"
+              :disabled="!isCodeValid"
+              @click="handleLogin"
+              size="large"
+              class="login-button"
+            >
+              {{ loading ? t('auth.loggingIn') : t('auth.login') }}
+            </el-button>
+            <el-button
+              :disabled="loading"
+              @click="handlePasteFromClipboard"
+              size="large"
+              class="paste-button"
+            >
+              {{ t('auth.pasteFromClipboard') }}
+            </el-button>
+          </div>
         </el-form-item>
       </el-form>
 
@@ -62,6 +72,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Lock } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -70,10 +81,13 @@ import { get } from '@/api'
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
+const { t } = useI18n()
 
 const code = ref('')
 const loading = ref(false)
 const errorMessage = ref('')
+const lastAutoLoginCode = ref('')
+let autoLoginTimer: number | undefined
 
 const isCodeValid = computed(() => {
   const normalized = code.value.trim().toUpperCase()
@@ -87,14 +101,64 @@ function isValidRedirect(url: string): boolean {
 
 function handleInput() {
   // 自动转换为大写
-  code.value = code.value.toUpperCase()
+  code.value = code.value.toUpperCase().slice(0, 4)
   errorMessage.value = ''
+
+  scheduleAutoLogin()
 }
 
-async function handleLogin() {
+function scheduleAutoLogin() {
+  if (!isCodeValid.value) return
+  if (loading.value) return
+
+  const normalized = code.value.trim().toUpperCase()
+  if (normalized === lastAutoLoginCode.value) return
+
+  if (autoLoginTimer) {
+    clearTimeout(autoLoginTimer)
+  }
+
+  autoLoginTimer = window.setTimeout(async () => {
+    if (!isCodeValid.value) return
+    if (loading.value) return
+
+    const latest = code.value.trim().toUpperCase()
+    if (latest === lastAutoLoginCode.value) return
+
+    const ok = await handleLogin()
+    if (ok) {
+      lastAutoLoginCode.value = latest
+    }
+  }, 150)
+}
+
+async function handlePasteFromClipboard() {
+  try {
+    if (!navigator.clipboard?.readText) {
+      ElMessage.error(t('auth.clipboardUnsupported'))
+      return
+    }
+
+    const text = await navigator.clipboard.readText()
+    const match = (text || '').toUpperCase().match(/[A-Z]{4}/)
+    if (!match) {
+      ElMessage.warning(t('auth.clipboardNoCodeFound'))
+      return
+    }
+
+    code.value = match[0]
+    errorMessage.value = ''
+    scheduleAutoLogin()
+  } catch (error) {
+    console.error('Failed to read clipboard:', error)
+    ElMessage.error(t('auth.clipboardReadFailed'))
+  }
+}
+
+async function handleLogin(): Promise<boolean> {
   if (!isCodeValid.value) {
     errorMessage.value = '请输入4位字母验证码'
-    return
+    return false
   }
 
   loading.value = true
@@ -112,23 +176,27 @@ async function handleLogin() {
       ElMessage.success('登录成功')
       const redirect = route.query.redirect as string
       router.push(isValidRedirect(redirect) ? redirect : '/')
+      return true
     } catch (error: any) {
       // 如果返回 401 或 403，说明验证码错误
       if (error.response?.status === 401 || error.response?.status === 403) {
         authStore.clearAuthCode()
         errorMessage.value = '验证码错误，请重新输入'
         ElMessage.error('验证码错误')
+        return false
       } else {
         // 其他错误（500、网络问题等），不保存验证码
         authStore.clearAuthCode()
         errorMessage.value = '服务器连接失败，请稍后重试'
         ElMessage.error('无法连接到服务器')
+        return false
       }
     }
   } catch (error) {
     console.error('Login error:', error)
     errorMessage.value = '登录失败，请重试'
     ElMessage.error('登录失败')
+    return false
   } finally {
     loading.value = false
   }
@@ -184,6 +252,22 @@ async function handleLogin() {
 .login-button {
   margin-top: 20px;
   width: 100%;
+}
+
+.login-actions {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  margin-top: 20px;
+}
+
+.login-actions .login-button {
+  margin-top: 0;
+  flex: 1;
+}
+
+.paste-button {
+  flex: 1;
 }
 
 .login-hint {

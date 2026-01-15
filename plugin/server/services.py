@@ -102,6 +102,29 @@ def validate_and_advance_push_seq_batch(*, plugin_id: str, seq_list: List[int]) 
     _push_expected_seq[pid] = int(seqs[-1]) + 1
 
 
+def validate_and_advance_push_seq_range(*, plugin_id: str, first_seq: int, last_seq: int, count: int) -> None:
+    pid = str(plugin_id)
+    try:
+        first_i = int(first_seq)
+        last_i = int(last_seq)
+        n = int(count)
+    except Exception as e:
+        raise ValueError(f"invalid seq range args: {e}") from e
+    if n <= 0:
+        return
+    if last_i < first_i:
+        raise ValueError(f"invalid seq range: first={first_i} last={last_i}")
+    if (last_i - first_i + 1) != n:
+        raise ValueError(f"seq range length mismatch: first={first_i} last={last_i} count={n}")
+    try:
+        expected = int(_push_expected_seq.get(pid, 0))
+    except Exception:
+        expected = 0
+    if first_i != expected:
+        raise ValueError(f"push seq mismatch: expected={expected} got={first_i}")
+    _push_expected_seq[pid] = int(last_i) + 1
+
+
 _BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "1").lower() in ("1", "true", "yes", "on")
 _bus_ingest_stop: Optional[asyncio.Event] = None
 _bus_ingest_task: Optional[asyncio.Task[None]] = None
@@ -1434,6 +1457,7 @@ def push_messages_to_queue_batch(
 
     pid = str(plugin_id)
     now_s = now_iso()
+    fast = str(mode) == "zmq-fast"
     out_records: List[Dict[str, Any]] = []
     for it in items:
         if not isinstance(it, dict):
@@ -1460,27 +1484,41 @@ def push_messages_to_queue_batch(
             "time": t,
             "_bus_stored": True,
         }
-        try:
-            _ = _validate_message_payload(msg, mode=str(mode))
-        except Exception:
-            continue
+        if fast:
+            # Fast path: avoid per-item pydantic/field-scan overhead.
+            # Enforce minimal invariants inline.
+            if not msg.get("source") or not msg.get("message_type"):
+                continue
+            if not isinstance(msg.get("metadata"), dict):
+                msg["metadata"] = {}
+        else:
+            try:
+                _ = _validate_message_payload(msg, mode=str(mode))
+            except Exception:
+                continue
         out_records.append(msg)
 
     if not out_records:
         return 0
 
-    try:
-        for rec in out_records:
-            try:
-                state.message_queue.put_nowait(rec)
-            except Exception:
-                break
-    except Exception:
-        pass
+    if not fast:
+        try:
+            for rec in out_records:
+                try:
+                    state.message_queue.put_nowait(rec)
+                except Exception:
+                    break
+        except Exception:
+            pass
 
     stored = 0
     try:
-        stored = int(state.extend_message_records(out_records))
+        # For fast mode, avoid per-message bus_change notifications.
+        # A single coalesced notification (single rev bump) drastically reduces overhead.
+        if str(mode) == "zmq-fast":
+            stored = int(state.extend_message_records_coalesced(out_records))
+        else:
+            stored = int(state.extend_message_records(out_records))
     except Exception:
         try:
             for rec in out_records:

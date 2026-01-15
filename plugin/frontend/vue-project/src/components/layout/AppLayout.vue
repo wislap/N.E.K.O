@@ -56,12 +56,17 @@
       />
 
       <template #footer>
-        <el-button :disabled="authLoading" @click="goToLogin">
-          {{ t('auth.goToLogin') }}
-        </el-button>
-        <el-button type="primary" :loading="authLoading" :disabled="!isAuthCodeValid" @click="submitAuth">
-          {{ t('auth.login') }}
-        </el-button>
+        <div class="auth-actions">
+          <el-button :disabled="authLoading" @click="goToLogin">
+            {{ t('auth.goToLogin') }}
+          </el-button>
+          <el-button :disabled="authLoading" @click="handlePasteFromClipboard">
+            {{ t('auth.pasteFromClipboard') }}
+          </el-button>
+          <el-button type="primary" :loading="authLoading" :disabled="!isAuthCodeValid" @click="submitAuth">
+            {{ t('auth.login') }}
+          </el-button>
+        </div>
       </template>
     </el-form>
   </el-dialog>
@@ -89,6 +94,8 @@ const authDialogVisible = ref(false)
 const authCodeInput = ref('')
 const authLoading = ref(false)
 const authError = ref('')
+const lastAutoAuthCode = ref('')
+let autoAuthTimer: number | undefined
 
 const isAuthCodeValid = computed(() => /^[A-Z]{4}$/.test(authCodeInput.value.trim().toUpperCase()))
 
@@ -99,20 +106,75 @@ watch(
     if (required) {
       authCodeInput.value = ''
       authError.value = ''
+      lastAutoAuthCode.value = ''
+      if (autoAuthTimer) {
+        clearTimeout(autoAuthTimer)
+        autoAuthTimer = undefined
+      }
     }
   },
   { immediate: true }
 )
 
 function handleAuthInput() {
-  authCodeInput.value = authCodeInput.value.toUpperCase()
+  authCodeInput.value = authCodeInput.value.toUpperCase().slice(0, 4)
   authError.value = ''
+
+  scheduleAutoSubmitAuth()
 }
 
-async function submitAuth() {
+function scheduleAutoSubmitAuth() {
+  if (!isAuthCodeValid.value) return
+  if (authLoading.value) return
+
+  const normalized = authCodeInput.value.trim().toUpperCase()
+  if (normalized === lastAutoAuthCode.value) return
+
+  if (autoAuthTimer) {
+    clearTimeout(autoAuthTimer)
+  }
+
+  autoAuthTimer = window.setTimeout(async () => {
+    if (!isAuthCodeValid.value) return
+    if (authLoading.value) return
+
+    const latest = authCodeInput.value.trim().toUpperCase()
+    if (latest === lastAutoAuthCode.value) return
+
+    const ok = await submitAuth()
+    if (ok) {
+      lastAutoAuthCode.value = latest
+    }
+  }, 150)
+}
+
+async function handlePasteFromClipboard() {
+  try {
+    if (!navigator.clipboard?.readText) {
+      ElMessage.error(t('auth.clipboardUnsupported'))
+      return
+    }
+
+    const text = await navigator.clipboard.readText()
+    const match = (text || '').toUpperCase().match(/[A-Z]{4}/)
+    if (!match) {
+      ElMessage.warning(t('auth.clipboardNoCodeFound'))
+      return
+    }
+
+    authCodeInput.value = match[0]
+    authError.value = ''
+    scheduleAutoSubmitAuth()
+  } catch (error) {
+    console.error('Failed to read clipboard:', error)
+    ElMessage.error(t('auth.clipboardReadFailed'))
+  }
+}
+
+async function submitAuth(): Promise<boolean> {
   if (!isAuthCodeValid.value) {
     authError.value = t('auth.codeError')
-    return
+    return false
   }
 
   authLoading.value = true
@@ -122,7 +184,7 @@ async function submitAuth() {
     const ok = authStore.setAuthCode(normalized)
     if (!ok) {
       authError.value = t('auth.codeError')
-      return
+      return false
     }
 
     await get('/server/info')
@@ -130,9 +192,11 @@ async function submitAuth() {
     authDialogVisible.value = false
     await pluginStore.fetchPlugins()
     ElMessage.success(t('auth.loginSuccess'))
+    return true
   } catch (e: any) {
     authStore.clearAuthCode()
     authError.value = t('auth.codeError')
+    return false
   } finally {
     authLoading.value = false
   }
@@ -181,6 +245,13 @@ onMounted(() => {
 
 .auth-warning {
   margin-top: 8px;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  width: 100%;
 }
 
 .fade-enter-active,
