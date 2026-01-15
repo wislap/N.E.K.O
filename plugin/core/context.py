@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import FastAPI
 
-from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
+from plugin.api.exceptions import PluginError
 from plugin.core.state import state
 from plugin.settings import (
     EVENT_META_ATTR,

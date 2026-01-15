@@ -1381,14 +1381,13 @@ def load_plugins_from_toml(
         # disabled plugins: visibility only. Do not load runtime, do not scan event handlers,
         # and must not participate in dependency/conflict evaluation.
         if not enabled_val:
-            entries_preview: List[Dict[str, Any]] = []
-            try:
-                module_path, class_name = entry.split(":", 1)
-                mod = importlib.import_module(module_path)
-                plugin_cls: Type[Any] = getattr(mod, class_name)
-                entries_preview = _extract_entries_preview(pid, plugin_cls, conf, pdata)
-            except Exception:
-                entries_preview = []
+            # Safer default: do not import disabled plugin code (module import can run top-level side effects).
+            entries_preview = _extract_entries_preview(
+                pid,
+                cls=type("DisabledPluginStub", (), {}),
+                conf=conf,
+                pdata=pdata,
+            )
 
             author_data = pdata.get("author")
             author = None
@@ -1589,6 +1588,7 @@ def load_plugins_from_toml(
                     host.plugin_id = pid
                     logger.debug("Updated host plugin_id to '{}'", pid)
                 
+                skip_register = False
                 with state.plugin_hosts_lock:
                     # 检查是否已经存在（防止重复注册）
                     if pid in state.plugin_hosts:
@@ -1601,28 +1601,52 @@ def load_plugins_from_toml(
                                         "Plugin %s from %s is already registered in plugin_hosts, skipping duplicate registration",
                                         pid, toml_path
                                     )
-                                    continue
+                                    skip_register = True
                             except (OSError, RuntimeError):
                                 pass
-                    # 注册 host
-                    state.plugin_hosts[pid] = host
-                    # 立即验证注册是否成功
-                    registered_keys = list(state.plugin_hosts.keys())
-                    logger.info(
-                        "Plugin {}: registered in plugin_hosts. Current plugin_hosts keys: {}",
-                        pid, registered_keys
-                    )
-                    # 在同一个锁内验证 host 是否还在（防止在注册后立即被其他代码移除）
-                    if pid not in state.plugin_hosts:
-                        logger.error(
-                            "Plugin {} host was removed from plugin_hosts immediately after registration! "
-                            "This should not happen. Current plugin_hosts keys: {}. "
-                            "Re-registering host to continue...",
-                            pid, list(state.plugin_hosts.keys())
-                        )
-                        # 重新注册 host（可能是被意外清空了）
+
+                    if not skip_register:
+                        # 注册 host
                         state.plugin_hosts[pid] = host
-                        logger.info("Plugin {}: re-registered in plugin_hosts", pid)
+                        # 立即验证注册是否成功
+                        registered_keys = list(state.plugin_hosts.keys())
+                        logger.info(
+                            "Plugin {}: registered in plugin_hosts. Current plugin_hosts keys: {}",
+                            pid, registered_keys
+                        )
+                        # 在同一个锁内验证 host 是否还在（防止在注册后立即被其他代码移除）
+                        if pid not in state.plugin_hosts:
+                            logger.error(
+                                "Plugin {} host was removed from plugin_hosts immediately after registration! "
+                                "This should not happen. Current plugin_hosts keys: {}. "
+                                "Re-registering host to continue...",
+                                pid, list(state.plugin_hosts.keys())
+                            )
+                            # 重新注册 host（可能是被意外清空了）
+                            state.plugin_hosts[pid] = host
+                            logger.info("Plugin {}: re-registered in plugin_hosts", pid)
+
+                if skip_register:
+                    try:
+                        if hasattr(host, "shutdown_sync"):
+                            host.shutdown_sync(timeout=1.0)
+                        elif hasattr(host, "shutdown"):
+                            import asyncio
+
+                            if asyncio.iscoroutinefunction(host.shutdown):
+                                try:
+                                    loop = asyncio.get_running_loop()
+                                    loop.create_task(host.shutdown(timeout=1.0))
+                                except RuntimeError:
+                                    asyncio.run(host.shutdown(timeout=1.0))
+                            else:
+                                host.shutdown(timeout=1.0)
+                        elif hasattr(host, "process") and getattr(host, "process", None):
+                            host.process.terminate()
+                            host.process.join(timeout=1.0)
+                    except Exception:
+                        logger.debug("Plugin {}: failed to cleanup duplicate-created host", pid, exc_info=True)
+                    continue
             except (OSError, RuntimeError) as e:
                 logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
                 continue
@@ -1757,6 +1781,7 @@ def load_plugins_from_toml(
             continue
         
         if resolved_id != pid:
+            old_pid = pid
             # 如果 ID 被进一步重命名（双重冲突），需要更新 plugin_hosts 中的键
             logger.warning(
                 "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
@@ -1774,6 +1799,26 @@ def load_plugins_from_toml(
                         "Plugin host moved from '{}' to '{}' in plugin_hosts",
                         pid, resolved_id
                     )
+
+            # 迁移 response queue 映射，确保通过新 plugin_id 能找到队列
+            with state._plugin_response_queues_lock:
+                if old_pid in state._plugin_response_queues:
+                    q = state._plugin_response_queues.pop(old_pid)
+                    state._plugin_response_queues[resolved_id] = q
+
+            # 迁移 event handler 映射，确保通过新 plugin_id 能找到处理器
+            with state.event_handlers_lock:
+                handlers_to_migrate = [
+                    k
+                    for k in list(state.event_handlers.keys())
+                    if k.startswith(f"{old_pid}.") or k.startswith(f"{old_pid}:")
+                ]
+                for old_key in handlers_to_migrate:
+                    if old_key.startswith(f"{old_pid}."):
+                        new_key = old_key.replace(f"{old_pid}.", f"{resolved_id}.", 1)
+                    else:
+                        new_key = old_key.replace(f"{old_pid}:", f"{resolved_id}:", 1)
+                    state.event_handlers[new_key] = state.event_handlers.pop(old_key)
             pid = resolved_id
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))

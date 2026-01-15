@@ -115,6 +115,7 @@ export default {
     entryId: 'ID',
     entryDescription: 'Description',
     trigger: 'Trigger',
+    triggerFailed: 'Trigger failed',
     noEntries: 'No Entry Points',
     showMetrics: 'Show Metrics',
     hideMetrics: 'Hide Metrics',

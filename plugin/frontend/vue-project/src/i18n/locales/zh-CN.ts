@@ -115,6 +115,7 @@ export default {
     entryId: 'ID',
     entryDescription: '描述',
     trigger: '触发',
+    triggerFailed: '触发失败',
     noEntries: '暂无入口点',
     showMetrics: '显示性能指标',
     hideMetrics: '隐藏性能指标',

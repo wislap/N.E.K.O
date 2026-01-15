@@ -25,7 +25,7 @@
         <!-- 当有 input_schema 时，按 schema 生成表单字段 -->
         <el-form v-if="hasSchema" label-position="top">
           <el-form-item
-            v-for="(fieldSchema, key) in currentEntry.input_schema.properties"
+            v-for="(fieldSchema, key) in currentEntry.input_schema?.properties || {}"
             :key="key as string"
             :label="fieldSchema.description || (key as string)"
           >
@@ -161,11 +161,11 @@ async function handleExecute() {
       plugin_id: props.pluginId,
       entry_id: currentEntry.value.id,
       args: parsedArgs,
-    } as any)
+    })
     ElMessage.success(t('plugins.trigger') + ' OK')
     dialogVisible.value = false
   } catch (e: any) {
-    ElMessage.error(e?.message || 'Trigger failed')
+    ElMessage.error(e?.message || t('plugins.triggerFailed'))
   } finally {
     submitting.value = false
   }

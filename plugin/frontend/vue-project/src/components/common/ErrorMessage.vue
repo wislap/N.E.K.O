@@ -1,14 +1,16 @@
 <template>
   <el-alert
-    :title="title"
-    :type="type"
-    :description="message"
-    :closable="closable"
+    :title="props.title ?? t('common.error')"
+    :type="props.type"
+    :description="props.message"
+    :closable="props.closable"
     show-icon
   />
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
 interface Props {
   title?: string
   message: string
@@ -16,8 +18,9 @@ interface Props {
   closable?: boolean
 }
 
-withDefaults(defineProps<Props>(), {
-  title: '错误',
+const { t } = useI18n()
+
+const props = withDefaults(defineProps<Props>(), {
   type: 'error',
   closable: true
 })

@@ -24,7 +24,7 @@ export function getPluginLogs(
   log_file?: string
   error?: string
 }> {
-  return get(`/plugin/${pluginId}/logs`, { params })
+  return get(`/plugin/${encodeURIComponent(pluginId)}/logs`, { params })
 }
 
 /**
@@ -36,6 +36,6 @@ export function getPluginLogFiles(pluginId: string): Promise<{
   count: number
   time: string
 }> {
-  return get(`/plugin/${pluginId}/logs/files`)
+  return get(`/plugin/${encodeURIComponent(pluginId)}/logs/files`)
 }
 

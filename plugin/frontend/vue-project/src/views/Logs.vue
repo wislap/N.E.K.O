@@ -18,6 +18,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useLogsStore } from '@/stores/logs'
 import LogViewer from '@/components/logs/LogViewer.vue'
@@ -31,7 +32,11 @@ const loading = computed(() => logsStore.loading)
 
 async function handleRefresh() {
   if (pluginId.value) {
-    await logsStore.fetchLogs(pluginId.value)
+    try {
+      await logsStore.fetchLogs(pluginId.value)
+    } catch (error) {
+      ElMessage.error(String((error as any)?.message || error || 'Failed to fetch logs'))
+    }
   }
 }
 

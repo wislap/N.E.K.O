@@ -20,8 +20,6 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale, getLocale } from '@/i18n'
-import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import en from 'element-plus/dist/locale/en.mjs'
 
 const { locale } = useI18n()
 const currentLocale = computed(() => getLocale())

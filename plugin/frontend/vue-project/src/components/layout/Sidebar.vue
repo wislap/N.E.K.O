@@ -33,6 +33,12 @@ import { Odometer, Box, Monitor } from '@element-plus/icons-vue'
 const route = useRoute()
 
 const activeRoute = computed(() => {
+  if (route.path.startsWith('/plugins')) {
+    return '/plugins'
+  }
+  if (route.path.startsWith('/logs')) {
+    return '/logs/_server'
+  }
   return route.path
 })
 </script>
