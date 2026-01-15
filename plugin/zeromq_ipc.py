@@ -92,8 +92,6 @@ class ZmqIpcClient:
             sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
         except Exception as e:
             try:
-                import logging
-
                 logging.getLogger("plugin.zmq.client").warning(
                     "[ZmqIpcClient] send_multipart failed for plugin=%s req_id=%s error=%s: %s",
                     self.plugin_id,
@@ -161,6 +159,10 @@ class ZmqIpcServer:
         self._running = True
         self._recv_count = 0
         self._last_log_ts = 0.0
+        self._enqueued_count = 0
+        self._dropped_count = 0
+        self._handled_count = 0
+        self._handled_items = 0
 
     async def serve_forever(self, shutdown_event) -> None:
         while self._running and not shutdown_event.is_set():
@@ -221,8 +223,6 @@ class ZmqIpcServer:
                 now_ts = time.time()
                 if now_ts - float(self._last_log_ts) >= 5.0:
                     self._last_log_ts = float(now_ts)
-                    import logging
-
                     logging.getLogger("plugin.router").debug(
                         "[ZeroMQ IPC] recv=%d last_type=%s from=%s",
                         int(self._recv_count),
@@ -386,6 +386,10 @@ class ZmqMessagePushPullConsumer:
         self._running = True
         self._recv_count = 0
         self._last_log_ts = 0.0
+        self._enqueued_count = 0
+        self._dropped_count = 0
+        self._handled_count = 0
+        self._handled_items = 0
         try:
             self._workers = max(1, int(PLUGIN_ZMQ_PUSH_WORKERS))
         except Exception:
@@ -396,6 +400,16 @@ class ZmqMessagePushPullConsumer:
             self._queue_max = 1024
 
     async def serve_forever(self, shutdown_event) -> None:
+        try:
+            logging.getLogger("plugin.router").info(
+                "[ZeroMQ PUSH] consumer starting endpoint=%s workers=%s queue_max=%s",
+                str(self._endpoint),
+                int(self._workers),
+                int(self._queue_max),
+            )
+        except Exception:
+            pass
+
         if int(self._workers) <= 1:
             while self._running and not shutdown_event.is_set():
                 try:
@@ -419,8 +433,6 @@ class ZmqMessagePushPullConsumer:
                     now_ts = time.time()
                     if now_ts - float(self._last_log_ts) >= 5.0:
                         self._last_log_ts = float(now_ts)
-                        import logging
-
                         logging.getLogger("plugin.router").debug(
                             "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
                             int(self._recv_count),
@@ -432,6 +444,13 @@ class ZmqMessagePushPullConsumer:
 
                 try:
                     await self._handler(msg)
+                    self._handled_count += 1
+                    try:
+                        items = msg.get("items")
+                        if isinstance(items, list):
+                            self._handled_items += int(len(items))
+                    except Exception:
+                        pass
                 except Exception:
                     continue
             return
@@ -456,27 +475,30 @@ class ZmqMessagePushPullConsumer:
                 if str(msg.get("type")) != "MESSAGE_PUSH_BATCH":
                     continue
 
+                try:
+                    q.put_nowait(msg)
+                    self._enqueued_count += 1
+                except Exception:
+                    # Backpressure: drop batch when overloaded.
+                    self._dropped_count += 1
+                    continue
+
                 self._recv_count += 1
                 try:
                     now_ts = time.time()
                     if now_ts - float(self._last_log_ts) >= 5.0:
                         self._last_log_ts = float(now_ts)
-                        import logging
-
-                        logging.getLogger("plugin.router").debug(
-                            "[ZeroMQ PUSH] recv=%d last_type=%s from=%s",
+                        logging.getLogger("plugin.router").info(
+                            "[ZeroMQ PUSH] stats workers=%s recv=%s enq=%s drop=%s handled=%s items=%s",
+                            int(self._workers),
                             int(self._recv_count),
-                            str(msg.get("type")),
-                            str(msg.get("from_plugin")),
+                            int(self._enqueued_count),
+                            int(self._dropped_count),
+                            int(self._handled_count),
+                            int(self._handled_items),
                         )
                 except Exception:
                     pass
-
-                try:
-                    q.put_nowait(msg)
-                except Exception:
-                    # Backpressure: drop batch when overloaded.
-                    continue
 
         async def _worker_loop() -> None:
             while self._running and not shutdown_event.is_set():
@@ -488,6 +510,13 @@ class ZmqMessagePushPullConsumer:
                     continue
                 try:
                     await self._handler(msg)
+                    self._handled_count += 1
+                    try:
+                        items = msg.get("items")
+                        if isinstance(items, list):
+                            self._handled_items += int(len(items))
+                    except Exception:
+                        pass
                 except Exception:
                     continue
                 finally:

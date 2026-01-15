@@ -337,6 +337,49 @@ class PluginRuntimeState:
     def extend_message_records_coalesced(self, records: List[Dict[str, Any]]) -> int:
         if not isinstance(records, list) or not records:
             return 0
+        # Fast path: no deletions tracked => no need to filter by message_id.
+        # This keeps the critical section minimal (single deque.extend).
+        try:
+            if not self._deleted_message_ids:
+                last_mid_fast: Optional[str] = None
+                last_priority_fast: int = 0
+                last_source_fast: Optional[str] = None
+                kept_fast = [r for r in records if isinstance(r, dict)]
+                for rec in kept_fast:
+                    mid = rec.get("message_id")
+                    if isinstance(mid, str) and mid:
+                        last_mid_fast = mid
+                    try:
+                        last_priority_fast = int(rec.get("priority", last_priority_fast))
+                    except Exception:
+                        last_priority_fast = last_priority_fast
+                    try:
+                        src = rec.get("source")
+                        if isinstance(src, str) and src:
+                            last_source_fast = src
+                    except Exception:
+                        last_source_fast = last_source_fast
+
+                with self._bus_store_lock:
+                    if kept_fast:
+                        self._message_store.extend(kept_fast)
+
+                rev = self._bump_bus_rev("messages")
+                payload_fast: Dict[str, Any] = {
+                    "rev": rev,
+                    "count": int(len(kept_fast)),
+                    "batch": True,
+                }
+                if isinstance(last_mid_fast, str) and last_mid_fast:
+                    payload_fast["message_id"] = last_mid_fast
+                payload_fast["priority"] = int(last_priority_fast)
+                if isinstance(last_source_fast, str) and last_source_fast:
+                    payload_fast["source"] = last_source_fast
+                self.bus_change_hub.emit("messages", "add", payload_fast)
+                return int(len(kept_fast))
+        except Exception:
+            # Fall back to filtered path.
+            pass
         candidates: List[Dict[str, Any]] = []
         for rec in records:
             if not isinstance(rec, dict):
@@ -768,6 +811,8 @@ class PluginRuntimeState:
 
         与 get_plugin_response() 类似，但不会 pop。
         主要用于超时场景下判断响应是否已经到达（孤儿响应检测）。
+
+        注意：如果响应已过期，会自动清理该响应条目。
 
         Returns:
             响应数据，如果不存在或已过期则返回 None
