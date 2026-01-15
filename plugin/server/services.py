@@ -81,6 +81,27 @@ def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
         _push_expected_seq[pid] = int(expected) + 1
 
 
+def validate_and_advance_push_seq_batch(*, plugin_id: str, seq_list: List[int]) -> None:
+    pid = str(plugin_id)
+    if not seq_list:
+        return
+    try:
+        seqs = [int(s) for s in seq_list]
+    except Exception as e:
+        raise ValueError(f"invalid seq_list: {e}") from e
+    try:
+        expected = int(_push_expected_seq.get(pid, 0))
+    except Exception:
+        expected = 0
+    first = int(seqs[0])
+    if first != expected:
+        raise ValueError(f"push seq mismatch: expected={expected} got={first}")
+    for i in range(1, len(seqs)):
+        if int(seqs[i]) != int(seqs[i - 1]) + 1:
+            raise ValueError(f"push seq not contiguous at index={i} prev={seqs[i-1]} got={seqs[i]}")
+    _push_expected_seq[pid] = int(seqs[-1]) + 1
+
+
 _BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "1").lower() in ("1", "true", "yes", "on")
 _bus_ingest_stop: Optional[asyncio.Event] = None
 _bus_ingest_task: Optional[asyncio.Task[None]] = None
@@ -1400,6 +1421,90 @@ def push_message_to_queue(
         ) from e
     
     return message_id
+
+
+def push_messages_to_queue_batch(
+    *,
+    plugin_id: str,
+    items: List[Dict[str, Any]],
+    mode: str = "unknown",
+) -> int:
+    if not isinstance(items, list) or not items:
+        return 0
+
+    pid = str(plugin_id)
+    now_s = now_iso()
+    out_records: List[Dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        mid = it.get("message_id")
+        if not isinstance(mid, str) or not mid:
+            mid = str(uuid.uuid4())
+        t = it.get("time")
+        if not isinstance(t, str) or not t:
+            t = now_s
+        msg = {
+            "type": "MESSAGE_PUSH",
+            "message_id": mid,
+            "plugin_id": pid,
+            "source": it.get("source") if isinstance(it.get("source"), str) else "",
+            "description": it.get("description") if isinstance(it.get("description"), str) else "",
+            "priority": it.get("priority", 0),
+            "message_type": it.get("message_type") if isinstance(it.get("message_type"), str) else "",
+            "content": it.get("content"),
+            "binary_data": it.get("binary_data"),
+            "binary_url": it.get("binary_url"),
+            "metadata": it.get("metadata") if isinstance(it.get("metadata"), dict) else {},
+            "unsafe": True,
+            "time": t,
+            "_bus_stored": True,
+        }
+        try:
+            _ = _validate_message_payload(msg, mode=str(mode))
+        except Exception:
+            continue
+        out_records.append(msg)
+
+    if not out_records:
+        return 0
+
+    try:
+        for rec in out_records:
+            try:
+                state.message_queue.put_nowait(rec)
+            except Exception:
+                break
+    except Exception:
+        pass
+
+    stored = 0
+    try:
+        stored = int(state.extend_message_records(out_records))
+    except Exception:
+        try:
+            for rec in out_records:
+                state.append_message_record(rec)
+                stored += 1
+        except Exception:
+            stored = int(stored)
+
+    try:
+        global _msg_push_last_info_ts, _msg_push_suppressed
+        now_ts = time.time()
+        _msg_push_suppressed += int(stored)
+        if now_ts - float(_msg_push_last_info_ts) >= 1.0:
+            _msg_push_last_info_ts = float(now_ts)
+            n = int(_msg_push_suppressed)
+            _msg_push_suppressed = 0
+            loguru_logger.info(
+                f"[MESSAGE PUSH] mode={mode} Plugin: {pid} | "
+                f"Content: (batch x{n})"
+            )
+    except Exception:
+        pass
+
+    return int(stored)
 
 
 def _enqueue_event(event: Dict[str, Any]) -> None:

@@ -17,11 +17,11 @@ conflicts = [
 ]
 
 [plugin_runtime]
-enabled = false
+enabled = true
 auto_start = false
 
 [load_test]
-duration_seconds = 10
+duration_seconds = 4
 log_summary = true
 worker_threads = 1
 timeout = 0.5

@@ -78,7 +78,10 @@ class PluginRouter:
         if PLUGIN_ZMQ_IPC_ENABLED:
             try:
                 from plugin.zeromq_ipc import ZmqMessagePushPullConsumer
-                from plugin.server.services import push_message_to_queue, validate_and_advance_push_seq
+                from plugin.server.services import (
+                    push_messages_to_queue_batch,
+                    validate_and_advance_push_seq_batch,
+                )
 
                 async def _handle_push_batch(msg: Dict[str, Any]) -> None:
                     from_plugin = msg.get("from_plugin")
@@ -146,42 +149,37 @@ class PluginRouter:
                                     seq_list[i],
                                 )
                                 break
+                    if seq_list:
+                        try:
+                            validate_and_advance_push_seq_batch(plugin_id=str(from_plugin), seq_list=seq_list)
+                        except Exception:
+                            pass
+
+                    batch_items: list[Dict[str, Any]] = []
                     for it in items:
                         if not isinstance(it, dict):
                             continue
                         meta_raw = it.get("metadata")
-                        meta: Optional[Dict[str, Any]]
                         if isinstance(meta_raw, dict):
-                            meta = {}
+                            meta: Dict[str, Any] = {}
                             for k, v in meta_raw.items():
                                 try:
                                     kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
                                 except Exception:
                                     kk = str(k)
                                 meta[kk] = v
-                        else:
-                            meta = None
-                        seq = it.get("seq")
-                        if seq is not None:
-                            try:
-                                validate_and_advance_push_seq(plugin_id=str(from_plugin), seq=int(seq))
-                            except Exception:
-                                pass
-                        try:
-                            push_message_to_queue(
-                                plugin_id=str(from_plugin),
-                                source=str(it.get("source") or ""),
-                                message_type=str(it.get("message_type") or ""),
-                                description=str(it.get("description") or ""),
-                                priority=int(it.get("priority") or 0),
-                                content=it.get("content"),
-                                binary_data=it.get("binary_data"),
-                                binary_url=it.get("binary_url"),
-                                metadata=meta,
-                                mode="zmq-fast",
-                            )
-                        except Exception:
-                            continue
+                            it = dict(it)
+                            it["metadata"] = meta
+                        batch_items.append(it)
+
+                    try:
+                        push_messages_to_queue_batch(
+                            plugin_id=str(from_plugin),
+                            items=batch_items,
+                            mode="zmq-fast",
+                        )
+                    except Exception:
+                        return
 
                 self._push_pull_server = ZmqMessagePushPullConsumer(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, _handle_push_batch)
                 self._push_pull_task = asyncio.create_task(self._push_pull_server.serve_forever(shutdown_event))
