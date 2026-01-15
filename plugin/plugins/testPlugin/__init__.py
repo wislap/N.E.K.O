@@ -264,14 +264,8 @@ class HelloPlugin(NekoPluginBase):
                 timeout=timeout,
             ).filter(source=watch_source, strict=True)
             watcher = watch_list.watch(self.ctx).start()
-            try:
-                self._active_watchers.append(watcher)
-            except Exception:
-                pass
-            try:
-                self.file_logger.info("[messages_watch] watcher started: source={}", watch_source)
-            except Exception:
-                pass
+            self._active_watchers.append(watcher)
+            self.file_logger.info("[messages_watch] watcher started: source={}", watch_source)
             @watcher.subscribe(on="del")
             @watcher.subscribe(on="add")
             def _on_new_message(delta) -> None:

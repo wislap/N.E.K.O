@@ -162,7 +162,7 @@ async function handleExecute() {
       entry_id: currentEntry.value.id,
       args: parsedArgs,
     })
-    ElMessage.success(t('plugins.trigger') + ' OK')
+    ElMessage.success(t('plugins.triggerSuccess'))
     dialogVisible.value = false
   } catch (e: any) {
     ElMessage.error(e?.message || t('plugins.triggerFailed'))

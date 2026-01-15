@@ -83,7 +83,3 @@ Desktop.ini
 *.temp
 .cache/
 .temp/
-
-# Debug
-.vscode/launch.json
-.vscode/tasks.json

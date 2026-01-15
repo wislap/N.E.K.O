@@ -26,8 +26,8 @@ export default {
     nA: 'N/A',
     darkMode: '深色模式',
     lightMode: '浅色模式',
-    logoutConfirmTitle: '提示'
-    ,disconnected: '服务器已断开连接'
+    logoutConfirmTitle: '提示',
+    disconnected: '服务器已断开连接'
   },
   nav: {
     dashboard: '仪表盘',
@@ -56,9 +56,9 @@ export default {
     unauthorized: '未授权，请重新登录',
     forbidden: '拒绝访问：验证码错误或已过期',
     logoutConfirm: '确定要退出登录吗？',
-    logoutSuccess: '已退出登录'
-    ,reAuthRequired: '认证失效，请重新输入验证码'
-    ,goToLogin: '去登录页'
+    logoutSuccess: '已退出登录',
+    reAuthRequired: '认证失效，请重新输入验证码',
+    goToLogin: '去登录页'
   },
   plugin: {
     addProfile: {
@@ -115,6 +115,7 @@ export default {
     entryId: 'ID',
     entryDescription: '描述',
     trigger: '触发',
+    triggerSuccess: '触发成功',
     triggerFailed: '触发失败',
     noEntries: '暂无入口点',
     showMetrics: '显示性能指标',

@@ -15,6 +15,62 @@ from loguru import logger as loguru_logger
 
 _pending_async_shutdown_tasks: set = set()
 
+
+class _LoggerAdapter:
+    def __init__(self, logger: Any):
+        self._logger = logger
+
+    def _is_stdlib(self) -> bool:
+        return isinstance(self._logger, logging.Logger)
+
+    def _fmt(self, msg: str, args: tuple[Any, ...]) -> str:
+        if not args:
+            return str(msg)
+        try:
+            return str(msg).format(*args)
+        except Exception:
+            return f"{msg} {args!r}"
+
+    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        if self._is_stdlib():
+            self._logger.debug(self._fmt(msg, args), **kwargs)
+        else:
+            self._logger.debug(msg, *args, **kwargs)
+
+    def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        if self._is_stdlib():
+            self._logger.info(self._fmt(msg, args), **kwargs)
+        else:
+            self._logger.info(msg, *args, **kwargs)
+
+    def warning(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        if self._is_stdlib():
+            self._logger.warning(self._fmt(msg, args), **kwargs)
+        else:
+            self._logger.warning(msg, *args, **kwargs)
+
+    def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        if self._is_stdlib():
+            self._logger.error(self._fmt(msg, args), **kwargs)
+        else:
+            self._logger.error(msg, *args, **kwargs)
+
+    def exception(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        if self._is_stdlib():
+            self._logger.exception(self._fmt(msg, args), **kwargs)
+        else:
+            # loguru supports logger.exception(msg, *args)
+            self._logger.exception(msg, *args, **kwargs)
+
+
+def _wrap_logger(logger: Any) -> Any:
+    # Avoid double-wrapping.
+    if isinstance(logger, _LoggerAdapter):
+        return logger
+    if isinstance(logger, logging.Logger):
+        return _LoggerAdapter(logger)
+    return logger
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
@@ -57,6 +113,7 @@ plugin_entry_method_map: Dict[tuple, str] = {}
 
 
 def _parse_specifier(spec: Optional[str], logger: Any) -> Optional[Any]:
+    logger = _wrap_logger(logger)
     if not spec or SpecifierSet is None:
         return None
     try:
@@ -163,7 +220,7 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
 
 def _check_plugin_dependency(
     dependency: PluginDependency,
-    logger: logging.Logger,
+    logger: Any,
     plugin_id: str
 ) -> tuple[bool, Optional[str]]:
     """
@@ -185,6 +242,7 @@ def _check_plugin_dependency(
     Returns:
         (是否满足, 错误信息)
     """
+    logger = _wrap_logger(logger)
     def _runtime_enabled(pid: str) -> bool:
         with state.plugins_lock:
             meta = state.plugins.get(pid)
@@ -354,7 +412,7 @@ def _check_single_plugin_version(
     dep_id: str,
     dep_plugin_meta: Dict[str, Any],
     dependency: PluginDependency,
-    logger: logging.Logger,
+    logger: Any,
     plugin_id: str
 ) -> tuple[bool, Optional[str]]:
     """
@@ -370,6 +428,7 @@ def _check_single_plugin_version(
     Returns:
         (是否满足, 错误信息)
     """
+    logger = _wrap_logger(logger)
     dep_version_str = dep_plugin_meta.get("version", "0.0.0")
     
     # 如果 conflicts 是列表，检查版本是否在冲突范围内
@@ -770,7 +829,7 @@ def _resolve_plugin_id_conflict(
     if desired not in plugins_snapshot and desired not in hosts_snapshot:
         return desired
 
-    existing_path, existing_entry = _get_id_ref(desired)
+    existing_path, _existing_entry = _get_id_ref(desired)
     if cur_path is not None and existing_path is not None and cur_path == existing_path:
         if purpose_norm == "load" and desired in hosts_snapshot:
             return None
@@ -1035,6 +1094,7 @@ def load_plugins_from_toml(
     2. 排序（Sort）：根据插件依赖关系进行拓扑排序，确保依赖先加载。
     3. 加载（Load）：按顺序执行实际加载。
     """
+    logger = _wrap_logger(logger)
     if not plugin_config_root.exists():
         logger.info("No plugin config directory {}, skipping", plugin_config_root)
         return
@@ -1636,7 +1696,19 @@ def load_plugins_from_toml(
                             if asyncio.iscoroutinefunction(host.shutdown):
                                 try:
                                     loop = asyncio.get_running_loop()
-                                    loop.create_task(host.shutdown(timeout=1.0))
+                                    task = loop.create_task(host.shutdown(timeout=1.0))
+                                    _pending_async_shutdown_tasks.add(task)
+
+                                    def _on_done(t: asyncio.Task) -> None:
+                                        _pending_async_shutdown_tasks.discard(t)
+                                        try:
+                                            _ = t.exception()
+                                        except asyncio.CancelledError:
+                                            pass
+                                        except Exception:
+                                            pass
+
+                                    task.add_done_callback(_on_done)
                                 except RuntimeError:
                                     asyncio.run(host.shutdown(timeout=1.0))
                             else:

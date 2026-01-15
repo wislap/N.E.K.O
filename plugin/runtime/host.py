@@ -834,6 +834,11 @@ class PluginHost:
         
         注意：这个方法不会等待异步任务完成，建议使用 shutdown()
         """
+        try:
+            if getattr(self, "_process_stop_event", None) is not None:
+                self._process_stop_event.set()
+        except Exception:
+            pass
         # 发送停止命令（同步）
         try:
             self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)

@@ -30,6 +30,11 @@ if [ ! -d "$FRONTEND_DIR" ]; then
   exit 1
 fi
 
+if ! command -v npm &> /dev/null; then
+  echo "[export_frontend] npm not found, please install Node.js" >&2
+  exit 1
+fi
+
 echo "[export_frontend] building frontend in: $FRONTEND_DIR"
 (
   cd "$FRONTEND_DIR"
@@ -42,10 +47,6 @@ if [ ! -d "$DIST_DIR" ]; then
 fi
 
 echo "[export_frontend] exporting dist -> $EXPORT_DIR"
-if [ -z "$EXPORT_DIR" ]; then
-  echo "[export_frontend] EXPORT_DIR is empty, refusing to rm -rf" >&2
-  exit 1
-fi
 
 if [ -d "$EXPORT_DIR" ]; then
   rm -rf "$EXPORT_DIR"

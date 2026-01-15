@@ -108,9 +108,12 @@ class PluginContext:
             try:
                 # Give the batcher a bounded window to flush and stop.
                 batcher.stop(timeout=2.0)
-            except Exception:
+            except Exception as e:
                 # Cleanup should be best-effort and never raise.
-                pass
+                try:
+                    self.logger.debug(f"Batcher stop failed (best-effort): {e}")
+                except Exception:
+                    pass
             try:
                 self._push_batcher = None
             except Exception:
@@ -196,7 +199,7 @@ class PluginContext:
             self.logger.warning(f"Queue error updating status for plugin {self.plugin_id}: {e}")
         except Exception as e:
             # 其他未知异常
-            self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}: {e}")
+            self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
     def export_push_text(
         self,
@@ -665,7 +668,7 @@ class PluginContext:
                 )
         except Exception as e:
             if error_log_template:
-                self.logger.error(error_log_template.format(error=e))
+                self.logger.exception(error_log_template.format(error=e))
             raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
 
         deadline = time.time() + timeout

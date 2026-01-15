@@ -26,8 +26,8 @@ export default {
     nA: 'N/A',
     darkMode: 'Dark Mode',
     lightMode: 'Light Mode',
-    logoutConfirmTitle: 'Notice'
-    ,disconnected: 'Server disconnected'
+    logoutConfirmTitle: 'Notice',
+    disconnected: 'Server disconnected'
   },
   nav: {
     dashboard: 'Dashboard',
@@ -56,9 +56,9 @@ export default {
     unauthorized: 'Unauthorized, please login',
     forbidden: 'Access denied: Invalid or expired code',
     logoutConfirm: 'Are you sure you want to logout?',
-    logoutSuccess: 'Logged out'
-    ,reAuthRequired: 'Authentication expired. Please enter the admin code again.'
-    ,goToLogin: 'Go to Login'
+    logoutSuccess: 'Logged out',
+    reAuthRequired: 'Authentication expired. Please enter the admin code again.',
+    goToLogin: 'Go to Login'
   },
   plugin: {
     addProfile: {
@@ -115,6 +115,7 @@ export default {
     entryId: 'ID',
     entryDescription: 'Description',
     trigger: 'Trigger',
+    triggerSuccess: 'Trigger successful',
     triggerFailed: 'Trigger failed',
     noEntries: 'No Entry Points',
     showMetrics: 'Show Metrics',

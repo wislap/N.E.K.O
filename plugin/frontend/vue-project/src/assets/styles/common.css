@@ -2,6 +2,12 @@
  * 通用样式
  */
 
+/* Firefox 滚动条样式 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--el-border-color) var(--el-bg-color-page);
+}
+
 /* 滚动条样式 */
 ::-webkit-scrollbar {
   width: 8px;
