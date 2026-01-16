@@ -77,7 +77,7 @@ import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import EmptyState from '@/components/common/EmptyState.vue'
 import type { PluginEntry } from '@/types/api'
-import { triggerPlugin } from '@/api/plugins'
+import { createRun } from '@/api/runs'
 
 interface Props {
   entries: PluginEntry[]
@@ -157,12 +157,13 @@ async function handleExecute() {
 
   submitting.value = true
   try {
-    await triggerPlugin({
+    const resp = await createRun({
       plugin_id: props.pluginId,
       entry_id: currentEntry.value.id,
       args: parsedArgs,
     })
-    ElMessage.success(t('plugins.triggerSuccess'))
+    const rid = (resp as any)?.run_id
+    ElMessage.success(rid ? `${t('plugins.triggerSuccess')} (${rid})` : t('plugins.triggerSuccess'))
     dialogVisible.value = false
   } catch (e: any) {
     ElMessage.error(e?.message || t('plugins.triggerFailed'))

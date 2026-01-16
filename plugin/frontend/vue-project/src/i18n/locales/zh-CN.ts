@@ -34,6 +34,7 @@ export default {
     plugins: '插件列表',
     metrics: '性能指标',
     logs: '日志',
+    runs: '运行记录',
     serverLogs: '服务器日志'
   },
   auth: {
@@ -196,6 +197,31 @@ export default {
     connected: '已连接',
     disconnected: '未连接',
     connectionFailed: '日志流连接失败'
+  },
+  runs: {
+    title: '运行记录',
+    detail: '运行详情',
+    wsDisconnected: '实时连接未建立，请检查验证码与服务器状态',
+    noRuns: '暂无运行记录',
+    selectRun: '请选择一条运行记录',
+    runId: 'Run ID',
+    status: '状态',
+    pluginId: '插件ID',
+    entryId: '入口',
+    updatedAt: '更新时间',
+    createdAt: '创建时间',
+    stage: '阶段',
+    message: '消息',
+    progress: '进度',
+    error: '错误',
+    export: '导出',
+    exportType: '类型',
+    exportContent: '内容',
+    noExport: '暂无导出内容',
+    cancel: '取消运行',
+    cancelConfirmTitle: '确认取消运行？',
+    cancelConfirmMessage: 'Run ID: {runId}',
+    cancelSuccess: '已发送取消请求'
   },
   status: {
     running: '运行中',

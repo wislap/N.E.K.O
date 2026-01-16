@@ -52,6 +52,15 @@ const routes: RouteRecordRaw[] = [
         redirect: '/logs/_server'
       },
       {
+        path: 'runs',
+        name: 'Runs',
+        component: () => import('@/views/Runs.vue'),
+        meta: {
+          titleKey: 'nav.runs',
+          requiresAuth: true
+        }
+      },
+      {
         path: 'logs/:id',
         name: 'Logs',
         component: () => import('@/views/Logs.vue'),

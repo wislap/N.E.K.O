@@ -453,6 +453,13 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
                 logger.warning(f"[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
+
+        elif result.execution_method == 'user_plugin':
+            # user_plugin is executed/accepted inside DirectTaskExecutor. Keep agent_server non-blocking.
+            if result.success:
+                logger.info(f"[TaskExecutor] ✅ UserPlugin accepted: {result.tool_name} ({getattr(result, 'result', None)})")
+            else:
+                logger.warning(f"[TaskExecutor] ❌ UserPlugin failed: {result.error}")
         
         else:
             logger.info(f"[TaskExecutor] No suitable execution method: {result.reason}")

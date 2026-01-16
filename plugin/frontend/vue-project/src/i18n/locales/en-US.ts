@@ -34,6 +34,7 @@ export default {
     plugins: 'Plugins',
     metrics: 'Metrics',
     logs: 'Logs',
+    runs: 'Runs',
     serverLogs: 'Server Logs'
   },
   auth: {
@@ -196,6 +197,31 @@ export default {
     connected: 'Connected',
     disconnected: 'Disconnected',
     connectionFailed: 'Log stream connection failed'
+  },
+  runs: {
+    title: 'Runs',
+    detail: 'Run Detail',
+    wsDisconnected: 'Realtime connection is not established. Please check the admin code and server status.',
+    noRuns: 'No runs',
+    selectRun: 'Select a run to view details',
+    runId: 'Run ID',
+    status: 'Status',
+    pluginId: 'Plugin ID',
+    entryId: 'Entry',
+    updatedAt: 'Updated At',
+    createdAt: 'Created At',
+    stage: 'Stage',
+    message: 'Message',
+    progress: 'Progress',
+    error: 'Error',
+    export: 'Export',
+    exportType: 'Type',
+    exportContent: 'Content',
+    noExport: 'No export items',
+    cancel: 'Cancel Run',
+    cancelConfirmTitle: 'Cancel this run?',
+    cancelConfirmMessage: 'Run ID: {runId}',
+    cancelSuccess: 'Cancel requested'
   },
   status: {
     running: 'Running',

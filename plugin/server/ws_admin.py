@@ -381,10 +381,14 @@ async def ws_admin_endpoint(ws: WebSocket) -> None:
             pass
         try:
             await send_task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
         try:
             await hb_task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
         try:
