@@ -82,7 +82,6 @@ class DirectTaskExecutor:
         self.plugin_list = []
         self.user_plugin_enabled_default = False
         self._external_plugin_provider: Optional[Callable[[bool], Awaitable[List[Dict[str, Any]]]]] = None
-        self._current_lanlan_name: Optional[str] = None
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -572,10 +571,6 @@ Return only the JSON object, nothing else.
         """
         import uuid
         task_id = str(uuid.uuid4())
-
-        # Cache current lanlan_name for downstream user_plugin trigger injection.
-        # This allows plugins to access memory without requiring every caller to manually pass lanlan_name.
-        self._current_lanlan_name = lanlan_name
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -707,7 +702,7 @@ Return only the JSON object, nothing else.
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
-                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
+                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision, lanlan_name=lanlan_name)
             except Exception as e:
                 logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
@@ -825,7 +820,7 @@ Return only the JSON object, nothing else.
                 reason=decision.reason
             )
     
-    async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
+    async def _execute_user_plugin(self, task_id: str, up_decision: Any, lanlan_name: Optional[str] = None) -> TaskResult:
         """
         Execute a user plugin via HTTP endpoint or specific plugin_entry.
         up_decision is expected to have attributes: plugin_id, plugin_args, task_description
@@ -842,12 +837,12 @@ Return only the JSON object, nothing else.
             # Inject context for plugins (reserved field).
             # Plugins can read args.get('_ctx', {}).get('lanlan_name') to know which character/session they belong to.
             try:
-                if self._current_lanlan_name:
+                if lanlan_name:
                     ctx_obj = safe_args.get("_ctx")
                     if not isinstance(ctx_obj, dict):
                         ctx_obj = {}
                     if "lanlan_name" not in ctx_obj:
-                        ctx_obj["lanlan_name"] = self._current_lanlan_name
+                        ctx_obj["lanlan_name"] = lanlan_name
                     safe_args["_ctx"] = ctx_obj
             except Exception:
                 pass
@@ -871,8 +866,15 @@ Return only the JSON object, nothing else.
                 {k: str(v)[:100] for k, v in plugin_args.items()} if isinstance(plugin_args, dict) else plugin_args,
             )
             logger.debug(
-                "[TaskExecutor] Full trigger_body: %s",
-                trigger_body,
+                "[TaskExecutor] Full trigger_body (meta only): %s",
+                {
+                    "task_id": trigger_body.get("task_id"),
+                    "plugin_id": trigger_body.get("plugin_id"),
+                    "entry_id": trigger_body.get("entry_id"),
+                    "args_keys": list((trigger_body.get("args") or {}).keys()),
+                }
+                if isinstance(trigger_body, dict)
+                else trigger_body,
             )
             try:
                 import httpx
@@ -895,8 +897,15 @@ Return only the JSON object, nothing else.
                             plugin_entry_id or trigger_body.get("entry_id"),
                         )
                         logger.debug(
-                            "[TaskExecutor] Trigger payload=%r, response=%r",
-                            trigger_body,
+                            "[TaskExecutor] Trigger payload (meta only)=%r, response=%r",
+                            {
+                                "task_id": trigger_body.get("task_id"),
+                                "plugin_id": trigger_body.get("plugin_id"),
+                                "entry_id": trigger_body.get("entry_id"),
+                                "args_keys": list((trigger_body.get("args") or {}).keys()),
+                            }
+                            if isinstance(trigger_body, dict)
+                            else trigger_body,
                             data,
                         )
                         plugin_name = data.get("plugin_id") or plugin_id
@@ -1019,12 +1028,12 @@ Return only the JSON object, nothing else.
             else:
                 safe_args = {}
             try:
-                if self._current_lanlan_name:
+                if lanlan_name:
                     ctx_obj = safe_args.get("_ctx")
                     if not isinstance(ctx_obj, dict):
                         ctx_obj = {}
                     if "lanlan_name" not in ctx_obj:
-                        ctx_obj["lanlan_name"] = self._current_lanlan_name
+                        ctx_obj["lanlan_name"] = lanlan_name
                     safe_args["_ctx"] = ctx_obj
             except Exception:
                 pass
@@ -1089,7 +1098,7 @@ Return only the JSON object, nothing else.
             plugin_args=plugin_args,
             reason="direct_call",
         )
-        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
+        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub, lanlan_name=None)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """刷新并返回 MCP 工具能力列表"""

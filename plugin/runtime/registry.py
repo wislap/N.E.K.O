@@ -342,18 +342,22 @@ def _check_plugin_dependency(
         # 方式3：依赖特定自定义事件（只能引用 @custom_event）
         custom_event_spec = dependency.custom_event
         if ":" in custom_event_spec:
-            # 解析格式：plugin_id:event_type:event_id 或 event_type:event_id
-            parts = custom_event_spec.split(":")
-            if len(parts) == 2:
+            # 解析格式：
+            # - event_type:event_id（严格 1 个 ':'）
+            # - plugin_id:event_type:event_id（允许 event_id 里包含 ':'，因此只切前两次）
+            if custom_event_spec.count(":") == 1:
                 # 格式：event_type:event_id（任意插件提供该事件）
-                event_type, event_id = parts
+                event_type, event_id = custom_event_spec.split(":", 1)
                 matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
                 if not matching_plugins:
                     return False, f"Dependency custom_event '{custom_event_spec}' not found in any plugin"
                 plugins_to_check = matching_plugins
-            elif len(parts) == 3:
+            else:
                 # 格式：plugin_id:event_type:event_id（指定插件必须提供该事件）
-                target_plugin_id, event_type, event_id = parts
+                target_plugin_id, rest = custom_event_spec.split(":", 1)
+                if ":" not in rest:
+                    return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
+                event_type, event_id = rest.split(":", 1)
                 # 先在锁内检查插件是否存在，并读取元数据（避免后续嵌套 plugins_lock 导致死锁）
                 with state.plugins_lock:
                     dep_meta = state.plugins.get(target_plugin_id)
@@ -370,8 +374,6 @@ def _check_plugin_dependency(
                         f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
                     )
                 plugins_to_check = [(target_plugin_id, dep_meta)]
-            else:
-                return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
         else:
             return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
         
@@ -1256,6 +1258,31 @@ def load_plugins_from_toml(
                     _parse_specifier(conf, logger) for conf in sdk_conflicts_list
                 ]
 
+                if sdk_supported_str and supported_spec is None:
+                    logger.error(
+                        "Plugin {}: invalid supported SDK spec '{}'; skipping load",
+                        pid,
+                        sdk_supported_str,
+                    )
+                    continue
+                if sdk_untested_str and untested_spec is None:
+                    logger.error(
+                        "Plugin {}: invalid untested SDK spec '{}'; skipping load",
+                        pid,
+                        sdk_untested_str,
+                    )
+                    continue
+                invalid_conflicts = [
+                    c for c, s in zip(sdk_conflicts_list, conflict_specs) if c and s is None
+                ]
+                if invalid_conflicts:
+                    logger.error(
+                        "Plugin {}: invalid conflict SDK spec(s) {}; skipping load",
+                        pid,
+                        invalid_conflicts,
+                    )
+                    continue
+
                 # Conflict check
                 if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
                     logger.error(
@@ -1894,6 +1921,12 @@ def load_plugins_from_toml(
                     else:
                         new_key = old_key.replace(f"{old_pid}:", f"{resolved_id}:", 1)
                     state.event_handlers[new_key] = state.event_handlers.pop(old_key)
+
+            # 迁移 plugin_entry_method_map，保持入口调用映射一致
+            for (p, eid), method in list(plugin_entry_method_map.items()):
+                if p == old_pid:
+                    plugin_entry_method_map[(resolved_id, eid)] = method
+                    del plugin_entry_method_map[(p, eid)]
             pid = resolved_id
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))

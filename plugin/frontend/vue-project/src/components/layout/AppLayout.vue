@@ -54,21 +54,21 @@
         :title="connectionStore.lastAuthErrorMessage || t('auth.reAuthRequired')"
         class="auth-warning"
       />
-
-      <template #footer>
-        <div class="auth-actions">
-          <el-button :disabled="authLoading" @click="goToLogin">
-            {{ t('auth.goToLogin') }}
-          </el-button>
-          <el-button :disabled="authLoading" @click="handlePasteFromClipboard">
-            {{ t('auth.pasteFromClipboard') }}
-          </el-button>
-          <el-button type="primary" :loading="authLoading" :disabled="!isAuthCodeValid" @click="submitAuth">
-            {{ t('auth.login') }}
-          </el-button>
-        </div>
-      </template>
     </el-form>
+
+    <template #footer>
+      <div class="auth-actions">
+        <el-button :disabled="authLoading" @click="goToLogin">
+          {{ t('auth.goToLogin') }}
+        </el-button>
+        <el-button :disabled="authLoading" @click="handlePasteFromClipboard">
+          {{ t('auth.pasteFromClipboard') }}
+        </el-button>
+        <el-button type="primary" :loading="authLoading" :disabled="!isAuthCodeValid" @click="submitAuth">
+          {{ t('auth.login') }}
+        </el-button>
+      </div>
+    </template>
   </el-dialog>
 </template>
 

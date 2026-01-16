@@ -68,15 +68,17 @@ interface WsMsgBase {
 
 function buildWsUrl(path: string): string {
   const base = API_BASE_URL || ''
-  if (!base) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  if (!base || base.startsWith('/')) {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${proto}//${window.location.host}${path}`
+    const prefix = base ? base.replace(/\/$/, '') : ''
+    return `${proto}//${window.location.host}${prefix}${normalizedPath}`
   }
-  if (base.startsWith('https://')) return base.replace('https://', 'wss://') + path
-  if (base.startsWith('http://')) return base.replace('http://', 'ws://') + path
-  if (base.startsWith('ws://') || base.startsWith('wss://')) return base + path
+  if (base.startsWith('https://')) return base.replace('https://', 'wss://') + normalizedPath
+  if (base.startsWith('http://')) return base.replace('http://', 'ws://') + normalizedPath
+  if (base.startsWith('ws://') || base.startsWith('wss://')) return base + normalizedPath
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${base}${path}`
+  return `${proto}//${base}${normalizedPath}`
 }
 
 export const useRunsStore = defineStore('runs', () => {
@@ -117,10 +119,13 @@ export const useRunsStore = defineStore('runs', () => {
 
   function setRun(rec: RunRecord) {
     const id = rec.run_id
-    if (!runsById.value[id]) {
+    runsById.value[id] = rec
+    if (!runOrder.value.includes(id)) {
       runOrder.value = [id, ...runOrder.value]
     }
-    runsById.value[id] = rec
+    runOrder.value = [...runOrder.value].sort(
+      (a, b) => (runsById.value[b]?.updated_at || 0) - (runsById.value[a]?.updated_at || 0)
+    )
   }
 
   function applyBusChange(evt: any) {

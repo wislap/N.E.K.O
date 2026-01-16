@@ -650,11 +650,12 @@ class PluginContext:
             "timeout": timeout,
         }
 
+        deadline = time.time() + timeout
         try:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                lambda: plugin_comm_queue.put(request, timeout=timeout),
+                lambda: plugin_comm_queue.put(request, timeout=max(0.0, deadline - time.time())),
             )
             if send_log_template:
                 try:
@@ -675,7 +676,6 @@ class PluginContext:
                     pass
             raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
 
-        deadline = time.time() + timeout
         response_queue = getattr(self, "_response_queue", None)
         pending = getattr(self, "_response_pending", None)
         if pending is None:
