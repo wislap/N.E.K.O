@@ -1,3 +1,4 @@
+import asyncio
 import time
 import threading
 from collections import Counter
@@ -18,6 +19,7 @@ class LoadTestPlugin(NekoPluginBase):
         self.plugin_id = ctx.plugin_id
         self._stop_event = threading.Event()
         self._auto_thread: Optional[threading.Thread] = None
+        self._run_thread: Optional[threading.Thread] = None
         self._bench_lock = threading.Lock()
 
     def _cleanup(self) -> None:
@@ -25,6 +27,12 @@ class LoadTestPlugin(NekoPluginBase):
             self._stop_event.set()
         except Exception:
             pass
+        t_run = getattr(self, "_run_thread", None)
+        if t_run is not None:
+            try:
+                t_run.join(timeout=2.0)
+            except Exception:
+                pass
         t = getattr(self, "_auto_thread", None)
         if t is not None:
             try:
@@ -1368,6 +1376,46 @@ class LoadTestPlugin(NekoPluginBase):
         },
     )
     def run_all_benchmarks(self, duration_seconds: float = 5.0, **_: Any):
+        # IMPORTANT: this entry may be triggered via IPC (front-end /runs).
+        # Do not run heavy benchmarks inline inside handler; it can block the command loop
+        # and cause IPC timeouts. We spawn a background thread and return immediately.
+        try:
+            if not self._bench_lock.acquire(blocking=False):
+                return ok(data={"accepted": False, "reason": "benchmark already running"})
+        except Exception:
+            # if lock is broken, still try to proceed best-effort
+            pass
+
+        def _bg() -> None:
+            try:
+                if self._stop_event.is_set():
+                    return
+                self._run_all_benchmarks_sync(duration_seconds=float(duration_seconds))
+            except Exception as e:
+                try:
+                    self.logger.warning("[load_tester] run_all_benchmarks background failed: {}", e)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    self._bench_lock.release()
+                except Exception:
+                    pass
+
+        try:
+            t = threading.Thread(target=_bg, daemon=True, name="load_tester-run_all")
+            self._run_thread = t
+            t.start()
+        except Exception as e:
+            try:
+                self._bench_lock.release()
+            except Exception:
+                pass
+            return ok(data={"accepted": False, "reason": str(e)})
+
+        return ok(data={"accepted": True})
+
+    def _run_all_benchmarks_sync(self, duration_seconds: float = 5.0) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
         try:
             results["bench_push_messages"] = self._unwrap_ok_data(
@@ -1514,7 +1562,6 @@ class LoadTestPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     def startup(self, **_: Any):
         """Auto-start benchmarks.
-
         Important: do not read config / call bus APIs directly inside lifecycle handler.
         We only spawn a daemon thread here.
         """
@@ -1533,7 +1580,7 @@ class LoadTestPlugin(NekoPluginBase):
                     pass
                 if self._stop_event.is_set():
                     return
-                self.run_all_benchmarks()
+                self._run_all_benchmarks_sync(duration_seconds=5.0)
                 try:
                     self.ctx.logger.info("[load_tester] auto_start thread finished")
                 except Exception:
