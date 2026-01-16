@@ -201,7 +201,7 @@ class LoadTestPlugin(NekoPluginBase):
         """
         path = "load_test" if not section else f"load_test.{section}"
         try:
-            return self.config.get_section(path)
+            return self.config.get_section_sync(path)
         except Exception:
             # 配置缺失或格式不对时, 按空配置处理, 避免影响插件可用性
             return {}

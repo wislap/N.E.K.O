@@ -6,7 +6,12 @@
       <el-table-column prop="description" :label="$t('plugins.entryDescription')" />
       <el-table-column :label="$t('plugins.actions')" width="120">
         <template #default="{ row }">
-          <el-button type="primary" size="small" @click="openExecuteDialog(row)">
+          <el-button
+            type="primary"
+            size="small"
+            :class="{ 'entry-trigger-disabled': !isRunning }"
+            @click="openExecuteDialog(row)"
+          >
             {{ $t('plugins.trigger') }}
           </el-button>
         </template>
@@ -15,6 +20,15 @@
 
     <el-dialog v-model="dialogVisible" :title="$t('plugins.trigger')">
       <div v-if="currentEntry">
+        <el-alert
+          v-if="!isRunning"
+          type="warning"
+          :closable="false"
+          :title="$t('plugins.triggerFailed')"
+          :description="$t('status.stopped')"
+          show-icon
+          style="margin-bottom: 12px"
+        />
         <p>
           {{ $t('plugins.entryName') }}: {{ currentEntry.name }}
         </p>
@@ -63,7 +77,7 @@
 
       <template #footer>
         <el-button @click="dialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleExecute">
+        <el-button type="primary" :loading="submitting" :disabled="!isRunning" @click="handleExecute">
           {{ $t('plugins.trigger') }}
         </el-button>
       </template>
@@ -82,10 +96,13 @@ import { createRun } from '@/api/runs'
 interface Props {
   entries: PluginEntry[]
   pluginId: string
+  pluginStatus: string
 }
 
 const props = defineProps<Props>()
 const { t } = useI18n()
+
+const isRunning = computed(() => props.pluginStatus === 'running')
 
 const dialogVisible = ref(false)
 const currentEntry = ref<PluginEntry | null>(null)
@@ -139,6 +156,10 @@ function openExecuteDialog(entry: PluginEntry) {
 
 async function handleExecute() {
   if (!currentEntry.value) return
+  if (!isRunning.value) {
+    ElMessage.warning(t('status.stopped'))
+    return
+  }
 
   let parsedArgs: Record<string, any> = {}
   if (hasSchema.value) {
@@ -176,6 +197,10 @@ async function handleExecute() {
 <style scoped>
 .entry-list {
   padding: 20px 0;
+}
+
+.entry-trigger-disabled {
+  opacity: 0.5;
 }
 </style>
 

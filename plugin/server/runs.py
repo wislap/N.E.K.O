@@ -528,10 +528,28 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
             if ok:
                 term = _run_store.commit_terminal(run_id, status="succeeded", error=None, result_refs=[export_item_id])
             else:
+                err_obj = None
+                try:
+                    pr = getattr(resp, "plugin_response", None)
+                    if isinstance(pr, dict):
+                        err_obj = pr.get("error")
+                except Exception:
+                    err_obj = None
+
+                if isinstance(err_obj, dict):
+                    code = str(err_obj.get("code") or "PLUGIN_ERROR")
+                    msg = str(err_obj.get("message") or "plugin returned failure")
+                    details = err_obj.get("details")
+                    if details is not None and not isinstance(details, dict):
+                        details = {"details": details}
+                    run_err = RunError(code=code, message=msg, details=details if isinstance(details, dict) else None)
+                else:
+                    run_err = RunError(code="PLUGIN_ERROR", message="plugin returned failure")
+
                 term = _run_store.commit_terminal(
                     run_id,
                     status="failed",
-                    error=RunError(code="PLUGIN_ERROR", message="plugin returned failure"),
+                    error=run_err,
                     result_refs=[export_item_id],
                 )
             if term is not None:

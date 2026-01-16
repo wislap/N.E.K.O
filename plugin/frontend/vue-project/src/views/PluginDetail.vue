@@ -37,7 +37,7 @@
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
-          <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" />
+          <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
         </el-tab-pane>
 
         <el-tab-pane :label="$t('plugins.performance')" name="metrics">
