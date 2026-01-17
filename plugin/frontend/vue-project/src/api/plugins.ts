@@ -6,8 +6,6 @@ import type {
   PluginMeta,
   PluginStatusData,
   PluginHealth,
-  PluginTriggerRequest,
-  PluginTriggerResponse
 } from '@/types/api'
 
 /**
@@ -51,13 +49,6 @@ export function stopPlugin(pluginId: string): Promise<{ success: boolean; plugin
  */
 export function reloadPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
   return post(`/plugin/${pluginId}/reload`)
-}
-
-/**
- * 触发插件执行
- */
-export function triggerPlugin(payload: PluginTriggerRequest): Promise<PluginTriggerResponse> {
-  return post('/plugin/trigger', payload)
 }
 
 /**

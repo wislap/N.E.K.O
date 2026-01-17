@@ -215,7 +215,7 @@ class HelloWorldPlugin(NekoPluginBase):
 启动插件服务器后，可以通过 HTTP API 调用插件：
 
 ```bash
-curl -X POST http://localhost:8000/plugin/trigger \
+curl -X POST http://localhost:8000/runs \
   -H "Content-Type: application/json" \
   -d '{
     "plugin_id": "hello_world",

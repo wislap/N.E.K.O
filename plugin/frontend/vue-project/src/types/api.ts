@@ -169,23 +169,3 @@ export interface PluginMetricsHistoryResult {
   count: number
   time: string
 }
-
-// 插件触发请求
-export interface PluginTriggerRequest {
-  plugin_id: string
-  entry_id: string
-  args: Record<string, any>
-  task_id?: string
-}
-
-// 插件触发响应
-export interface PluginTriggerResponse {
-  success: boolean
-  plugin_id: string
-  executed_entry: string
-  args: Record<string, any>
-  plugin_response: any
-  received_at: string
-  plugin_forward_error?: Record<string, any>
-}
-

@@ -19,7 +19,6 @@ from loguru import logger as loguru_logger
 
 from plugin.core.state import state
 from plugin.api.models import (
-    PluginTriggerResponse,
     PluginPushMessageResponse,
 )
 from plugin.api.models import PluginPushMessageRequest
@@ -620,7 +619,7 @@ async def trigger_plugin(
     args: Dict[str, Any],
     task_id: Optional[str] = None,
     client_host: Optional[str] = None,
-) -> PluginTriggerResponse:
+) -> Dict[str, Any]:
     """
     触发插件执行
     
@@ -632,7 +631,7 @@ async def trigger_plugin(
         client_host: 客户端主机（可选）
     
     Returns:
-        PluginTriggerResponse
+        Dict[str, Any]
     
     Raises:
         HTTPException: 如果插件不存在或执行失败
@@ -703,15 +702,15 @@ async def trigger_plugin(
                 trace_id=trace_id,
             )
 
-        return PluginTriggerResponse(
-            success=False,
-            plugin_id=plugin_id,
-            executed_entry=entry_id,
-            args=args,
-            plugin_response=plugin_response,
-            received_at=event["received_at"],
-            plugin_forward_error=None,
-        )
+        return {
+            "success": False,
+            "plugin_id": plugin_id,
+            "executed_entry": entry_id,
+            "args": args,
+            "plugin_response": plugin_response,
+            "received_at": event["received_at"],
+            "plugin_forward_error": None,
+        }
     
     # 检查进程健康状态
     try:
@@ -724,15 +723,15 @@ async def trigger_plugin(
                 retriable=True,
                 trace_id=trace_id,
             )
-            return PluginTriggerResponse(
-                success=False,
-                plugin_id=plugin_id,
-                executed_entry=entry_id,
-                args=args,
-                plugin_response=plugin_response,
-                received_at=event["received_at"],
-                plugin_forward_error=None,
-            )
+            return {
+                "success": False,
+                "plugin_id": plugin_id,
+                "executed_entry": entry_id,
+                "args": args,
+                "plugin_response": plugin_response,
+                "received_at": event["received_at"],
+                "plugin_forward_error": None,
+            }
     except (AttributeError, RuntimeError) as e:
         logger.opt(exception=True).error(f"Failed to check health for plugin {plugin_id}: {e}")
         plugin_response = fail(
@@ -742,15 +741,15 @@ async def trigger_plugin(
             retriable=True,
             trace_id=trace_id,
         )
-        return PluginTriggerResponse(
-            success=False,
-            plugin_id=plugin_id,
-            executed_entry=entry_id,
-            args=args,
-            plugin_response=plugin_response,
-            received_at=event["received_at"],
-            plugin_forward_error=None,
-        )
+        return {
+            "success": False,
+            "plugin_id": plugin_id,
+            "executed_entry": entry_id,
+            "args": args,
+            "plugin_response": plugin_response,
+            "received_at": event["received_at"],
+            "plugin_forward_error": None,
+        }
     
     # 执行插件
     plugin_response: Any = None
@@ -826,15 +825,15 @@ async def trigger_plugin(
             plugin_response = dict(plugin_response)
             plugin_response["trace_id"] = trace_id
     
-    return PluginTriggerResponse(
-        success=bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
-        plugin_id=plugin_id,
-        executed_entry=entry_id,
-        args=args,
-        plugin_response=plugin_response,
-        received_at=event["received_at"],
-        plugin_forward_error=None,
-    )
+    return {
+        "success": bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
+        "plugin_id": plugin_id,
+        "executed_entry": entry_id,
+        "args": args,
+        "plugin_response": plugin_response,
+        "received_at": event["received_at"],
+        "plugin_forward_error": None,
+    }
 
 
 def get_messages_from_queue(

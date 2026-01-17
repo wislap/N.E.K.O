@@ -11,25 +11,32 @@ from pydantic import BaseModel, Field, field_serializer, model_validator
 from plugin.sdk.version import SDK_VERSION
 
 
-# API 请求/响应模型
-class PluginTriggerRequest(BaseModel):
-    """插件触发请求"""
+# /runs (Run Protocol)
+RunStatus = Literal[
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "canceled",
+    "timeout",
+    "cancel_requested",
+]
+
+
+class RunCreateRequest(BaseModel):
     plugin_id: str
     entry_id: str
-    args: Dict[str, Any] = {}
-    lanlan_name: Optional[str] = Field(default=None, description="触发插件的猫娘角色名称")
+    args: Dict[str, Any] = Field(default_factory=dict)
     task_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
-class PluginTriggerResponse(BaseModel):
-    """插件触发响应"""
-    success: bool
-    plugin_id: str
-    executed_entry: str
-    args: Dict[str, Any]
-    plugin_response: Any
-    received_at: str
-    plugin_forward_error: Optional[Dict[str, Any]] = None
+class RunCreateResponse(BaseModel):
+    run_id: str
+    status: RunStatus
+    run_token: Optional[str] = None
+    expires_at: Optional[int] = None
 
 
 # 核心数据结构

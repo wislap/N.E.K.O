@@ -16,8 +16,6 @@ from plugin.runtime.registry import (
 from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.communication import PluginCommunicationResourceManager
 from plugin.api.models import (
-    PluginTriggerRequest,
-    PluginTriggerResponse,
     PluginPushMessageRequest,
     PluginPushMessage,
     PluginPushMessageResponse,
@@ -78,8 +76,6 @@ __all__ = [
     'PluginProcessHost',
     'PluginCommunicationResourceManager',
     # API
-    'PluginTriggerRequest',
-    'PluginTriggerResponse',
     'PluginPushMessageRequest',
     'PluginPushMessage',
     'PluginPushMessageResponse',

@@ -67,8 +67,6 @@ except Exception:
 
 from plugin.core.state import state
 from plugin.api.models import (
-    PluginTriggerRequest,
-    PluginTriggerResponse,
     PluginPushMessageRequest,
     PluginPushMessageResponse,
 )
@@ -91,10 +89,9 @@ from plugin.server.metrics_service import metrics_collector
 from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 from plugin.api.exceptions import PluginError
+from plugin.api.models import RunCreateRequest, RunCreateResponse
 
 from plugin.server.runs import (
-    RunCreateRequest,
-    RunCreateResponse,
     RunCancelRequest,
     RunRecord,
     ExportListResponse,
@@ -104,7 +101,8 @@ from plugin.server.runs import (
     list_export_for_run,
 )
 
-from plugin.server.ws_run import issue_run_token, ws_run_endpoint
+from plugin.server.ws_run import ws_run_endpoint
+from plugin.server.ws_run import issue_run_token
 from plugin.server.blob_store import blob_store
 from plugin.server.ws_admin import ws_admin_endpoint
 
@@ -499,108 +497,6 @@ async def runs_export(
     except Exception as e:
         logger.exception("Failed to list export items")
         raise handle_plugin_error(e, "Failed to list export items", 500) from e
-
-
-@app.post("/plugin/trigger", response_model=PluginTriggerResponse)
-async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
-    """
-    触发指定插件的指定 entry
-    """
-    try:
-        client_host = request.client.host if request.client else None
-        
-        # 关键日志：记录接收到的请求
-        logger.info(
-            "[plugin_trigger] Received trigger request: plugin_id={}, entry_id={}, task_id={}",
-            payload.plugin_id,
-            payload.entry_id,
-            payload.task_id,
-        )
-        # 详细参数信息使用 DEBUG（脱敏处理，避免泄露敏感数据）
-        safe_args = payload.args
-        if isinstance(safe_args, dict):
-            # 脱敏敏感字段
-            redacted = {}
-            sensitive_keys = {"api_key", "apikey", "token", "authorization", "cookie", "password", "secret", "credential"}
-            for k, v in safe_args.items():
-                if k.lower() in sensitive_keys or any(sensitive in k.lower() for sensitive in sensitive_keys):
-                    redacted[k] = "***REDACTED***"
-                else:
-                    # 对于非敏感字段，如果是字符串且过长则截断
-                    if isinstance(v, str) and len(v) > 100:
-                        redacted[k] = v[:100] + "...(truncated)"
-                    else:
-                        redacted[k] = v
-            safe_args = redacted
-        
-        # 截断整个输出，避免日志爆炸
-        args_preview = str(safe_args)
-        if len(args_preview) > 500:
-            args_preview = args_preview[:500] + "...(truncated)"
-        
-        logger.debug(
-            "[plugin_trigger] Request args: type={}, keys={}, preview={}",
-            type(payload.args),
-            list(payload.args.keys()) if isinstance(payload.args, dict) else "N/A",
-            args_preview,
-        )
-        
-        trigger_args = payload.args if isinstance(payload.args, dict) else {}
-
-        try:
-            ctx_obj = trigger_args.get("_ctx")
-            if not isinstance(ctx_obj, dict):
-                ctx_obj = {}
-
-            bucket_id = None
-            for k in ("session_id", "conversation_id", "chat_id", "user_id", "lanlan_name"):
-                v = ctx_obj.get(k)
-                if isinstance(v, str) and v.strip():
-                    bucket_id = v.strip()
-                    break
-
-            if bucket_id is None:
-                bucket_id = "default"
-
-            state.add_user_context_event(
-                bucket_id=bucket_id,
-                event={
-                    "type": "PLUGIN_TRIGGER",
-                    "plugin_id": payload.plugin_id,
-                    "entry_id": payload.entry_id,
-                    "task_id": payload.task_id,
-                    "client_host": client_host,
-                    "args": trigger_args,
-                },
-            )
-        except Exception:
-            pass
-        # Merge lanlan_name into a reserved context field for plugin authors.
-        # Priority: explicit payload.lanlan_name > args['_ctx']['lanlan_name'] (if present)
-        try:
-            if payload.lanlan_name:
-                ctx_obj = trigger_args.get("_ctx")
-                if not isinstance(ctx_obj, dict):
-                    ctx_obj = {}
-                ctx_obj.setdefault("lanlan_name", payload.lanlan_name)
-                trigger_args["_ctx"] = ctx_obj
-        except Exception:
-            pass
-
-        return await trigger_plugin(
-            plugin_id=payload.plugin_id,
-            entry_id=payload.entry_id,
-            args=trigger_args,
-            task_id=payload.task_id,
-            client_host=client_host,
-        )
-    except HTTPException:
-        raise
-    except (PluginError, TimeoutError, ConnectionError, OSError) as e:
-        raise handle_plugin_error(e, "plugin_trigger", 500) from e
-    except Exception as e:
-        logger.exception("plugin_trigger: Unexpected error")
-        raise handle_plugin_error(e, "plugin_trigger", 500) from e
 
 
 # ========== 消息路由 ==========

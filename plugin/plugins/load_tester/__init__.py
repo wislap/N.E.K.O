@@ -20,7 +20,7 @@ class LoadTestPlugin(NekoPluginBase):
         self._stop_event = threading.Event()
         self._auto_thread: Optional[threading.Thread] = None
         self._run_thread: Optional[threading.Thread] = None
-        self._bench_lock = threading.Lock()
+        self._bench_lock = threading.RLock()
 
     def _cleanup(self) -> None:
         try:
@@ -1380,8 +1380,10 @@ class LoadTestPlugin(NekoPluginBase):
         # Do not run heavy benchmarks inline inside handler; it can block the command loop
         # and cause IPC timeouts. We spawn a background thread and return immediately.
         try:
-            if not self._bench_lock.acquire(blocking=False):
+            acquired = self._bench_lock.acquire(blocking=False)
+            if not acquired:
                 return ok(data={"accepted": False, "reason": "benchmark already running"})
+            self._bench_lock.release()
         except Exception:
             # if lock is broken, still try to proceed best-effort
             pass
@@ -1390,15 +1392,15 @@ class LoadTestPlugin(NekoPluginBase):
             try:
                 if self._stop_event.is_set():
                     return
-                self._run_all_benchmarks_sync(duration_seconds=float(duration_seconds))
+                if not self._bench_lock.acquire(blocking=False):
+                    return
+                try:
+                    self._run_all_benchmarks_sync(duration_seconds=float(duration_seconds))
+                finally:
+                    self._bench_lock.release()
             except Exception as e:
                 try:
                     self.logger.warning("[load_tester] run_all_benchmarks background failed: {}", e)
-                except Exception:
-                    pass
-            finally:
-                try:
-                    self._bench_lock.release()
                 except Exception:
                     pass
 
@@ -1407,10 +1409,6 @@ class LoadTestPlugin(NekoPluginBase):
             self._run_thread = t
             t.start()
         except Exception as e:
-            try:
-                self._bench_lock.release()
-            except Exception:
-                pass
             return ok(data={"accepted": False, "reason": str(e)})
 
         return ok(data={"accepted": True})

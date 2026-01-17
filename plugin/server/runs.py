@@ -10,37 +10,11 @@ from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 from pydantic import BaseModel, Field
 
 from plugin.core.state import state
+from plugin.api.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.server.services import trigger_plugin
 
 
-RunStatus = Literal[
-    "queued",
-    "running",
-    "succeeded",
-    "failed",
-    "canceled",
-    "timeout",
-    "cancel_requested",
-]
-
-
 ExportType = Literal["text", "url", "binary_url", "binary"]
-
-
-class RunCreateRequest(BaseModel):
-    plugin_id: str
-    entry_id: str
-    args: Dict[str, Any] = Field(default_factory=dict)
-    task_id: Optional[str] = None
-    trace_id: Optional[str] = None
-    idempotency_key: Optional[str] = None
-
-
-class RunCreateResponse(BaseModel):
-    run_id: str
-    status: RunStatus
-    run_token: Optional[str] = None
-    expires_at: Optional[int] = None
 
 
 class RunCancelRequest(BaseModel):
@@ -509,7 +483,7 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
                 task_id=req.task_id,
                 client_host=client_host,
             )
-            payload = resp.model_dump() if hasattr(resp, "model_dump") else json.loads(json.dumps(resp, default=str))
+            payload = resp if isinstance(resp, dict) else json.loads(json.dumps(resp, default=str))
             text = json.dumps(payload, ensure_ascii=False)
             export_item_id = str(uuid.uuid4())
             item = ExportItem(
@@ -524,13 +498,13 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
             _export_store.append(item)
             _emit_export("add", item)
 
-            ok = bool(getattr(resp, "success", False)) if resp is not None else False
+            ok = bool(resp.get("success")) if isinstance(resp, dict) else False
             if ok:
                 term = _run_store.commit_terminal(run_id, status="succeeded", error=None, result_refs=[export_item_id])
             else:
                 err_obj = None
                 try:
-                    pr = getattr(resp, "plugin_response", None)
+                    pr = resp.get("plugin_response") if isinstance(resp, dict) else None
                     if isinstance(pr, dict):
                         err_obj = pr.get("error")
                 except Exception:

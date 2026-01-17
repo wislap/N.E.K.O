@@ -825,141 +825,6 @@ Return only the JSON object, nothing else.
         Execute a user plugin via HTTP endpoint or specific plugin_entry.
         up_decision is expected to have attributes: plugin_id, plugin_args, task_description
         """
-        async def _fallback_trigger() -> TaskResult:
-            # Route via /plugin/trigger; use separate top-level entry_id when provided
-            trigger_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
-            safe_args: Dict[str, Any]
-            if isinstance(plugin_args, dict):
-                safe_args = dict(plugin_args)
-            else:
-                safe_args = {}
-
-            # Inject context for plugins (reserved field).
-            # Plugins can read args.get('_ctx', {}).get('lanlan_name') to know which character/session they belong to.
-            try:
-                if lanlan_name:
-                    ctx_obj = safe_args.get("_ctx")
-                    if not isinstance(ctx_obj, dict):
-                        ctx_obj = {}
-                    if "lanlan_name" not in ctx_obj:
-                        ctx_obj["lanlan_name"] = lanlan_name
-                    safe_args["_ctx"] = ctx_obj
-            except Exception:
-                pass
-
-            trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": safe_args}
-            if plugin_entry_id:
-                trigger_body["entry_id"] = plugin_entry_id
-                logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-
-            # 关键日志: 记录准备触发插件
-            logger.info(
-                "[TaskExecutor] Preparing plugin trigger: plugin_id=%s, entry_id=%s, endpoint=%s",
-                plugin_id,
-                plugin_entry_id,
-                trigger_endpoint,
-            )
-            # 详细参数信息使用 DEBUG
-            logger.debug(
-                "[TaskExecutor] Plugin args: arg_keys=%s, arg_values=%s",
-                list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
-                {k: str(v)[:100] for k, v in plugin_args.items()} if isinstance(plugin_args, dict) else plugin_args,
-            )
-            logger.debug(
-                "[TaskExecutor] Full trigger_body (meta only): %s",
-                {
-                    "task_id": trigger_body.get("task_id"),
-                    "plugin_id": trigger_body.get("plugin_id"),
-                    "entry_id": trigger_body.get("entry_id"),
-                    "args_keys": list((trigger_body.get("args") or {}).keys()),
-                }
-                if isinstance(trigger_body, dict)
-                else trigger_body,
-            )
-            try:
-                import httpx
-
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    r = await client.post(trigger_endpoint, json=trigger_body)
-                    # Treat 2xx as accepted. plugin_server may synchronously execute and return executed_entry
-                    if 200 <= r.status_code < 300:
-                        try:
-                            data = r.json()
-                        except Exception:
-                            logger.debug(
-                                "[TaskExecutor] Failed to parse trigger response as JSON, using text fallback",
-                                exc_info=True,
-                            )
-                            data = {"raw_text": r.text}
-                        logger.info(
-                            "[TaskExecutor] ✅ Trigger accepted for plugin %s (entry_id=%s)",
-                            plugin_id,
-                            plugin_entry_id or trigger_body.get("entry_id"),
-                        )
-                        logger.debug(
-                            "[TaskExecutor] Trigger payload (meta only)=%r, response=%r",
-                            {
-                                "task_id": trigger_body.get("task_id"),
-                                "plugin_id": trigger_body.get("plugin_id"),
-                                "entry_id": trigger_body.get("entry_id"),
-                                "args_keys": list((trigger_body.get("args") or {}).keys()),
-                            }
-                            if isinstance(trigger_body, dict)
-                            else trigger_body,
-                            data,
-                        )
-                        plugin_name = data.get("plugin_id") or plugin_id
-                        # Determine executed entry id: prefer explicit returned executed_entry/entry_id, then trigger_body.entry_id
-                        entry_id = None
-                        if isinstance(data, dict):
-                            entry_id = data.get("executed_entry") or data.get("entry_id") or trigger_body.get("entry_id")
-                        # Log decision about entry_id for traceability
-                        logger.debug(
-                            f"[TaskExecutor] Resolved entry_id for plugin {plugin_id}: {entry_id} (from response or trigger_body)"
-                        )
-                        # Return TaskResult with independent entry_id field in result
-                        result_obj = {"accepted": True, "trigger_response": data, "entry_id": entry_id}
-                        # success=True 表示“触发已被接受”，实际执行进度由 plugin_server 跟踪
-                        return TaskResult(
-                            task_id=task_id,
-                            has_task=True,
-                            task_description=task_description,
-                            execution_method="user_plugin",
-                            success=True,
-                            result=result_obj,
-                            tool_name=plugin_name,
-                            tool_args=plugin_args,
-                            reason=getattr(up_decision, "reason", "") or "trigger_accepted",
-                        )
-                    else:
-                        text = r.text
-                        logger.error(f"[TaskExecutor] ❌ Trigger endpoint returned status {r.status_code}: {text}")
-                        return TaskResult(
-                            task_id=task_id,
-                            has_task=True,
-                            task_description=task_description,
-                            execution_method="user_plugin",
-                            success=False,
-                            error=f"Trigger endpoint returned status {r.status_code}",
-                            result={"status_code": r.status_code, "text": text},
-                            tool_name=plugin_id,
-                            tool_args=plugin_args,
-                            reason=getattr(up_decision, "reason", "") or "trigger_failed",
-                        )
-            except Exception as e:
-                logger.exception("[TaskExecutor] Trigger call error")
-                return TaskResult(
-                    task_id=task_id,
-                    has_task=True,
-                    task_description=task_description,
-                    execution_method="user_plugin",
-                    success=False,
-                    error=str(e),
-                    tool_name=plugin_id,
-                    tool_args=plugin_args,
-                    reason=getattr(up_decision, "reason", ""),
-                )
-
         plugin_id = getattr(up_decision, "plugin_id", None)
         plugin_args = getattr(up_decision, "plugin_args", {}) or {}
         task_description = getattr(up_decision, "task_description", "")
@@ -1110,14 +975,24 @@ Return only the JSON object, nothing else.
             )
         except Exception as e:
             logger.warning(
-                "[TaskExecutor] /runs + /ws/run execution failed; falling back to /plugin/trigger. error=%r",
+                "[TaskExecutor] /runs execution failed; no legacy fallback. error=%r",
                 e,
             )
-            return await _fallback_trigger()
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method="user_plugin",
+                success=False,
+                error=str(e),
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "") or "run_failed",
+            )
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
         """
-        Directly execute a plugin entry by calling /plugin/trigger with explicit plugin_id and optional entry_id.
+        Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
         """
         up_decision_stub = UserPluginDecision(
