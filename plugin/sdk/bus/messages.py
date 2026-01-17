@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -10,10 +11,100 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
+from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
+
+
+try:
+    import zmq
+except Exception:  # pragma: no cover
+    zmq = None
+
+
+class _MessagePlaneRpcClient:
+    def __init__(self, *, plugin_id: str, endpoint: str) -> None:
+        if zmq is None:
+            raise RuntimeError("pyzmq is not available")
+        self._plugin_id = str(plugin_id)
+        self._endpoint = str(endpoint)
+        try:
+            import threading
+
+            self._tls = threading.local()
+        except Exception:
+            self._tls = None
+
+    def _get_sock(self):
+        if self._tls is not None:
+            sock = getattr(self._tls, "sock", None)
+            if sock is not None:
+                return sock
+        if zmq is None:
+            return None
+        ctx = zmq.Context.instance()
+        sock = ctx.socket(zmq.DEALER)
+        ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
+        try:
+            sock.setsockopt(zmq.IDENTITY, ident)
+        except Exception:
+            pass
+        try:
+            sock.setsockopt(zmq.LINGER, 0)
+        except Exception:
+            pass
+        sock.connect(self._endpoint)
+        if self._tls is not None:
+            try:
+                self._tls.sock = sock
+            except Exception:
+                pass
+        return sock
+
+    def request(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+        if zmq is None:
+            return None
+        sock = self._get_sock()
+        if sock is None:
+            return None
+        req_id = str(uuid.uuid4())
+        req = {"v": 1, "op": str(op), "req_id": req_id, "args": dict(args or {}), "from_plugin": self._plugin_id}
+        try:
+            raw = json.dumps(req, ensure_ascii=False).encode("utf-8")
+        except Exception:
+            return None
+        try:
+            sock.send(raw, flags=0)
+        except Exception:
+            return None
+        poller = zmq.Poller()
+        poller.register(sock, zmq.POLLIN)
+        deadline = time.time() + max(0.0, float(timeout))
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                events = dict(poller.poll(timeout=int(remaining * 1000)))
+            except Exception:
+                return None
+            if sock not in events:
+                continue
+            try:
+                resp_raw = sock.recv(flags=0)
+            except Exception:
+                return None
+            try:
+                resp = json.loads(resp_raw.decode("utf-8"))
+            except Exception:
+                resp = None
+            if not isinstance(resp, dict):
+                continue
+            if resp.get("req_id") != req_id:
+                continue
+            return resp
 
 @dataclass(frozen=True)
 class MessageRecord(BusRecord):
@@ -232,6 +323,210 @@ def _ensure_local_cache() -> _LocalMessageCache:
 class MessageClient:
     ctx: "PluginContext"
 
+    def get_message_plane(
+        self,
+        *,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        source: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+        raw: bool = False,
+        topic: str = "all",
+    ) -> MessageList:
+        """Fetch messages via message_plane ZMQ RPC.
+
+        This is an additive API used for integration testing; it does NOT replace the existing
+        control-plane transport.
+        """
+        if zmq is None:
+            raise RuntimeError("pyzmq is not available")
+
+        pid_norm: Optional[str] = None
+        if isinstance(plugin_id, str):
+            pid_norm = plugin_id.strip()
+        if pid_norm == "*":
+            pid_norm = None
+        if pid_norm == "":
+            pid_norm = None
+
+        args: Dict[str, Any] = {
+            "store": "messages",
+            "topic": str(topic) if isinstance(topic, str) and topic else "all",
+            "limit": int(max_count) if max_count is not None else 50,
+            "plugin_id": pid_norm,
+            "source": str(source) if isinstance(source, str) and source else None,
+            "priority_min": int(priority_min) if priority_min is not None else None,
+            "since_ts": float(since_ts) if since_ts is not None else None,
+        }
+        if isinstance(filter, dict):
+            # Only pass through fields supported by message_plane query.
+            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts"):
+                if k in filter and args.get(k) is None:
+                    args[k] = filter.get(k)
+        if not bool(strict):
+            # message_plane query is strict by nature; keep the parameter for API parity.
+            pass
+
+        rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+        resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
+        if not isinstance(resp, dict):
+            raise TimeoutError(f"message_plane bus.query timed out after {timeout}s")
+        if not resp.get("ok"):
+            raise RuntimeError(str(resp.get("error") or "message_plane error"))
+        result = resp.get("result")
+        items: List[Any] = []
+        if isinstance(result, dict):
+            got = result.get("items")
+            if isinstance(got, list):
+                items = got
+
+        payloads: List[Dict[str, Any]] = []
+        for ev in items:
+            if not isinstance(ev, dict):
+                continue
+            p = ev.get("payload")
+            if isinstance(p, dict):
+                payloads.append(p)
+
+        records: List[MessageRecord] = []
+        if bool(raw):
+            for p in payloads:
+                records.append(MessageRecord.from_raw(p))
+        else:
+            for p in payloads:
+                records.append(MessageRecord.from_raw(p))
+
+        get_params = {
+            "plugin_id": plugin_id,
+            "max_count": max_count,
+            "priority_min": priority_min,
+            "source": source,
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
+            "since_ts": since_ts,
+            "timeout": timeout,
+            "raw": bool(raw),
+        }
+        trace = None if bool(raw) else [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = None if bool(raw) else GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
+        effective_plugin_id = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
+        return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
+
+    def get_message_plane_all(
+        self,
+        *,
+        plugin_id: Optional[str] = None,
+        source: Optional[str] = None,
+        priority_min: Optional[int] = None,
+        after_seq: int = 0,
+        page_limit: int = 200,
+        max_items: int = 5000,
+        timeout: float = 5.0,
+        raw: bool = False,
+        topic: str = "*",
+    ) -> MessageList:
+        if zmq is None:
+            raise RuntimeError("pyzmq is not available")
+
+        pid_norm: Optional[str] = None
+        if isinstance(plugin_id, str):
+            pid_norm = plugin_id.strip()
+        if pid_norm == "*":
+            pid_norm = None
+        if pid_norm == "":
+            pid_norm = None
+
+        rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+
+        out_payloads: List[Dict[str, Any]] = []
+        last_seq = int(after_seq) if after_seq is not None else 0
+        limit_i = int(page_limit) if page_limit is not None else 200
+        if limit_i <= 0:
+            limit_i = 200
+
+        hard_max = int(max_items) if max_items is not None else 0
+        if hard_max <= 0:
+            hard_max = 5000
+
+        while len(out_payloads) < hard_max:
+            args: Dict[str, Any] = {
+                "store": "messages",
+                "topic": str(topic) if isinstance(topic, str) and topic else "*",
+                "after_seq": int(last_seq),
+                "limit": int(min(limit_i, hard_max - len(out_payloads))),
+            }
+            resp = rpc.request(op="bus.get_since", args=args, timeout=float(timeout))
+            if not isinstance(resp, dict):
+                raise TimeoutError(f"message_plane bus.get_since timed out after {timeout}s")
+            if not resp.get("ok"):
+                raise RuntimeError(str(resp.get("error") or "message_plane error"))
+            result = resp.get("result")
+            items: List[Any] = []
+            if isinstance(result, dict):
+                got = result.get("items")
+                if isinstance(got, list):
+                    items = got
+
+            if not items:
+                break
+
+            progressed = False
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                try:
+                    seq = int(ev.get("seq") or 0)
+                except Exception:
+                    seq = 0
+                if seq > last_seq:
+                    last_seq = seq
+                    progressed = True
+                p = ev.get("payload")
+                if not isinstance(p, dict):
+                    continue
+                if pid_norm is not None and p.get("plugin_id") != pid_norm:
+                    continue
+                if isinstance(source, str) and source and p.get("source") != source:
+                    continue
+                if priority_min is not None:
+                    try:
+                        if int(p.get("priority") or 0) < int(priority_min):
+                            continue
+                    except Exception:
+                        continue
+                out_payloads.append(p)
+                if len(out_payloads) >= hard_max:
+                    break
+
+            if not progressed:
+                break
+            if len(items) < int(args.get("limit") or 0):
+                break
+
+        records: List[MessageRecord] = []
+        for p in out_payloads:
+            records.append(MessageRecord.from_raw(p))
+
+        effective_plugin_id = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
+        get_params = {
+            "plugin_id": plugin_id,
+            "max_count": int(len(records)),
+            "priority_min": priority_min,
+            "source": source,
+            "filter": None,
+            "strict": True,
+            "since_ts": None,
+            "timeout": timeout,
+            "raw": bool(raw),
+        }
+        trace = None if bool(raw) else [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = None if bool(raw) else GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
+        return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
+
     def get(
         self,
         plugin_id: Optional[str] = None,
@@ -244,6 +539,21 @@ class MessageClient:
         timeout: float = 5.0,
         raw: bool = False,
     ) -> MessageList:
+        try:
+            return self.get_message_plane(
+                plugin_id=plugin_id,
+                max_count=max_count,
+                priority_min=priority_min,
+                source=source,
+                filter=filter,
+                strict=strict,
+                since_ts=since_ts,
+                timeout=timeout,
+                raw=raw,
+                topic="all",
+            )
+        except Exception:
+            pass
         if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
             if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
                 c = _ensure_local_cache()
@@ -507,76 +817,3 @@ class MessageClient:
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
         return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
-
-    def delete(self, message_id: str, timeout: float = 5.0) -> bool:
-        if hasattr(self.ctx, "_enforce_sync_call_policy"):
-            self.ctx._enforce_sync_call_policy("bus.messages.delete")
-
-        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
-
-        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        mid = str(message_id).strip() if message_id is not None else ""
-        if not mid:
-            raise ValueError("message_id is required")
-
-        req_id = str(uuid.uuid4())
-        request = {
-            "type": "MESSAGE_DEL",
-            "from_plugin": getattr(self.ctx, "plugin_id", ""),
-            "request_id": req_id,
-            "message_id": mid,
-            "timeout": float(timeout),
-        }
-
-        if zmq_client is not None:
-            response = None
-            try:
-                resp = zmq_client.request(request, timeout=float(timeout))
-                if isinstance(resp, dict):
-                    response = resp
-            except Exception:
-                response = None
-            if response is None:
-                if hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning("[bus.messages.delete] ZeroMQ IPC failed; raising exception (no fallback)")
-                    except Exception:
-                        pass
-                raise TimeoutError(f"MESSAGE_DEL over ZeroMQ timed out or failed after {timeout}s")
-        else:
-            try:
-                plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
-
-            response = state.wait_for_plugin_response(req_id, timeout)
-        if response is None:
-            orphan_response = None
-            try:
-                orphan_response = state.peek_plugin_response(req_id)
-            except Exception:
-                orphan_response = None
-            if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
-                try:
-                    self.ctx.logger.warning(
-                        f"[PluginContext] Timeout reached for MESSAGE_DEL, but response was found (likely delayed). "
-                        f"Orphan response detected for req_id={req_id}"
-                    )
-                except Exception:
-                    pass
-            raise TimeoutError(f"MESSAGE_DEL timed out after {timeout}s")
-        if not isinstance(response, dict):
-            raise RuntimeError("Invalid MESSAGE_DEL response")
-        if response.get("error"):
-            raise RuntimeError(str(response.get("error")))
-
-        result = response.get("result")
-        if isinstance(result, dict):
-            return bool(result.get("deleted"))
-        return False

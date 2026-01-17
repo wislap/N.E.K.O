@@ -21,6 +21,13 @@ from pathlib import Path
 from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+import ormsgpack
+
+try:
+    import zmq
+except Exception:  # pragma: no cover
+    zmq = None
+
 from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginError
@@ -573,6 +580,77 @@ class PluginContext:
             metadata: 额外的元数据
             unsafe: 为 True 时，允许主进程跳过严格 schema 校验（用于高性能场景，默认 False）
         """
+        # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
+        # from the control plane and rely on ZMQ backpressure.
+        if zmq is not None:
+            try:
+                from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+
+                endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
+                if endpoint:
+                    tls = getattr(self, "_message_plane_ingest_tls", None)
+                    if tls is None:
+                        tls = threading.local()
+                        try:
+                            object.__setattr__(self, "_message_plane_ingest_tls", tls)
+                        except Exception:
+                            self._message_plane_ingest_tls = tls
+
+                    sock = getattr(tls, "sock", None)
+                    if sock is None:
+                        ctx = zmq.Context.instance()
+                        sock = ctx.socket(zmq.PUSH)
+                        try:
+                            sock.setsockopt(zmq.LINGER, 0)
+                        except Exception:
+                            pass
+                        sock.connect(endpoint)
+                        try:
+                            tls.sock = sock
+                        except Exception:
+                            pass
+
+                    payload = {
+                        "type": "MESSAGE_PUSH",
+                        "message_id": str(uuid.uuid4()),
+                        "plugin_id": self.plugin_id,
+                        "source": source,
+                        "description": description,
+                        "priority": priority,
+                        "message_type": message_type,
+                        "content": content,
+                        "binary_data": binary_data,
+                        "binary_url": binary_url,
+                        "metadata": metadata or {},
+                        "unsafe": bool(unsafe),
+                        "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    }
+                    msg = {
+                        "kind": "delta_batch",
+                        "from": str(self.plugin_id),
+                        "ts": time.time(),
+                        "batch_id": str(uuid.uuid4()),
+                        "items": [
+                            {
+                                "store": "messages",
+                                "topic": "all",
+                                "payload": payload,
+                            }
+                        ],
+                    }
+
+                    # Blocking send: rely on ZMQ HWM for backpressure.
+                    sock.send(ormsgpack.packb(msg), flags=0)
+                    if PLUGIN_LOG_CTX_MESSAGE_PUSH:
+                        try:
+                            self.logger.debug(f"Plugin {self.plugin_id} pushed message (message_plane): {source} - {description}")
+                        except Exception:
+                            pass
+                    return
+            except Exception:
+                # Keep legacy control-plane path as fallback.
+                pass
+
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is None and bool(fast_mode):
             # ZeroMQ IPC 被显式关闭时，queue 是默认路径，这里仅以 debug 级别提示 fast_mode 已被忽略

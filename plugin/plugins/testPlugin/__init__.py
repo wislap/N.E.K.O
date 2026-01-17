@@ -187,6 +187,19 @@ class HelloPlugin(NekoPluginBase):
                 timeout=timeout,
             )
 
+            mp_list = None
+            try:
+                mp_list = self.ctx.bus.messages.get_message_plane(
+                    plugin_id=plugin_id or None,
+                    max_count=max_count,
+                    priority_min=pri_opt,
+                    source=source or None,
+                    timeout=timeout,
+                    raw=True,
+                )
+            except Exception as e:
+                mp_list = {"error": str(e)}
+
             filtered = msg_list
             if source:
                 filtered = filtered.filter(source=source)
@@ -244,6 +257,14 @@ class HelloPlugin(NekoPluginBase):
                 i_nums,
                 len(inter_ab),
             )
+
+            try:
+                if isinstance(mp_list, dict):
+                    self.file_logger.info("[messages_debug.message_plane] {}", mp_list)
+                else:
+                    self.file_logger.info("[messages_debug.message_plane] {}", mp_list.dump())
+            except Exception:
+                pass
 
             watch_source = "testPlugin.watch.demo"
             watch_list = self.ctx.bus.messages.get(

@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from pathlib import Path
+import threading
 
 from loguru import logger
 
@@ -29,6 +30,96 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_SHUTDOWN_TOTAL_TIMEOUT,
 )
+
+
+_message_plane_thread: threading.Thread | None = None
+_message_plane_rpc = None
+_message_plane_ingest = None
+_message_plane_pub = None
+
+
+def _start_message_plane_embedded() -> None:
+    global _message_plane_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
+    if _message_plane_thread is not None and _message_plane_thread.is_alive():
+        return
+    try:
+        from plugin.message_plane.ingest_server import MessagePlaneIngestServer
+        from plugin.message_plane.pub_server import MessagePlanePubServer
+        from plugin.message_plane.rpc_server import MessagePlaneRpcServer
+        from plugin.message_plane.stores import StoreRegistry, TopicStore
+        from plugin.settings import (
+            MESSAGE_PLANE_STORE_MAXLEN,
+            MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
+            MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
+            MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+        )
+
+        stores = StoreRegistry(default_store="messages")
+        for name in ("messages", "events", "lifecycle", "runs", "export", "memory"):
+            stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
+
+        pub_srv = MessagePlanePubServer(endpoint=str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT))
+        ingest_srv = MessagePlaneIngestServer(endpoint=str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT), stores=stores, pub_server=pub_srv)
+        rpc_srv = MessagePlaneRpcServer(endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT), pub_server=pub_srv, stores=stores)
+
+        ingest_thread = threading.Thread(target=ingest_srv.serve_forever, daemon=True, name="message-plane-ingest")
+        ingest_thread.start()
+
+        def _run_rpc() -> None:
+            try:
+                rpc_srv.serve_forever()
+            finally:
+                try:
+                    rpc_srv.close()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_run_rpc, daemon=True, name="message-plane-rpc")
+        t.start()
+
+        _message_plane_thread = t
+        _message_plane_rpc = rpc_srv
+        _message_plane_ingest = ingest_srv
+        _message_plane_pub = pub_srv
+        logger.info("message_plane embedded started")
+    except Exception as e:
+        try:
+            logger.warning("message_plane embedded start failed: {}", e)
+        except Exception:
+            pass
+
+
+def _stop_message_plane_embedded() -> None:
+    global _message_plane_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
+    rpc_srv = _message_plane_rpc
+    ingest_srv = _message_plane_ingest
+    pub_srv = _message_plane_pub
+
+    _message_plane_rpc = None
+    _message_plane_ingest = None
+    _message_plane_pub = None
+    _message_plane_thread = None
+
+    try:
+        if rpc_srv is not None:
+            rpc_srv.stop()
+    except Exception:
+        pass
+    try:
+        if ingest_srv is not None:
+            ingest_srv.stop()
+    except Exception:
+        pass
+    try:
+        if ingest_srv is not None:
+            ingest_srv.close()
+    except Exception:
+        pass
+    try:
+        if pub_srv is not None:
+            pub_srv.close()
+    except Exception:
+        pass
 
 
 def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
@@ -158,6 +249,11 @@ async def startup() -> None:
     await start_bus_ingestion_loop()
 
     try:
+        _start_message_plane_embedded()
+    except Exception:
+        pass
+
+    try:
         start_bridge()
     except Exception:
         pass
@@ -218,6 +314,11 @@ async def _shutdown_internal() -> None:
 
     try:
         stop_bridge()
+    except Exception:
+        pass
+
+    try:
+        _stop_message_plane_embedded()
     except Exception:
         pass
 
