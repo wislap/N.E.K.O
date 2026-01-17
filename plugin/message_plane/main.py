@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import signal
 import threading
 from typing import Optional

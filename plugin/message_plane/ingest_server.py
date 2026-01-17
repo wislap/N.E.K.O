@@ -7,7 +7,12 @@ import ormsgpack
 import zmq
 from loguru import logger
 
-from plugin.settings import MESSAGE_PLANE_INGEST_RCVHWM
+from plugin.settings import (
+    MESSAGE_PLANE_INGEST_RCVHWM,
+    MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
+    MESSAGE_PLANE_TOPIC_MAX,
+    MESSAGE_PLANE_TOPIC_NAME_MAX_LEN,
+)
 
 from .pub_server import MessagePlanePubServer
 from .stores import StoreRegistry, TopicStore
@@ -66,9 +71,26 @@ class MessagePlaneIngestServer:
             topic = it.get("topic")
             if not isinstance(topic, str) or not topic:
                 continue
+            if len(topic) > MESSAGE_PLANE_TOPIC_NAME_MAX_LEN:
+                continue
+            try:
+                is_new_topic = topic not in st.meta
+            except Exception:
+                is_new_topic = False
+            if is_new_topic:
+                try:
+                    if len(st.meta) >= MESSAGE_PLANE_TOPIC_MAX:
+                        continue
+                except Exception:
+                    continue
             payload = it.get("payload")
             if not isinstance(payload, dict):
                 payload = {"value": payload}
+            try:
+                if len(ormsgpack.packb(payload)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+                    continue
+            except Exception:
+                continue
             try:
                 event = st.publish(topic, payload)
             except Exception:
@@ -86,11 +108,32 @@ class MessagePlaneIngestServer:
         topic = msg.get("topic")
         if not isinstance(topic, str) or not topic:
             topic = "snapshot.all"
+        if len(topic) > MESSAGE_PLANE_TOPIC_NAME_MAX_LEN:
+            return
+        try:
+            is_new_topic = topic not in st.meta
+        except Exception:
+            is_new_topic = False
+        if is_new_topic:
+            try:
+                if len(st.meta) >= MESSAGE_PLANE_TOPIC_MAX:
+                    return
+            except Exception:
+                return
         mode = msg.get("mode")
         items = msg.get("items")
         if not isinstance(items, list):
             return
-        records = [x for x in items if isinstance(x, dict)]
+        records = []
+        for x in items:
+            if not isinstance(x, dict):
+                continue
+            try:
+                if len(ormsgpack.packb(x)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+                    continue
+            except Exception:
+                continue
+            records.append(x)
         if str(mode or "replace") == "append":
             for rec in records:
                 try:

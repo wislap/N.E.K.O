@@ -396,15 +396,12 @@ class MessagePlaneRpcServer:
             return None
         if len(parts) < 2:
             return None
-        identity = parts[0]
         raw = parts[-1]
         try:
             msg = json.loads(raw.decode("utf-8"))
         except Exception:
             msg = {}
-        envelope = [identity]
-        if len(parts) >= 3 and parts[1] == b"":
-            envelope.append(b"")
+        envelope = parts[:-1]
         return envelope, msg
 
     def _send(self, envelope: list[bytes], msg: Dict[str, Any]) -> None:

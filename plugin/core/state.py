@@ -365,6 +365,8 @@ class PluginRuntimeState:
                 last_priority_fast: int = 0
                 last_source_fast: Optional[str] = None
                 kept_fast = [r for r in records if isinstance(r, dict)]
+                if not kept_fast:
+                    return 0
                 for rec in kept_fast:
                     mid = rec.get("message_id")
                     if isinstance(mid, str) and mid:
@@ -381,8 +383,9 @@ class PluginRuntimeState:
                         last_source_fast = last_source_fast
 
                 with self._bus_store_lock:
-                    if kept_fast:
-                        self._message_store.extend(kept_fast)
+                    if self._deleted_message_ids:
+                        raise RuntimeError("deleted_message_ids changed")
+                    self._message_store.extend(kept_fast)
 
                 rev = self._bump_bus_rev("messages")
                 payload_fast: Dict[str, Any] = {
@@ -794,6 +797,13 @@ class PluginRuntimeState:
 
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
+            try:
+                event_map = self.plugin_response_event_map
+                event_map.pop(request_id, None)
+            except Exception:
+                logging.getLogger("user_plugin_server").debug(
+                    f"Failed to remove response event for request_id={request_id}", exc_info=True
+                )
             return None
         try:
             event_map = self.plugin_response_event_map
@@ -873,6 +883,13 @@ class PluginRuntimeState:
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
             self.plugin_response_map.pop(request_id, None)
+            try:
+                event_map = self.plugin_response_event_map
+                event_map.pop(request_id, None)
+            except Exception:
+                logging.getLogger("user_plugin_server").debug(
+                    f"Failed to remove response event for request_id={request_id}", exc_info=True
+                )
             return None
 
         return response_data.get("response")

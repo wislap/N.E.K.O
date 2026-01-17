@@ -114,14 +114,15 @@ class InMemoryExportStore:
 
     def list_for_run(self, *, run_id: str, after: Optional[str], limit: int) -> Tuple[List[ExportItem], Optional[str]]:
         with self._lock:
-            ids = list(self._by_run.get(run_id, []))
+            ids = self._by_run.get(run_id, [])
             start = 0
             if after:
                 try:
                     start = ids.index(after) + 1
                 except ValueError:
                     start = 0
-            slice_ids = ids[start : start + max(1, int(limit))]
+            page_size = max(1, int(limit))
+            slice_ids = ids[start : start + page_size]
             items = [self._items[i] for i in slice_ids if i in self._items]
             next_after = None
             if start + len(slice_ids) < len(ids) and slice_ids:

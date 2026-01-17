@@ -143,6 +143,7 @@ const { t } = useI18n()
 
 const loading = ref(false)
 const loadingSelected = ref(false)
+const lastSelectedRunId = ref<string | null>(null)
 
 const connected = computed(() => runsStore.connected)
 const runs = computed(() => runsStore.runs)
@@ -231,7 +232,12 @@ async function handleCancel() {
 
 async function handleSelect(row: any) {
   if (!row || !row.run_id) return
-  runsStore.selectRun(row.run_id)
+  const rid = String(row.run_id)
+  if (!rid) return
+  if (loadingSelected.value) return
+  if (lastSelectedRunId.value === rid) return
+  lastSelectedRunId.value = rid
+  runsStore.selectRun(rid)
   await handleRefreshSelected()
 }
 
