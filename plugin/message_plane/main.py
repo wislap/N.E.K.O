@@ -2,27 +2,52 @@ from __future__ import annotations
 
 import os
 import signal
+import threading
 from typing import Optional
 
 from loguru import logger
 
+from plugin.settings import (
+    MESSAGE_PLANE_STORE_MAXLEN,
+    MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
+    MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
+    MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+)
+
+from .ingest_server import MessagePlaneIngestServer
 from .pub_server import MessagePlanePubServer
 from .rpc_server import MessagePlaneRpcServer
+from .stores import StoreRegistry, TopicStore
 
 
 def run_message_plane(
     *,
     rpc_endpoint: Optional[str] = None,
     pub_endpoint: Optional[str] = None,
+    ingest_endpoint: Optional[str] = None,
 ) -> None:
-    endpoint = rpc_endpoint or os.getenv("NEKO_MESSAGE_PLANE_RPC", "tcp://127.0.0.1:38865")
-    pub_ep = pub_endpoint or os.getenv("NEKO_MESSAGE_PLANE_PUB", "tcp://127.0.0.1:38866")
+    endpoint = rpc_endpoint or MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
+    pub_ep = pub_endpoint or MESSAGE_PLANE_ZMQ_PUB_ENDPOINT
+    ingest_ep = ingest_endpoint or MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+
+    stores = StoreRegistry(default_store="messages")
+    for name in ("messages", "events", "lifecycle", "runs", "export", "memory"):
+        stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
+
     pub_srv = MessagePlanePubServer(endpoint=pub_ep)
-    srv = MessagePlaneRpcServer(endpoint=endpoint, pub_server=pub_srv)
+    ingest_srv = MessagePlaneIngestServer(endpoint=ingest_ep, stores=stores, pub_server=pub_srv)
+    srv = MessagePlaneRpcServer(endpoint=endpoint, pub_server=pub_srv, stores=stores)
+
+    ingest_thread = threading.Thread(target=ingest_srv.serve_forever, daemon=True)
+    ingest_thread.start()
 
     def _stop(*_args: object) -> None:
         try:
             srv.stop()
+        except Exception:
+            pass
+        try:
+            ingest_srv.stop()
         except Exception:
             pass
 
@@ -37,6 +62,14 @@ def run_message_plane(
     finally:
         try:
             srv.close()
+        except Exception:
+            pass
+        try:
+            ingest_srv.stop()
+        except Exception:
+            pass
+        try:
+            ingest_srv.close()
         except Exception:
             pass
         try:

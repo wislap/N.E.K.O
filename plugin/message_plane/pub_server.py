@@ -19,9 +19,9 @@ class MessagePlanePubServer:
         self._sock.bind(self.endpoint)
         logger.info("[message_plane] pub server bound: {}", self.endpoint)
 
-    def publish(self, topic: str, payload: Dict[str, Any]) -> None:
+    def publish(self, topic: str, event: Dict[str, Any]) -> None:
         t = str(topic).encode("utf-8")
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(event, ensure_ascii=False).encode("utf-8")
         try:
             self._sock.send_multipart([t, body])
         except Exception:
