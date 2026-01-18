@@ -25,7 +25,7 @@ import ormsgpack
 
 try:
     import zmq
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     zmq = None
 
 from fastapi import FastAPI

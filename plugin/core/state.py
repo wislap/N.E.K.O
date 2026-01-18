@@ -804,17 +804,20 @@ class PluginRuntimeState:
             response: 响应数据
             timeout: 超时时间（秒），用于计算过期时间
         """
+        rid = str(request_id).strip()
+        if not rid:
+            return
         # 存储响应和过期时间（当前时间 + timeout + 缓冲时间）
         # 缓冲时间用于处理网络延迟等情况
         expire_time = time.time() + timeout + 1.0  # 额外1秒缓冲
         resp_map = self.plugin_response_map
-        resp_map[request_id] = {
+        resp_map[rid] = {
             "response": response,
             "expire_time": expire_time
         }
 
         try:
-            ev = self._get_or_create_response_event(request_id)
+            ev = self._get_or_create_response_event(rid)
             if ev is not None:
                 ev.set()
         except Exception:
@@ -836,8 +839,15 @@ class PluginRuntimeState:
         """
         current_time = time.time()
 
+        rid = str(request_id).strip()
+        if not rid:
+            return None
+
         resp_map = self.plugin_response_map
-        response_data = resp_map.pop(request_id, None)
+        response_data = resp_map.pop(rid, None)
+        if response_data is None and request_id != rid:
+            # Backward-compatible: tolerate legacy non-string keys stored previously.
+            response_data = resp_map.pop(request_id, None)
 
         if response_data is None:
             return None
@@ -846,7 +856,7 @@ class PluginRuntimeState:
         if current_time > expire_time:
             try:
                 event_map = self.plugin_response_event_map
-                event_map.pop(request_id, None)
+                event_map.pop(rid, None)
             except Exception:
                 logging.getLogger("user_plugin_server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
@@ -854,7 +864,7 @@ class PluginRuntimeState:
             return None
         try:
             event_map = self.plugin_response_event_map
-            event_map.pop(request_id, None)
+            event_map.pop(rid, None)
         except Exception:
 
             logging.getLogger("user_plugin_server").debug(
@@ -868,7 +878,9 @@ class PluginRuntimeState:
 
         This avoids client-side polling loops.
         """
-        rid = str(request_id)
+        rid = str(request_id).strip()
+        if not rid:
+            return None
         deadline = time.time() + max(0.0, float(timeout))
         per_req_ev = None
         try:
@@ -923,16 +935,26 @@ class PluginRuntimeState:
             响应数据，如果不存在或已过期则返回 None
         """
         current_time = time.time()
-        response_data = self.plugin_response_map.get(request_id, None)
+
+        rid = str(request_id).strip()
+        if not rid:
+            return None
+
+        response_data = self.plugin_response_map.get(rid, None)
+        if response_data is None and request_id != rid:
+            # Backward-compatible: tolerate legacy non-string keys stored previously.
+            response_data = self.plugin_response_map.get(request_id, None)
         if response_data is None:
             return None
 
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
-            self.plugin_response_map.pop(request_id, None)
+            self.plugin_response_map.pop(rid, None)
+            if request_id != rid:
+                self.plugin_response_map.pop(request_id, None)
             try:
                 event_map = self.plugin_response_event_map
-                event_map.pop(request_id, None)
+                event_map.pop(rid, None)
             except Exception:
                 logging.getLogger("user_plugin_server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
@@ -970,7 +992,11 @@ class PluginRuntimeState:
             resp_map.pop(request_id, None)
             try:
                 event_map = self.plugin_response_event_map
-                event_map.pop(request_id, None)
+                rid = str(request_id).strip()
+                if rid:
+                    event_map.pop(rid, None)
+                if request_id != rid:
+                    event_map.pop(request_id, None)
             except Exception:
                 pass
         

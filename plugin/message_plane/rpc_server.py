@@ -9,6 +9,11 @@ import zmq
 import ormsgpack
 from loguru import logger
 
+try:
+    import regex as safe_regex  # type: ignore
+except ImportError:  # pragma: no cover
+    safe_regex = None
+
 from plugin.settings import (
     MESSAGE_PLANE_GET_RECENT_MAX_LIMIT,
     MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
@@ -119,6 +124,35 @@ class MessagePlaneRpcServer:
             if isinstance(flt, dict):
                 p = {**p, **flt}
 
+            _MAX_USER_REGEX_LEN = 128
+            _MAX_REGEX_TEXT_LEN = 1024
+            _REGEX_TIMEOUT_SECONDS = 0.02
+
+            def _maybe_match_regex(pattern: str, value: Any) -> Optional[bool]:
+                if not isinstance(pattern, str) or not pattern:
+                    return None
+                if len(pattern) > _MAX_USER_REGEX_LEN:
+                    return False if strict else None
+                s = str(value or "")
+                if len(s) > _MAX_REGEX_TEXT_LEN:
+                    s = s[:_MAX_REGEX_TEXT_LEN]
+
+                # Prefer the third-party `regex` module which supports timeouts.
+                if safe_regex is not None:
+                    try:
+                        return bool(safe_regex.search(pattern, s, timeout=_REGEX_TIMEOUT_SECONDS))
+                    except Exception:
+                        # regex.error / TimeoutError / etc.
+                        return False if strict else None
+
+                # Fallback to stdlib re: no timeout support. Be conservative to avoid ReDoS.
+                if any(ch in pattern for ch in ("*", "+", "{", "}", "(", ")", "|", "[", "]", "?", "\\")):
+                    return False if strict else None
+                try:
+                    return bool(re.search(pattern, s))
+                except re.error:
+                    return False if strict else None
+
             def _match(ev: Dict[str, Any]) -> bool:
                 idx = ev.get("index") if isinstance(ev, dict) else None
                 payload = ev.get("payload") if isinstance(ev, dict) else None
@@ -177,23 +211,19 @@ class MessagePlaneRpcServer:
                         val = idx.get(key)
                     if val is None and isinstance(payload, dict):
                         val = payload.get(key)
-                    try:
-                        if not re.search(pat, str(val or "")):
-                            return False
-                    except re.error:
-                        if strict:
-                            return False
+                    verdict = _maybe_match_regex(pat, val)
+                    if verdict is None:
+                        continue
+                    if not verdict:
+                        return False
                 content_re = p.get("content_re")
                 if isinstance(content_re, str) and content_re:
                     content = None
                     if isinstance(payload, dict):
                         content = payload.get("content")
-                    try:
-                        if not re.search(content_re, str(content or "")):
-                            return False
-                    except re.error:
-                        if strict:
-                            return False
+                    verdict = _maybe_match_regex(content_re, content)
+                    if verdict is not None and not verdict:
+                        return False
 
                 return True
 
@@ -286,7 +316,6 @@ class MessagePlaneRpcServer:
             return None
         left_keys = [self._dedupe_key(x) for x in left]
         right_keys = [self._dedupe_key(x) for x in right]
-        set_left = set(left_keys)
         set_right = set(right_keys)
         if op == "merge":
             merged: List[Dict[str, Any]] = []
@@ -360,7 +389,7 @@ class MessagePlaneRpcServer:
                 plugin_id=plugin_id if isinstance(plugin_id, str) and plugin_id.strip() else None,
                 source=source if isinstance(source, str) and source.strip() else None,
                 kind=kind_ if isinstance(kind_, str) and kind_.strip() else None,
-                type=type_ if isinstance(type_, str) and type_.strip() else None,
+                type_=type_ if isinstance(type_, str) and type_.strip() else None,
                 priority_min=priority_min,
                 since_ts=since_ts,
                 until_ts=None,
@@ -601,7 +630,7 @@ class MessagePlaneRpcServer:
                 plugin_id=args.get("plugin_id"),
                 source=args.get("source"),
                 kind=args.get("kind"),
-                type=args.get("type"),
+                type_=args.get("type"),
                 priority_min=args.get("priority_min"),
                 since_ts=args.get("since_ts"),
                 until_ts=args.get("until_ts"),
@@ -673,11 +702,12 @@ class MessagePlaneRpcServer:
                 resp = self._handle(req)
             except Exception as e:
                 req_id = str(req.get("req_id") or "") if isinstance(req, dict) else ""
-                resp = err_response(req_id, f"internal error: {e}")
+                logger.exception("[message_plane] rpc handler error for req_id={}", req_id)
+                resp = err_response(req_id, "internal error")
             try:
                 self._send(envelope, resp, enc=enc)
             except Exception:
-                pass
+                logger.warning("[message_plane] failed to send response")
 
     def stop(self) -> None:
         self._running = False

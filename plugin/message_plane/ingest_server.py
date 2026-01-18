@@ -70,9 +70,7 @@ class MessagePlaneIngestServer:
             pass
 
     def _resolve_store(self, name: Any) -> Optional[TopicStore]:
-        if name is None:
-            return None
-        return self._stores.get(str(name))
+        return self._stores.get(None if name is None else str(name))
 
     def _ingest_delta_batch(self, msg: Dict[str, Any]) -> None:
         items = msg.get("items")
@@ -159,12 +157,15 @@ class MessagePlaneIngestServer:
         if is_new_topic:
             try:
                 if len(st.meta) >= MESSAGE_PLANE_TOPIC_MAX:
+                    self._stats_dropped += 1
                     return
             except Exception:
+                self._stats_dropped += 1
                 return
         mode = msg.get("mode")
         items = msg.get("items")
         if not isinstance(items, list):
+            self._stats_dropped += 1
             return
         records = []
         for x in items:

@@ -334,6 +334,17 @@ class LoadTestPlugin(NekoPluginBase):
         """
 
         with self._bench_lock:
+            enabled = True
+            try:
+                if root_cfg is not None:
+                    enabled = bool(root_cfg.get("enable", True))
+                if sec_cfg is not None and "enable" in sec_cfg:
+                    enabled = bool(sec_cfg.get("enable", enabled))
+            except Exception:
+                enabled = True
+            if not enabled:
+                return {"test": test_name, "enabled": False, "skipped": True}
+
             workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
             dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None

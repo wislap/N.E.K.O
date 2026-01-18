@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import threading
 from collections import defaultdict, deque
@@ -68,7 +69,7 @@ class TopicStore:
 
         try:
             priority = int(payload.get("priority", 0))
-        except Exception:
+        except (ValueError, TypeError):
             priority = 0
 
         kind = payload.get("kind")
@@ -154,6 +155,9 @@ class TopicStore:
                 if int(ev.get("seq", 0)) > after:
                     out.append(ev)
             except Exception:
+                logging.getLogger("user_plugin_server").debug(
+                    "[message_plane] skip event due to invalid seq: %r", ev, exc_info=True
+                )
                 continue
 
         out.sort(key=lambda e: int(e.get("seq") or 0))
@@ -168,7 +172,7 @@ class TopicStore:
         plugin_id: Optional[str] = None,
         source: Optional[str] = None,
         kind: Optional[str] = None,
-        type: Optional[str] = None,
+        type_: Optional[str] = None,
         priority_min: Optional[int] = None,
         since_ts: Optional[float] = None,
         until_ts: Optional[float] = None,
@@ -194,7 +198,7 @@ class TopicStore:
         pid = str(plugin_id) if isinstance(plugin_id, str) and plugin_id else None
         src = str(source) if isinstance(source, str) and source else None
         kd = str(kind) if isinstance(kind, str) and kind else None
-        tp = str(type) if isinstance(type, str) and type else None
+        tp = str(type_) if isinstance(type_, str) and type_ else None
         try:
             pmin = int(priority_min) if priority_min is not None else None
         except (ValueError, TypeError):
