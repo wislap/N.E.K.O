@@ -223,26 +223,16 @@ class PluginRouter:
         shutdown_event = self._ensure_shutdown_event()
         shutdown_event.set()
         try:
-            await asyncio.wait_for(self._router_task, timeout=1.0)
-        except asyncio.TimeoutError:
-            logger.warning("Plugin router task did not stop in time")
             self._router_task.cancel()
-        finally:
-            self._router_task = None
-            if self._zmq_task is not None:
-                try:
-                    try:
-                        self._zmq_task.cancel()
-                    except Exception:
-                        pass
-                    await asyncio.wait_for(self._zmq_task, timeout=0.5)
-                except asyncio.TimeoutError:
-                    try:
-                        self._zmq_task.cancel()
-                    except Exception:
-                        pass
-                finally:
-                    self._zmq_task = None
+        except Exception:
+            pass
+        self._router_task = None
+        if self._zmq_task is not None:
+            try:
+                self._zmq_task.cancel()
+            except Exception:
+                pass
+            self._zmq_task = None
             if self._zmq_server is not None:
                 try:
                     self._zmq_server.close()
@@ -250,20 +240,12 @@ class PluginRouter:
                     pass
                 self._zmq_server = None
 
-            if self._push_pull_task is not None:
-                try:
-                    try:
-                        self._push_pull_task.cancel()
-                    except Exception:
-                        pass
-                    await asyncio.wait_for(self._push_pull_task, timeout=0.5)
-                except asyncio.TimeoutError:
-                    try:
-                        self._push_pull_task.cancel()
-                    except Exception:
-                        pass
-                finally:
-                    self._push_pull_task = None
+        if self._push_pull_task is not None:
+            try:
+                self._push_pull_task.cancel()
+            except Exception:
+                pass
+            self._push_pull_task = None
             if self._push_pull_server is not None:
                 try:
                     self._push_pull_server.close()
@@ -271,18 +253,18 @@ class PluginRouter:
                     pass
                 self._push_pull_server = None
 
-            # 关闭线程池执行器
-            if self._executor is not None:
-                executor = self._executor
+        # 关闭线程池执行器
+        if self._executor is not None:
+            executor = self._executor
+            try:
                 try:
-                    try:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                    except TypeError:
-                        executor.shutdown(wait=False)
-                except Exception:
-                    pass
-                self._executor = None
-            logger.info("Plugin router stopped")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    executor.shutdown(wait=False)
+            except Exception:
+                pass
+            self._executor = None
+        logger.info("Plugin router stopped")
 
     async def _handle_zmq_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle a request coming from ZeroMQ IPC.

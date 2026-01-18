@@ -235,6 +235,8 @@ class ZmqIpcServer:
 
             try:
                 resp = await self._request_handler(request)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 resp = {
                     "request_id": req_id,

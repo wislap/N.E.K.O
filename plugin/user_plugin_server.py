@@ -1636,7 +1636,7 @@ if __name__ == "__main__":
             server.force_exit = True
         except Exception:
             pass
-        _start_force_exit_watchdog(timeout_s=6.0)
+        _start_force_exit_watchdog(timeout_s=2.0)
 
     _old_sigint = None
     try:
