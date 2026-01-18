@@ -238,208 +238,89 @@ class EventClient:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.events.get")
 
-        # Prefer message_plane RPC to avoid control-plane IPC congestion.
-        try:
-            rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
-            args: Dict[str, Any] = {
-                "store": "events",
-                "topic": "*",
-                "limit": int(max_count),
-                "light": False,
-            }
-            if since_ts is not None:
-                args["since_ts"] = float(since_ts)
-            flt = dict(filter) if isinstance(filter, dict) else {}
-            if plugin_id is None and isinstance(flt.get("plugin_id"), str) and flt.get("plugin_id"):
-                plugin_id = str(flt.get("plugin_id"))
-            if isinstance(plugin_id, str) and plugin_id.strip() and plugin_id.strip() != "*":
-                args["plugin_id"] = plugin_id.strip()
-            if isinstance(flt.get("source"), str) and flt.get("source"):
-                args["source"] = str(flt.get("source"))
-            if isinstance(flt.get("kind"), str) and flt.get("kind"):
-                args["kind"] = str(flt.get("kind"))
-            if isinstance(flt.get("type"), str) and flt.get("type"):
-                args["type"] = str(flt.get("type"))
-            if f"priority_min" in flt:
-                args["priority_min"] = flt.get("priority_min")
-            if f"until_ts" in flt:
-                args["until_ts"] = flt.get("until_ts")
+        rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
 
-            # Use bus.query so filters can be applied server-side.
-            mp_resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
-            if isinstance(mp_resp, dict) and not mp_resp.get("error"):
-                result = mp_resp.get("result")
-                items: List[Any] = []
-                if isinstance(result, dict) and isinstance(result.get("items"), list):
-                    items = list(result.get("items") or [])
-
-                ev_records: List[EventRecord] = []
-                for item in items:
-                    if isinstance(item, dict):
-                        ev_records.append(EventRecord.from_raw(item))
-                    else:
-                        ev_records.append(EventRecord.from_raw({"raw": item}))
-
-                get_params = {
-                    "plugin_id": plugin_id,
-                    "max_count": max_count,
-                    "filter": dict(filter) if isinstance(filter, dict) else None,
-                    "strict": bool(strict),
-                    "since_ts": since_ts,
-                    "timeout": timeout,
-                    "via": "message_plane.rpc",
-                }
-                trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
-                plan = GetNode(op="get", params={"bus": "events", "params": dict(get_params)}, at=time.time())
-                if isinstance(plugin_id, str) and plugin_id.strip() == "*":
-                    effective_plugin_id = "*"
-                else:
-                    effective_plugin_id = plugin_id if plugin_id else getattr(self.ctx, "plugin_id", None)
-                return EventList(ev_records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
-
-            if bool(MESSAGE_PLANE_STRICT):
-                raise TimeoutError(f"EVENT_GET over message_plane rpc timed out or failed after {timeout}s")
-        except Exception:
-            if bool(MESSAGE_PLANE_STRICT):
-                raise
-
-        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
-
-        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
-        if plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        req_id = str(uuid.uuid4())
-        pid_norm: Optional[str]
-        if isinstance(plugin_id, str):
-            pid_norm = plugin_id.strip()
-        else:
-            pid_norm = None
-        if pid_norm == "":
-            pid_norm = None
-
-        request = {
-            "type": "EVENT_GET",
-            "from_plugin": getattr(self.ctx, "plugin_id", ""),
-            "request_id": req_id,
-            "plugin_id": pid_norm,
-            "max_count": int(max_count),
-            "filter": dict(filter) if isinstance(filter, dict) else None,
-            "strict": bool(strict),
-            "since_ts": float(since_ts) if since_ts is not None else None,
-            "timeout": float(timeout),
+        args: Dict[str, Any] = {
+            "store": "events",
+            "topic": "all",
+            "limit": int(max_count),
+            "light": False,
         }
+        if since_ts is not None:
+            args["since_ts"] = float(since_ts)
 
-        if zmq_client is not None:
-            try:
-                resp = zmq_client.request(request, timeout=float(timeout))
-                if isinstance(resp, dict):
-                    response = resp
-                else:
-                    response = None
-            except Exception:
-                response = None
-            if response is None:
-                if hasattr(self.ctx, "logger"):
-                    try:
-                        self.ctx.logger.warning("[bus.events.get] ZeroMQ IPC failed; raising exception (no fallback)")
-                    except Exception:
-                        pass
-                raise TimeoutError(f"EVENT_GET over ZeroMQ timed out or failed after {timeout}s")
+        flt = dict(filter) if isinstance(filter, dict) else {}
+        if plugin_id is None and isinstance(flt.get("plugin_id"), str) and flt.get("plugin_id"):
+            plugin_id = str(flt.get("plugin_id"))
+        if isinstance(plugin_id, str) and plugin_id.strip() and plugin_id.strip() != "*":
+            args["plugin_id"] = plugin_id.strip()
+        if isinstance(flt.get("source"), str) and flt.get("source"):
+            args["source"] = str(flt.get("source"))
+        if isinstance(flt.get("kind"), str) and flt.get("kind"):
+            args["kind"] = str(flt.get("kind"))
+        if isinstance(flt.get("type"), str) and flt.get("type"):
+            args["type"] = str(flt.get("type"))
+        if "priority_min" in flt:
+            args["priority_min"] = flt.get("priority_min")
+        if "until_ts" in flt:
+            args["until_ts"] = flt.get("until_ts")
+
+        # Fast path: for the common "recent" case with no filters, use get_recent.
+        if (
+            args.get("plugin_id") is None
+            and args.get("source") is None
+            and args.get("kind") is None
+            and args.get("type") is None
+            and args.get("priority_min") is None
+            and args.get("since_ts") is None
+            and args.get("until_ts") is None
+            and str(args.get("topic") or "") == "all"
+        ):
+            op_name = "bus.get_recent"
+            mp_resp = rpc.request(
+                op="bus.get_recent",
+                args={"store": "events", "topic": "all", "limit": int(max_count), "light": False},
+                timeout=float(timeout),
+            )
         else:
-            try:
-                plugin_comm_queue.put(request, timeout=timeout)
-            except Exception as e:
-                raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
+            op_name = "bus.query"
+            mp_resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
 
-            response = None
-        resp_q = getattr(self.ctx, "_response_queue", None)
-        pending = getattr(self.ctx, "_response_pending", None)
-        if pending is None:
-            try:
-                pending = {}
-                setattr(self.ctx, "_response_pending", pending)
-            except Exception:
-                pending = None
-        if pending is not None:
-            try:
-                cached = pending.pop(req_id, None)
-            except Exception:
-                cached = None
-            if isinstance(cached, dict):
-                response = cached
-        if response is None and resp_q is not None:
-            deadline = time.time() + max(0.0, float(timeout))
-            while True:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                try:
-                    item = resp_q.get(timeout=remaining)
-                except Empty:
-                    break
-                except Exception:
-                    break
-                if not isinstance(item, dict):
-                    continue
-                rid = item.get("request_id")
-                if rid == req_id:
-                    response = item
-                    break
-                if isinstance(rid, str) and pending is not None:
-                    try:
-                        if len(pending) > 1024:
-                            pending.clear()
-                        pending[rid] = item
-                    except Exception:
-                        pass
-        if response is None:
-            response = state.wait_for_plugin_response(req_id, timeout)
-        if response is None:
-            raise TimeoutError(f"EVENT_GET timed out after {timeout}s")
-        if not isinstance(response, dict):
-            raise RuntimeError("Invalid EVENT_GET response")
-        if response.get("error"):
-            raise RuntimeError(str(response.get("error")))
+        if not isinstance(mp_resp, dict):
+            raise TimeoutError(f"message_plane {op_name} timed out after {timeout}s")
+        if mp_resp.get("error"):
+            raise RuntimeError(str(mp_resp.get("error")))
+        if not mp_resp.get("ok"):
+            raise RuntimeError(str(mp_resp.get("error") or "message_plane error"))
 
-        events: List[Any] = []
-        result = response.get("result")
-        if isinstance(result, dict):
-            evs = result.get("events")
-            if isinstance(evs, list):
-                events = evs
-            else:
-                events = []
-        elif isinstance(result, list):
-            events = result
-        else:
-            events = []
+        result = mp_resp.get("result")
+        items: List[Any] = []
+        if isinstance(result, dict) and isinstance(result.get("items"), list):
+            items = list(result.get("items") or [])
 
-        records: List[EventRecord] = []
-        for item in events:
+        ev_records: List[EventRecord] = []
+        for item in items:
             if isinstance(item, dict):
-                records.append(EventRecord.from_raw(item))
+                ev_records.append(EventRecord.from_raw(item))
             else:
-                records.append(EventRecord.from_raw({"raw": item}))
+                ev_records.append(EventRecord.from_raw({"raw": item}))
 
         get_params = {
-            "plugin_id": pid_norm,
+            "plugin_id": plugin_id,
             "max_count": max_count,
             "filter": dict(filter) if isinstance(filter, dict) else None,
             "strict": bool(strict),
             "since_ts": since_ts,
             "timeout": timeout,
+            "via": "message_plane.rpc",
         }
         trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
         plan = GetNode(op="get", params={"bus": "events", "params": dict(get_params)}, at=time.time())
-        if pid_norm == "*":
+        if isinstance(plugin_id, str) and plugin_id.strip() == "*":
             effective_plugin_id = "*"
         else:
-            effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
-        return EventList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
+            effective_plugin_id = plugin_id if plugin_id else getattr(self.ctx, "plugin_id", None)
+        return EventList(ev_records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
     def delete(self, event_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
