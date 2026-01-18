@@ -1542,6 +1542,7 @@ if __name__ == "__main__":
     import os
     import signal
     import socket
+    import threading
     
     host = "127.0.0.1"  # 默认只暴露本机
     base_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
@@ -1573,13 +1574,72 @@ if __name__ == "__main__":
     else:
         logger.info("User plugin server starting on {}:{}", host, selected_port)
     
+    # Two-stage SIGINT:
+    # - First Ctrl-C: request graceful shutdown and start a watchdog timer.
+    # - Second Ctrl-C (or watchdog timeout): force exit.
+    _sigint_count = 0
+    _sigint_lock = threading.Lock()
+    _force_exit_timer: threading.Timer | None = None
+
+    config = uvicorn.Config(app, host=host, port=selected_port, log_config=None)
+    server = uvicorn.Server(config)
+
+    def _start_force_exit_watchdog(timeout_s: float) -> None:
+        global _force_exit_timer
+        try:
+            if _force_exit_timer is not None:
+                return
+            def _kill() -> None:
+                try:
+                    os._exit(130)
+                except Exception:
+                    raise SystemExit(130)
+            t = threading.Timer(float(timeout_s), _kill)
+            t.daemon = True
+            _force_exit_timer = t
+            t.start()
+        except Exception:
+            pass
+
+    def _sigint_handler(_signum: int, _frame: object | None) -> None:
+        global _sigint_count
+        with _sigint_lock:
+            _sigint_count += 1
+            n = _sigint_count
+        if n >= 2:
+            try:
+                os._exit(130)
+            except Exception:
+                raise SystemExit(130)
+        try:
+            # Ask uvicorn to exit.
+            server.should_exit = True
+            server.force_exit = True
+        except Exception:
+            pass
+        _start_force_exit_watchdog(timeout_s=6.0)
+
+    _old_sigint = None
     try:
-        uvicorn.run(app, host=host, port=selected_port, log_config=None)
+        _old_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, _sigint_handler)
+    except Exception:
+        _old_sigint = None
+
+    # Disable uvicorn's internal signal handlers so our two-stage logic takes effect.
+    try:
+        server.install_signal_handlers = lambda: None  # type: ignore[assignment]
+    except Exception:
+        pass
+
+    try:
+        server.run()
     finally:
         # 强制清理所有子进程
-        _old_sigint = None
+        _cleanup_old_sigint = None
         try:
-            _old_sigint = signal.getsignal(signal.SIGINT)
+            _cleanup_old_sigint = signal.getsignal(signal.SIGINT)
+
             def _force_quit(*_args: object) -> None:
                 try:
                     os._exit(130)
@@ -1588,7 +1648,7 @@ if __name__ == "__main__":
 
             signal.signal(signal.SIGINT, _force_quit)
         except Exception:
-            _old_sigint = None
+            _cleanup_old_sigint = None
         try:
             # 尝试使用 psutil 清理子进程（更安全）
             import psutil
@@ -1600,8 +1660,8 @@ if __name__ == "__main__":
                 except psutil.NoSuchProcess:
                     pass
             
-            # 等待一会
-            _, alive = psutil.wait_procs(children, timeout=3)
+            # Keep this short: we prefer quick exit on Ctrl-C.
+            _, alive = psutil.wait_procs(children, timeout=0.5)
             for p in alive:
                 try:
                     p.kill()
@@ -1619,9 +1679,16 @@ if __name__ == "__main__":
                     pass
         except Exception:
             pass
-        finally:
-            try:
-                if _old_sigint is not None:
-                    signal.signal(signal.SIGINT, _old_sigint)
-            except Exception:
-                pass
+
+        # Best-effort cancel watchdog timer.
+        try:
+            if _force_exit_timer is not None:
+                _force_exit_timer.cancel()
+        except Exception:
+            pass
+
+        try:
+            if _cleanup_old_sigint is not None:
+                signal.signal(signal.SIGINT, _cleanup_old_sigint)
+        except Exception:
+            pass

@@ -143,6 +143,38 @@ class PluginContext:
             except Exception:
                 pass
 
+        zmq_client = getattr(self, "_zmq_ipc_client", None)
+        if zmq_client is not None:
+            try:
+                close_fn = getattr(zmq_client, "close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+            try:
+                self._zmq_ipc_client = None
+            except Exception:
+                pass
+
+        tls = getattr(self, "_message_plane_ingest_tls", None)
+        if tls is not None:
+            try:
+                sock = getattr(tls, "sock", None)
+                if sock is not None:
+                    try:
+                        sock.close(0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                object.__setattr__(self, "_message_plane_ingest_tls", None)
+            except Exception:
+                try:
+                    self._message_plane_ingest_tls = None
+                except Exception:
+                    pass
+
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
             self.close()
@@ -597,12 +629,16 @@ class PluginContext:
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:
+            mp_strict = True
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+                from plugin.settings import MESSAGE_PLANE_STRICT
                 from plugin.settings import (
                     PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
                     PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
                 )
+
+                mp_strict = bool(MESSAGE_PLANE_STRICT)
 
                 endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
                 if endpoint:
@@ -719,6 +755,12 @@ class PluginContext:
                         sock = ctx.socket(zmq.PUSH)
                         try:
                             sock.setsockopt(zmq.LINGER, 0)
+                            try:
+                                from plugin.settings import MESSAGE_PLANE_INGEST_SNDTIMEO_MS
+
+                                sock.setsockopt(zmq.SNDTIMEO, int(MESSAGE_PLANE_INGEST_SNDTIMEO_MS))
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                         sock.connect(endpoint)
@@ -765,8 +807,14 @@ class PluginContext:
                             pass
                     return
             except Exception:
-                # Keep legacy control-plane path as fallback.
-                pass
+                # If message_plane is configured but unavailable, optionally fail fast to avoid
+                # amplifying overload on the control-plane.
+                try:
+                    if bool(mp_strict):
+                        raise
+                except Exception:
+                    # If strict is not available, keep legacy fallback.
+                    pass
 
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is None and bool(fast_mode):

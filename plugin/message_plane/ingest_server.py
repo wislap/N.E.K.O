@@ -262,6 +262,10 @@ class MessagePlaneIngestServer:
                 try:
                     events = dict(poller.poll(timeout=250))
                 except Exception:
+                    try:
+                        time.sleep(0.01)
+                    except Exception:
+                        pass
                     continue
                 if not self._running:
                     break
@@ -270,6 +274,10 @@ class MessagePlaneIngestServer:
                 try:
                     raw = self._sock.recv(flags=0)
                 except Exception:
+                    try:
+                        time.sleep(0.001)
+                    except Exception:
+                        pass
                     continue
                 self._stats_recv += 1
                 try:

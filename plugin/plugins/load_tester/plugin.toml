@@ -31,7 +31,6 @@ enable = true
 
 [load_test.push_messages_fast]
 enable = true
-sleep_after_seconds = 2
 
 [load_test.bus_messages_get]
 enable = true

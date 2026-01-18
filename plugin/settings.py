@@ -262,6 +262,18 @@ MESSAGE_PLANE_ZMQ_PUB_ENDPOINT = os.getenv(
     os.getenv("NEKO_MESSAGE_PLANE_PUB", "tcp://127.0.0.1:38866"),
 )
 
+# Message plane 运行模式
+# - embedded: 作为主进程的后台线程启动（默认）
+# - external: 由主进程启动独立子进程（独立解释器），用于隔离控制面与数据面负载
+# Env: NEKO_MESSAGE_PLANE_RUN_MODE, default="external"
+MESSAGE_PLANE_RUN_MODE = os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE", "external").strip().lower()
+if MESSAGE_PLANE_RUN_MODE not in ("embedded", "external"):
+    MESSAGE_PLANE_RUN_MODE = "external"
+
+# 当 message_plane 已配置但不可用时，是否禁止回退到控制面（直接失败）
+# Env: NEKO_MESSAGE_PLANE_STRICT, default=False
+MESSAGE_PLANE_STRICT = _get_bool_env("NEKO_MESSAGE_PLANE_STRICT", False)
+
 MESSAGE_PLANE_VALIDATE_MODE = os.getenv("NEKO_MESSAGE_PLANE_VALIDATE_MODE", "strict").lower()
 if MESSAGE_PLANE_VALIDATE_MODE not in ("off", "warn", "strict"):
     MESSAGE_PLANE_VALIDATE_MODE = "strict"
@@ -283,6 +295,11 @@ MESSAGE_PLANE_INGEST_STATS_LOG_INFO = _get_bool_env("NEKO_MESSAGE_PLANE_INGEST_S
 MESSAGE_PLANE_INGEST_STATS_LOG_VERBOSE = _get_bool_env("NEKO_MESSAGE_PLANE_INGEST_STATS_LOG_VERBOSE", False)
 MESSAGE_PLANE_INGEST_STATS_INTERVAL_SECONDS = _get_float_env("NEKO_MESSAGE_PLANE_INGEST_STATS_INTERVAL_SECONDS", 1.0)
 MESSAGE_PLANE_INGEST_BACKPRESSURE_SLEEP_SECONDS = _get_float_env("NEKO_MESSAGE_PLANE_INGEST_BACKPRESSURE_SLEEP_SECONDS", 0.0)
+
+# Plugin -> message_plane ingest PUSH send timeout (ms). Prevents plugin thread from blocking indefinitely
+# under heavy backpressure.
+# Env: NEKO_MESSAGE_PLANE_INGEST_SNDTIMEO_MS, default=1000
+MESSAGE_PLANE_INGEST_SNDTIMEO_MS = _get_int_env("NEKO_MESSAGE_PLANE_INGEST_SNDTIMEO_MS", 1000)
 
 MESSAGE_PLANE_PUB_ENABLED = _get_bool_env("NEKO_MESSAGE_PLANE_PUB_ENABLED", True)
 MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES = _get_bool_env("NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES", True)

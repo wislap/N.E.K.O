@@ -330,6 +330,11 @@ class ZmqMessagePushBatcher:
             timeout = self._flush_interval_s
             if timeout <= 0:
                 timeout = 0.001
+            if not batch:
+                # When idle, avoid tight polling that can keep CPU high after a benchmark.
+                # Still wake up frequently enough to react to stop requests.
+                if timeout < 0.05:
+                    timeout = 0.05
             try:
                 item = self._q.get(timeout=timeout)
             except queue.Empty:

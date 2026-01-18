@@ -51,11 +51,11 @@ class LoadTestPlugin(NekoPluginBase):
     def _bench_loop(self, duration_seconds: float, fn, *args, **kwargs) -> Dict[str, Any]:
         start = time.perf_counter()
         end_time = start + float(duration_seconds)
-        sleep_seconds = 0.0
+        throttle_seconds = 0.0
         try:
-            sleep_seconds = float(kwargs.pop("sleep_seconds", 0.0) or 0.0)
+            throttle_seconds = float(kwargs.pop("throttle_seconds", 0.0) or 0.0)
         except Exception:
-            sleep_seconds = 0.0
+            throttle_seconds = 0.0
         count = 0
         errors = 0
         err_types: Counter[str] = Counter()
@@ -83,18 +83,18 @@ class LoadTestPlugin(NekoPluginBase):
                 except Exception:
                     pass
 
-                if sleep_seconds > 0:
-                    if self._stop_event.is_set():
-                        break
-                    remaining = end_time - time.perf_counter()
-                    if remaining <= 0:
-                        break
-                    to_sleep = min(float(sleep_seconds), float(remaining))
-                    if to_sleep > 0:
-                        try:
-                            time.sleep(to_sleep)
-                        except Exception:
-                            pass
+            if throttle_seconds > 0:
+                if self._stop_event.is_set():
+                    break
+                remaining = end_time - time.perf_counter()
+                if remaining <= 0:
+                    break
+                to_sleep = min(float(throttle_seconds), float(remaining))
+                if to_sleep > 0:
+                    try:
+                        time.sleep(to_sleep)
+                    except Exception:
+                        pass
         elapsed = time.perf_counter() - start
         qps = float(count) / elapsed if elapsed > 0 else 0.0
         return {
@@ -102,7 +102,7 @@ class LoadTestPlugin(NekoPluginBase):
             "errors": errors,
             "elapsed_seconds": elapsed,
             "qps": qps,
-            "sleep_seconds": float(sleep_seconds),
+            "sleep_seconds": float(throttle_seconds),
             "error_types": dict(err_types),
             "error_samples": err_samples,
         }
@@ -114,11 +114,11 @@ class LoadTestPlugin(NekoPluginBase):
         """
         start = time.perf_counter()
         end_time = start + float(duration_seconds)
-        sleep_seconds = 0.0
+        throttle_seconds = 0.0
         try:
-            sleep_seconds = float(kwargs.pop("sleep_seconds", 0.0) or 0.0)
+            throttle_seconds = float(kwargs.pop("throttle_seconds", 0.0) or 0.0)
         except Exception:
-            sleep_seconds = 0.0
+            throttle_seconds = 0.0
         count = 0
         errors = 0
         lock = threading.Lock()
@@ -152,18 +152,18 @@ class LoadTestPlugin(NekoPluginBase):
                     except Exception:
                         pass
 
-                    if sleep_seconds > 0:
-                        if self._stop_event.is_set():
-                            break
-                        remaining = end_time - time.perf_counter()
-                        if remaining <= 0:
-                            break
-                        to_sleep = min(float(sleep_seconds), float(remaining))
-                        if to_sleep > 0:
-                            try:
-                                time.sleep(to_sleep)
-                            except Exception:
-                                pass
+                if throttle_seconds > 0:
+                    if self._stop_event.is_set():
+                        break
+                    remaining = end_time - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    to_sleep = min(float(throttle_seconds), float(remaining))
+                    if to_sleep > 0:
+                        try:
+                            time.sleep(to_sleep)
+                        except Exception:
+                            pass
 
         threads = []
         worker_count = max(1, int(workers))
@@ -186,7 +186,7 @@ class LoadTestPlugin(NekoPluginBase):
             "elapsed_seconds": elapsed,
             "qps": qps,
             "workers": worker_count,
-            "sleep_seconds": float(sleep_seconds),
+            "sleep_seconds": float(throttle_seconds),
             "error_types": dict(err_types),
             "error_samples": err_samples,
         }
@@ -346,20 +346,20 @@ class LoadTestPlugin(NekoPluginBase):
 
             sleep_cfg = None
             if sec_cfg:
-                sleep_cfg = sec_cfg.get("sleep_seconds")
+                sleep_cfg = sec_cfg.get("throttle_seconds")
             if sleep_cfg is None and root_cfg:
-                sleep_cfg = root_cfg.get("sleep_seconds")
+                sleep_cfg = root_cfg.get("throttle_seconds")
             try:
-                sleep_seconds = float(sleep_cfg) if sleep_cfg is not None else 0.0
+                throttle_seconds = float(sleep_cfg) if sleep_cfg is not None else 0.0
             except Exception:
-                sleep_seconds = 0.0
-            if sleep_seconds < 0:
-                sleep_seconds = 0.0
+                throttle_seconds = 0.0
+            if throttle_seconds < 0:
+                throttle_seconds = 0.0
 
             if workers > 1:
-                stats = self._bench_loop_concurrent(duration, workers, op_fn, sleep_seconds=sleep_seconds)
+                stats = self._bench_loop_concurrent(duration, workers, op_fn, throttle_seconds=throttle_seconds)
             else:
-                stats = self._bench_loop(duration, op_fn, sleep_seconds=sleep_seconds)
+                stats = self._bench_loop(duration, op_fn, throttle_seconds=throttle_seconds)
 
             try:
                 stats.update(self._sample_latency_ms(op_fn, samples=100))

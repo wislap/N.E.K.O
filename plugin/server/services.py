@@ -1172,11 +1172,27 @@ def get_events_from_queue(
         return True
 
     picked_rev: List[Dict[str, Any]] = []
+    scan_limit = int(max_count)
+    if scan_limit < 0:
+        scan_limit = 0
+    # Avoid copying the full store on every request (O(N) per call).
+    # Use a bounded tail window to keep latency stable under high load.
+    if scan_limit <= 0:
+        scan_limit = 200
     try:
-        it = state.iter_event_records_reverse()
+        scan_limit = int(min(int(store_size or 0), max(scan_limit * 20, 2000)))
     except Exception:
-        it = reversed(state.list_event_records())
-    for ev in it:
+        scan_limit = max(int(max_count) * 20, 2000)
+
+    try:
+        snapshot = state.list_event_records_tail(scan_limit)
+    except Exception:
+        try:
+            snapshot = state.list_event_records()
+        except Exception:
+            snapshot = []
+
+    for ev in reversed(snapshot):
         if plugin_id and ev.get("plugin_id") != plugin_id:
             continue
         if since_ts is not None:
@@ -1288,11 +1304,25 @@ def get_lifecycle_from_queue(
         return True
 
     picked_rev: List[Dict[str, Any]] = []
+    scan_limit = int(max_count)
+    if scan_limit < 0:
+        scan_limit = 0
+    if scan_limit <= 0:
+        scan_limit = 200
     try:
-        it = state.iter_lifecycle_records_reverse()
+        scan_limit = int(min(int(store_size or 0), max(scan_limit * 20, 2000)))
     except Exception:
-        it = reversed(state.list_lifecycle_records())
-    for ev in it:
+        scan_limit = max(int(max_count) * 20, 2000)
+
+    try:
+        snapshot = state.list_lifecycle_records_tail(scan_limit)
+    except Exception:
+        try:
+            snapshot = state.list_lifecycle_records()
+        except Exception:
+            snapshot = []
+
+    for ev in reversed(snapshot):
         if plugin_id and ev.get("plugin_id") != plugin_id:
             continue
         if since_ts is not None:

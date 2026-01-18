@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
+from plugin.settings import MESSAGE_PLANE_STRICT
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
@@ -644,6 +645,8 @@ class MessageClient:
                 topic="all",
             )
         except Exception:
+            if bool(MESSAGE_PLANE_STRICT):
+                raise
             pass
         if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
             if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:

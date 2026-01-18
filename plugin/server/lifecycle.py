@@ -7,6 +7,8 @@ import asyncio
 import atexit
 import logging
 import os
+import sys
+import subprocess
 import time
 from pathlib import Path
 import threading
@@ -37,6 +39,7 @@ _message_plane_ingest_thread: threading.Thread | None = None
 _message_plane_rpc = None
 _message_plane_ingest = None
 _message_plane_pub = None
+_message_plane_proc: subprocess.Popen | None = None
 
 
 def _start_message_plane_embedded() -> None:
@@ -132,6 +135,88 @@ def _stop_message_plane_embedded() -> None:
         pass
 
 
+def _wait_tcp_ready(endpoint: str, *, timeout_s: float = 2.0) -> bool:
+    ep = str(endpoint)
+    if not ep.startswith("tcp://"):
+        return True
+    rest = ep[len("tcp://") :]
+    if ":" not in rest:
+        return True
+    host, port_s = rest.rsplit(":", 1)
+    host = host.strip() or "127.0.0.1"
+    try:
+        port = int(port_s)
+    except Exception:
+        return True
+    deadline = time.time() + max(0.0, float(timeout_s))
+    while time.time() < deadline:
+        try:
+            import socket
+
+            with socket.create_connection((host, port), timeout=0.2):
+                return True
+        except Exception:
+            try:
+                time.sleep(0.05)
+            except Exception:
+                pass
+    return False
+
+
+def _start_message_plane_external() -> None:
+    global _message_plane_proc
+    if _message_plane_proc is not None and _message_plane_proc.poll() is None:
+        return
+    try:
+        # Use the same interpreter (venv) to start an isolated message_plane process.
+        cmd = [sys.executable, "-m", "plugin.message_plane.main"]
+        _message_plane_proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=None,
+            stderr=None,
+            close_fds=True,
+        )
+        logger.info("message_plane external process started pid={}", int(_message_plane_proc.pid))
+        try:
+            time.sleep(0.05)
+        except Exception:
+            pass
+        try:
+            rc = _message_plane_proc.poll()
+            if rc is not None:
+                logger.warning("message_plane external process exited immediately rc={}", int(rc))
+        except Exception:
+            pass
+    except Exception as e:
+        _message_plane_proc = None
+        try:
+            logger.warning("message_plane external process start failed: {}", e)
+        except Exception:
+            pass
+
+
+def _stop_message_plane_external() -> None:
+    global _message_plane_proc
+    p = _message_plane_proc
+    _message_plane_proc = None
+    if p is None:
+        return
+    try:
+        if p.poll() is None:
+            p.terminate()
+    except Exception:
+        pass
+    try:
+        p.wait(timeout=1.0)
+    except Exception:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except Exception:
+            pass
+
+
 def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
     """插件进程宿主工厂函数"""
     return PluginProcessHost(plugin_id=plugin_id, entry_point=entry, config_path=config_path)
@@ -210,6 +295,46 @@ async def startup() -> None:
 
     await plugin_router.start()
     logger.info("Plugin router started")
+
+    # Start message_plane before loading/starting any plugin processes to avoid startup races.
+    try:
+        from plugin.settings import (
+            MESSAGE_PLANE_RUN_MODE,
+            MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
+            MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
+            MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+        )
+
+        try:
+            logger.info(
+                "message_plane run_mode resolved={} env.NEKO_MESSAGE_PLANE_RUN_MODE={}",
+                str(MESSAGE_PLANE_RUN_MODE),
+                str(os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE")),
+            )
+        except Exception:
+            pass
+
+        if str(MESSAGE_PLANE_RUN_MODE) == "external":
+            _start_message_plane_external()
+        else:
+            _start_message_plane_embedded()
+
+        # Wait for endpoints to bind so plugins won't hit connection-refused at startup.
+        try:
+            ok_rpc = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT), timeout_s=3.0)
+            ok_pub = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT), timeout_s=3.0)
+            ok_ing = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT), timeout_s=3.0)
+            if not (ok_rpc and ok_pub and ok_ing):
+                logger.warning(
+                    "message_plane endpoints not ready in time rpc_ok={} pub_ok={} ingest_ok={}",
+                    bool(ok_rpc),
+                    bool(ok_pub),
+                    bool(ok_ing),
+                )
+        except Exception:
+            pass
+    except Exception:
+        pass
     
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
@@ -257,11 +382,6 @@ async def startup() -> None:
 
     # Optional: background ingestion loop for bus queues (feature flag).
     await start_bus_ingestion_loop()
-
-    try:
-        _start_message_plane_embedded()
-    except Exception:
-        pass
 
     try:
         start_bridge()
@@ -328,7 +448,12 @@ async def _shutdown_internal() -> None:
         pass
 
     try:
-        _stop_message_plane_embedded()
+        from plugin.settings import MESSAGE_PLANE_RUN_MODE
+
+        if str(MESSAGE_PLANE_RUN_MODE) == "external":
+            _stop_message_plane_external()
+        else:
+            _stop_message_plane_embedded()
     except Exception:
         pass
 
@@ -383,10 +508,30 @@ async def _shutdown_internal() -> None:
     # 5. 清理插件间通信资源（队列和响应映射）
     try:
         step_t0 = time.time()
-        state.cleanup_plugin_comm_resources()
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(state.cleanup_plugin_comm_resources),
+                timeout=1.5,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Plugin communication resources cleanup timed out; skipping")
         logger.debug("Plugin communication resources cleaned up (cost={:.3f}s)", time.time() - step_t0)
     except Exception:
         logger.exception("Error cleaning up plugin communication resources")
+
+    # Ensure asyncio's default executor (used by asyncio.to_thread) is shut down.
+    # Otherwise Python may block at interpreter exit while joining ThreadPoolExecutor threads,
+    # requiring repeated Ctrl-C.
+    try:
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(loop.shutdown_default_executor(), timeout=1.5)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     logger.debug("Shutdown internal completed (total_cost={:.3f}s)", time.time() - t0)
     _enqueue_lifecycle({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
