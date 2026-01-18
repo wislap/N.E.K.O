@@ -262,7 +262,11 @@ class MessagePlaneIngestServer:
             while self._running:
                 try:
                     events = dict(poller.poll(timeout=250))
+                except (KeyboardInterrupt, SystemExit):
+                    raise
                 except Exception:
+                    if not self._running:
+                        break
                     try:
                         time.sleep(0.01)
                     except Exception:
@@ -274,7 +278,11 @@ class MessagePlaneIngestServer:
                     continue
                 try:
                     raw = self._sock.recv(flags=0)
+                except (KeyboardInterrupt, SystemExit):
+                    raise
                 except Exception:
+                    if not self._running:
+                        break
                     try:
                         time.sleep(0.001)
                     except Exception:

@@ -49,6 +49,7 @@ def run_message_plane(
             ingest_srv.stop()
         except Exception:
             pass
+        raise SystemExit(0)
 
     try:
         signal.signal(signal.SIGINT, _stop)

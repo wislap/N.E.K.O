@@ -1543,9 +1543,28 @@ if __name__ == "__main__":
     import signal
     import socket
     import threading
+    import faulthandler
+    from pathlib import Path
     
     host = "127.0.0.1"  # 默认只暴露本机
     base_port = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", str(USER_PLUGIN_SERVER_PORT)))
+
+    try:
+        _dump_path = Path(__file__).resolve().parent / "log" / "server" / "faulthandler_dump.log"
+        try:
+            _dump_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        _dump_f = open(_dump_path, "a", encoding="utf-8")
+        faulthandler.enable(file=_dump_f)
+        faulthandler.register(signal.SIGUSR1, all_threads=True, file=_dump_f)
+    except Exception:
+        # Best-effort: fall back to default stderr behavior.
+        try:
+            faulthandler.enable()
+            faulthandler.register(signal.SIGUSR1, all_threads=True)
+        except Exception:
+            pass
     
     def _find_available_port(start_port: int, max_tries: int = 50) -> int:
         for p in range(start_port, start_port + max_tries):
@@ -1623,6 +1642,14 @@ if __name__ == "__main__":
     try:
         _old_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _sigint_handler)
+        try:
+            signal.signal(signal.SIGTERM, _sigint_handler)
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGQUIT, _sigint_handler)
+        except Exception:
+            pass
     except Exception:
         _old_sigint = None
 

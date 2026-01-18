@@ -690,7 +690,11 @@ class MessagePlaneRpcServer:
         while self._running:
             try:
                 events = dict(poller.poll(timeout=250))
+            except (KeyboardInterrupt, SystemExit):
+                raise
             except Exception:
+                if not self._running:
+                    break
                 continue
             if self._sock not in events:
                 continue
