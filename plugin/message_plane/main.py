@@ -68,7 +68,7 @@ def run_message_plane(
         except Exception:
             pass
         try:
-            ingest_srv.close()
+            ingest_thread.join(timeout=1.0)
         except Exception:
             pass
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -32,7 +33,8 @@ async def handle_event_get(request: Dict[str, Any], send_response: SendResponse)
     strict = request.get("strict", True)
 
     try:
-        events = get_events_from_queue(
+        events = await asyncio.to_thread(
+            get_events_from_queue,
             plugin_id=plugin_id,
             max_count=int(max_count) if max_count is not None else None,
             filter=dict(flt) if isinstance(flt, dict) else None,

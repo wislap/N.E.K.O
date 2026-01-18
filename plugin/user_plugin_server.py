@@ -543,7 +543,8 @@ async def get_plugin_messages(
     - GET /plugin/messages?priority_min=5      -> 只返回优先级>=5的消息
     """
     try:
-        messages = get_messages_from_queue(
+        messages = await asyncio.to_thread(
+            get_messages_from_queue,
             plugin_id=plugin_id,
             max_count=max_count,
             priority_min=priority_min,
@@ -1576,6 +1577,18 @@ if __name__ == "__main__":
         uvicorn.run(app, host=host, port=selected_port, log_config=None)
     finally:
         # 强制清理所有子进程
+        _old_sigint = None
+        try:
+            _old_sigint = signal.getsignal(signal.SIGINT)
+            def _force_quit(*_args: object) -> None:
+                try:
+                    os._exit(130)
+                except Exception:
+                    raise SystemExit(130)
+
+            signal.signal(signal.SIGINT, _force_quit)
+        except Exception:
+            _old_sigint = None
         try:
             # 尝试使用 psutil 清理子进程（更安全）
             import psutil
@@ -1594,6 +1607,9 @@ if __name__ == "__main__":
                     p.kill()
                 except psutil.NoSuchProcess:
                     pass
+        except KeyboardInterrupt:
+            # Best-effort exit if interrupted.
+            pass
         except ImportError:
             # 如果没有 psutil，尝试使用进程组清理（Linux/Mac）
             if hasattr(os, 'killpg'):
@@ -1603,3 +1619,9 @@ if __name__ == "__main__":
                     pass
         except Exception:
             pass
+        finally:
+            try:
+                if _old_sigint is not None:
+                    signal.signal(signal.SIGINT, _old_sigint)
+            except Exception:
+                pass

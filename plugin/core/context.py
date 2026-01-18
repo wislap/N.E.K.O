@@ -621,12 +621,20 @@ class PluginContext:
                             batcher = getattr(self, "_message_plane_push_batcher", None)
                             if batcher is None:
                                 from plugin.zeromq_ipc import MessagePlaneIngestBatcher
+                                from plugin.settings import (
+                                    MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS,
+                                    MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE,
+                                    MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO,
+                                )
 
                                 batcher = MessagePlaneIngestBatcher(
                                     from_plugin=self.plugin_id,
                                     endpoint=endpoint,
                                     batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
                                     flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
+                                    max_queue=int(MESSAGE_PLANE_PUSH_BATCHER_MAX_QUEUE),
+                                    reject_ratio=float(MESSAGE_PLANE_PUSH_BATCHER_REJECT_RATIO),
+                                    enqueue_timeout_s=float(MESSAGE_PLANE_PUSH_BATCHER_ENQUEUE_TIMEOUT_SECONDS),
                                 )
                                 batcher.start()
                                 try:
@@ -650,7 +658,44 @@ class PluginContext:
                                 "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                             }
                             item = {"store": "messages", "topic": "all", "payload": payload}
-                            batcher.enqueue(item)
+                            try:
+                                batcher.enqueue(item)
+                            except Exception:
+                                # Backpressure: do not fall back to control-plane (it will amplify overload).
+                                try:
+                                    last_ts = float(getattr(self, "_mp_backpressure_last_ts", 0.0) or 0.0)
+                                except Exception:
+                                    last_ts = 0.0
+                                try:
+                                    cnt = int(getattr(self, "_mp_backpressure_count", 0) or 0) + 1
+                                except Exception:
+                                    cnt = 1
+                                try:
+                                    object.__setattr__(self, "_mp_backpressure_count", cnt)
+                                except Exception:
+                                    try:
+                                        self._mp_backpressure_count = cnt
+                                    except Exception:
+                                        pass
+                                now_ts = time.time()
+                                if now_ts - last_ts >= 1.0:
+                                    try:
+                                        object.__setattr__(self, "_mp_backpressure_last_ts", float(now_ts))
+                                        object.__setattr__(self, "_mp_backpressure_count", 0)
+                                    except Exception:
+                                        try:
+                                            self._mp_backpressure_last_ts = float(now_ts)
+                                            self._mp_backpressure_count = 0
+                                        except Exception:
+                                            pass
+                                    try:
+                                        self.logger.warning(
+                                            "[PluginContext] message_plane backpressure: rejected push_message.fast (x{})",
+                                            int(cnt),
+                                        )
+                                    except Exception:
+                                        pass
+                                return
                             if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                                 try:
                                     self.logger.debug(

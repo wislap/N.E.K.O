@@ -383,6 +383,8 @@ class MessagePlaneIngestBatcher:
         batch_size: int = 256,
         flush_interval_ms: int = 5,
         max_queue: int = 100000,
+        reject_ratio: float = 0.9,
+        enqueue_timeout_s: float = 1.0,
     ) -> None:
         if zmq is None:
             raise RuntimeError("pyzmq is not available")
@@ -391,6 +393,21 @@ class MessagePlaneIngestBatcher:
         self._batch_size = max(1, int(batch_size))
         self._flush_interval_s = max(0.0, float(flush_interval_ms) / 1000.0)
         self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=int(max_queue))
+        self._max_queue = int(max_queue)
+        try:
+            self._reject_ratio = float(reject_ratio)
+        except Exception:
+            self._reject_ratio = 0.9
+        if self._reject_ratio < 0:
+            self._reject_ratio = 0.0
+        if self._reject_ratio > 1:
+            self._reject_ratio = 1.0
+        try:
+            self._enqueue_timeout_s = float(enqueue_timeout_s)
+        except Exception:
+            self._enqueue_timeout_s = 1.0
+        if self._enqueue_timeout_s < 0:
+            self._enqueue_timeout_s = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -414,7 +431,16 @@ class MessagePlaneIngestBatcher:
         if self._stop.is_set():
             raise RuntimeError("message_plane ingest batcher stopped")
         try:
-            self._q.put(item, timeout=1.0)
+            if self._max_queue > 0 and self._reject_ratio > 0:
+                qsize = int(self._q.qsize())
+                if qsize >= int(self._max_queue * self._reject_ratio):
+                    raise RuntimeError("message_plane ingest backpressure: queue high watermark")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        try:
+            self._q.put(item, timeout=float(self._enqueue_timeout_s))
         except Exception as e:
             raise RuntimeError(f"message_plane ingest batcher queue full: {e}") from e
 

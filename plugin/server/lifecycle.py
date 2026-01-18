@@ -33,13 +33,14 @@ from plugin.settings import (
 
 
 _message_plane_thread: threading.Thread | None = None
+_message_plane_ingest_thread: threading.Thread | None = None
 _message_plane_rpc = None
 _message_plane_ingest = None
 _message_plane_pub = None
 
 
 def _start_message_plane_embedded() -> None:
-    global _message_plane_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
+    global _message_plane_thread, _message_plane_ingest_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
     if _message_plane_thread is not None and _message_plane_thread.is_alive():
         return
     try:
@@ -78,6 +79,7 @@ def _start_message_plane_embedded() -> None:
         t.start()
 
         _message_plane_thread = t
+        _message_plane_ingest_thread = ingest_thread
         _message_plane_rpc = rpc_srv
         _message_plane_ingest = ingest_srv
         _message_plane_pub = pub_srv
@@ -90,15 +92,18 @@ def _start_message_plane_embedded() -> None:
 
 
 def _stop_message_plane_embedded() -> None:
-    global _message_plane_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
+    global _message_plane_thread, _message_plane_ingest_thread, _message_plane_rpc, _message_plane_ingest, _message_plane_pub
     rpc_srv = _message_plane_rpc
     ingest_srv = _message_plane_ingest
     pub_srv = _message_plane_pub
+    ingest_thread = _message_plane_ingest_thread
+    rpc_thread = _message_plane_thread
 
     _message_plane_rpc = None
     _message_plane_ingest = None
     _message_plane_pub = None
     _message_plane_thread = None
+    _message_plane_ingest_thread = None
 
     try:
         if rpc_srv is not None:
@@ -111,8 +116,13 @@ def _stop_message_plane_embedded() -> None:
     except Exception:
         pass
     try:
-        if ingest_srv is not None:
-            ingest_srv.close()
+        if ingest_thread is not None and ingest_thread.is_alive():
+            ingest_thread.join(timeout=1.0)
+    except Exception:
+        pass
+    try:
+        if rpc_thread is not None and rpc_thread.is_alive():
+            rpc_thread.join(timeout=1.0)
     except Exception:
         pass
     try:

@@ -51,6 +51,11 @@ class LoadTestPlugin(NekoPluginBase):
     def _bench_loop(self, duration_seconds: float, fn, *args, **kwargs) -> Dict[str, Any]:
         start = time.perf_counter()
         end_time = start + float(duration_seconds)
+        sleep_seconds = 0.0
+        try:
+            sleep_seconds = float(kwargs.pop("sleep_seconds", 0.0) or 0.0)
+        except Exception:
+            sleep_seconds = 0.0
         count = 0
         errors = 0
         err_types: Counter[str] = Counter()
@@ -77,6 +82,19 @@ class LoadTestPlugin(NekoPluginBase):
                     self.logger.warning("[load_tester] bench iteration failed: {}", e)
                 except Exception:
                     pass
+
+                if sleep_seconds > 0:
+                    if self._stop_event.is_set():
+                        break
+                    remaining = end_time - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    to_sleep = min(float(sleep_seconds), float(remaining))
+                    if to_sleep > 0:
+                        try:
+                            time.sleep(to_sleep)
+                        except Exception:
+                            pass
         elapsed = time.perf_counter() - start
         qps = float(count) / elapsed if elapsed > 0 else 0.0
         return {
@@ -84,6 +102,7 @@ class LoadTestPlugin(NekoPluginBase):
             "errors": errors,
             "elapsed_seconds": elapsed,
             "qps": qps,
+            "sleep_seconds": float(sleep_seconds),
             "error_types": dict(err_types),
             "error_samples": err_samples,
         }
@@ -95,6 +114,11 @@ class LoadTestPlugin(NekoPluginBase):
         """
         start = time.perf_counter()
         end_time = start + float(duration_seconds)
+        sleep_seconds = 0.0
+        try:
+            sleep_seconds = float(kwargs.pop("sleep_seconds", 0.0) or 0.0)
+        except Exception:
+            sleep_seconds = 0.0
         count = 0
         errors = 0
         lock = threading.Lock()
@@ -128,6 +152,19 @@ class LoadTestPlugin(NekoPluginBase):
                     except Exception:
                         pass
 
+                    if sleep_seconds > 0:
+                        if self._stop_event.is_set():
+                            break
+                        remaining = end_time - time.perf_counter()
+                        if remaining <= 0:
+                            break
+                        to_sleep = min(float(sleep_seconds), float(remaining))
+                        if to_sleep > 0:
+                            try:
+                                time.sleep(to_sleep)
+                            except Exception:
+                                pass
+
         threads = []
         worker_count = max(1, int(workers))
         for _ in range(worker_count):
@@ -149,6 +186,7 @@ class LoadTestPlugin(NekoPluginBase):
             "elapsed_seconds": elapsed,
             "qps": qps,
             "workers": worker_count,
+            "sleep_seconds": float(sleep_seconds),
             "error_types": dict(err_types),
             "error_samples": err_samples,
         }
@@ -306,10 +344,22 @@ class LoadTestPlugin(NekoPluginBase):
             except Exception:
                 duration = default_duration
 
+            sleep_cfg = None
+            if sec_cfg:
+                sleep_cfg = sec_cfg.get("sleep_seconds")
+            if sleep_cfg is None and root_cfg:
+                sleep_cfg = root_cfg.get("sleep_seconds")
+            try:
+                sleep_seconds = float(sleep_cfg) if sleep_cfg is not None else 0.0
+            except Exception:
+                sleep_seconds = 0.0
+            if sleep_seconds < 0:
+                sleep_seconds = 0.0
+
             if workers > 1:
-                stats = self._bench_loop_concurrent(duration, workers, op_fn)
+                stats = self._bench_loop_concurrent(duration, workers, op_fn, sleep_seconds=sleep_seconds)
             else:
-                stats = self._bench_loop(duration, op_fn)
+                stats = self._bench_loop(duration, op_fn, sleep_seconds=sleep_seconds)
 
             try:
                 stats.update(self._sample_latency_ms(op_fn, samples=100))
@@ -1423,60 +1473,102 @@ class LoadTestPlugin(NekoPluginBase):
 
     def _run_all_benchmarks_sync(self, duration_seconds: float = 5.0) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
+        root_cfg = self._get_load_test_section(None)
+        try:
+            sleep_between = float((root_cfg or {}).get("sleep_seconds", 0.0) or 0.0)
+        except Exception:
+            sleep_between = 0.0
+        if sleep_between < 0:
+            sleep_between = 0.0
+
+        def _pause(section: str | None = None) -> None:
+            sec_sleep = None
+            if section:
+                try:
+                    sec_cfg = self._get_load_test_section(section)
+                except Exception:
+                    sec_cfg = {}
+                try:
+                    if isinstance(sec_cfg, dict):
+                        sec_sleep = sec_cfg.get("sleep_after_seconds")
+                except Exception:
+                    sec_sleep = None
+            try:
+                effective = float(sec_sleep) if sec_sleep is not None else float(sleep_between)
+            except Exception:
+                effective = float(sleep_between)
+            if effective <= 0:
+                return
+            try:
+                self._stop_event.wait(timeout=float(effective))
+            except Exception:
+                try:
+                    time.sleep(float(effective))
+                except Exception:
+                    pass
         try:
             results["bench_push_messages"] = self._unwrap_ok_data(
                 self.bench_push_messages(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_push_messages"] = {"error": str(e)}
+        _pause("push_messages")
         try:
             results["bench_bus_messages_get"] = self._unwrap_ok_data(
                 self.bench_bus_messages_get(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_bus_messages_get"] = {"error": str(e)}
+        _pause("bus_messages_get")
         try:
             results["bench_push_messages_fast"] = self._unwrap_ok_data(
                 self.bench_push_messages_fast(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_push_messages_fast"] = {"error": str(e)}
+        _pause("push_messages_fast")
         try:
             results["bench_bus_events_get"] = self._unwrap_ok_data(
                 self.bench_bus_events_get(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_bus_events_get"] = {"error": str(e)}
+        _pause("bus_events_get")
         try:
             results["bench_bus_lifecycle_get"] = self._unwrap_ok_data(
                 self.bench_bus_lifecycle_get(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_bus_lifecycle_get"] = {"error": str(e)}
+        _pause("bus_lifecycle_get")
         try:
             results["bench_buslist_filter"] = self._unwrap_ok_data(
                 self.bench_buslist_filter(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_buslist_filter"] = {"error": str(e)}
+        _pause("buslist_filter")
         try:
             results["bench_buslist_reload_full"] = self._unwrap_ok_data(
                 self.bench_buslist_reload(duration_seconds=duration_seconds, incremental=False)
             )
         except Exception as e:
             results["bench_buslist_reload_full"] = {"error": str(e)}
+        _pause("buslist_reload")
         try:
             results["bench_buslist_reload_incr"] = self._unwrap_ok_data(
                 self.bench_buslist_reload(duration_seconds=duration_seconds, incremental=True)
             )
         except Exception as e:
             results["bench_buslist_reload_incr"] = {"error": str(e)}
+        _pause("buslist_reload")
         try:
             results["bench_buslist_reload_nochange"] = self._unwrap_ok_data(
                 self.bench_buslist_reload_nochange(duration_seconds=duration_seconds)
             )
         except Exception as e:
             results["bench_buslist_reload_nochange"] = {"error": str(e)}
+        _pause("buslist_reload_nochange")
 
         try:
             headers = ["test", "qps", "errors", "iterations", "elapsed_s", "extra"]

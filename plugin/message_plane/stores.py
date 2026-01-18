@@ -21,9 +21,9 @@ class TopicStore:
         self._lock = threading.RLock()
 
     def _next_seq(self) -> int:
-        with self._lock:
-            self._seq += 1
-            return self._seq
+        # Caller is expected to hold _lock.
+        self._seq += 1
+        return self._seq
 
     def list_topics(self) -> list[Dict[str, Any]]:
         with self._lock:
@@ -39,8 +39,9 @@ class TopicStore:
         now = time.time()
         idx = self._extract_index(payload, now)
         with self._lock:
+            seq = self._next_seq()
             event = {
-                "seq": self._next_seq(),
+                "seq": seq,
                 "ts": now,
                 "store": self.name,
                 "topic": t,

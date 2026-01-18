@@ -15,8 +15,10 @@ from plugin.settings import (
     MESSAGE_PLANE_INGEST_STATS_LOG_INFO,
     MESSAGE_PLANE_INGEST_STATS_LOG_VERBOSE,
     MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
+    MESSAGE_PLANE_PUB_ENABLED,
     MESSAGE_PLANE_TOPIC_MAX,
     MESSAGE_PLANE_TOPIC_NAME_MAX_LEN,
+    MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES,
 )
 
 from .pub_server import MessagePlanePubServer
@@ -107,13 +109,14 @@ class MessagePlaneIngestServer:
             payload = it.get("payload")
             if not isinstance(payload, dict):
                 payload = {"value": payload}
-            try:
-                if len(ormsgpack.packb(payload)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+            if bool(MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES):
+                try:
+                    if len(ormsgpack.packb(payload)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+                        self._stats_dropped += 1
+                        continue
+                except Exception:
                     self._stats_dropped += 1
                     continue
-            except Exception:
-                self._stats_dropped += 1
-                continue
             try:
                 event = st.publish(topic, payload)
             except Exception:
@@ -132,7 +135,7 @@ class MessagePlaneIngestServer:
                 self._stats_last_source = str(src) if isinstance(src, str) else None
             except Exception:
                 self._stats_last_source = None
-            if self._pub is not None:
+            if self._pub is not None and bool(MESSAGE_PLANE_PUB_ENABLED):
                 try:
                     self._pub.publish(f"{st.name}.{topic}", event)
                 except Exception:
@@ -167,13 +170,14 @@ class MessagePlaneIngestServer:
         for x in items:
             if not isinstance(x, dict):
                 continue
-            try:
-                if len(ormsgpack.packb(x)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+            if bool(MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES):
+                try:
+                    if len(ormsgpack.packb(x)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+                        self._stats_dropped += 1
+                        continue
+                except Exception:
                     self._stats_dropped += 1
                     continue
-            except Exception:
-                self._stats_dropped += 1
-                continue
             records.append(x)
         if str(mode or "replace") == "append":
             for rec in records:
@@ -185,7 +189,7 @@ class MessagePlaneIngestServer:
                 self._stats_accepted += 1
                 self._stats_last_store = str(st.name)
                 self._stats_last_topic = str(topic)
-                if self._pub is not None:
+                if self._pub is not None and bool(MESSAGE_PLANE_PUB_ENABLED):
                     try:
                         self._pub.publish(f"{st.name}.{topic}", event)
                     except Exception:
@@ -199,7 +203,7 @@ class MessagePlaneIngestServer:
         self._stats_accepted += int(len(events))
         self._stats_last_store = str(st.name)
         self._stats_last_topic = str(topic)
-        if self._pub is not None:
+        if self._pub is not None and bool(MESSAGE_PLANE_PUB_ENABLED):
             for ev in events:
                 try:
                     self._pub.publish(f"{st.name}.{topic}", ev)
@@ -253,38 +257,47 @@ class MessagePlaneIngestServer:
         poller = zmq.Poller()
         poller.register(self._sock, zmq.POLLIN)
         logger.info("[message_plane] ingest server bound: {}", self.endpoint)
-        while self._running:
-            try:
-                events = dict(poller.poll(timeout=250))
-            except Exception:
-                continue
-            if self._sock not in events:
-                continue
-            try:
-                raw = self._sock.recv(flags=0)
-            except Exception:
-                continue
-            self._stats_recv += 1
-            try:
-                obj = _loads(raw)
-            except Exception:
-                self._stats_dropped += 1
-                continue
-            if not isinstance(obj, dict):
-                self._stats_dropped += 1
-                continue
-            kind = obj.get("kind")
-            if kind == "snapshot":
+        try:
+            while self._running:
                 try:
-                    self._ingest_snapshot(obj)
+                    events = dict(poller.poll(timeout=250))
+                except Exception:
+                    continue
+                if not self._running:
+                    break
+                if self._sock not in events:
+                    continue
+                try:
+                    raw = self._sock.recv(flags=0)
+                except Exception:
+                    continue
+                self._stats_recv += 1
+                try:
+                    obj = _loads(raw)
+                except Exception:
+                    self._stats_dropped += 1
+                    continue
+                if not isinstance(obj, dict):
+                    self._stats_dropped += 1
+                    continue
+                kind = obj.get("kind")
+                if kind == "snapshot":
+                    try:
+                        self._ingest_snapshot(obj)
+                    except Exception:
+                        self._stats_dropped += 1
+                        pass
+                    self._maybe_log_stats()
+                    continue
+                try:
+                    self._ingest_delta_batch(obj)
                 except Exception:
                     self._stats_dropped += 1
                     pass
                 self._maybe_log_stats()
-                continue
+        finally:
+            # IMPORTANT: ZeroMQ sockets are not thread-safe; close from the ingest thread.
             try:
-                self._ingest_delta_batch(obj)
+                self.close()
             except Exception:
-                self._stats_dropped += 1
                 pass
-            self._maybe_log_stats()

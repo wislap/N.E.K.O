@@ -21,21 +21,24 @@ enabled = true
 auto_start = false
 
 [load_test]
-duration_seconds = 4
+duration_seconds = 5
 log_summary = true
 worker_threads = 1
 timeout = 0.5
+sleep_seconds = 2
 [load_test.push_messages]
 enable = true
 
 [load_test.push_messages_fast]
 enable = true
+sleep_after_seconds = 2
 
 [load_test.bus_messages_get]
 enable = true
 
 [load_test.bus_events_get]
 enable = true
+timeout = 0.5
 
 [load_test.bus_lifecycle_get]
 enable = true
