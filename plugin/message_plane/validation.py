@@ -10,12 +10,13 @@ from .protocol import PROTOCOL_VERSION
 
 
 class _RpcEnvelope(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     v: Optional[int] = None
     op: str = Field(min_length=1, max_length=128)
-    req_id: str = Field(min_length=0, max_length=64)
+    req_id: str = Field(min_length=1, max_length=64)
     args: Dict[str, Any] = Field(default_factory=dict)
+    from_plugin: Optional[str] = Field(default=None, max_length=128)
 
 
 _ENVELOPE_ADAPTER: TypeAdapter[_RpcEnvelope] = TypeAdapter(_RpcEnvelope)
@@ -38,5 +39,9 @@ def validate_rpc_envelope(
 
     if env.v is not None and env.v != PROTOCOL_VERSION:
         return None, f"unsupported protocol version: {env.v!r}"
+
+    if mode == "strict":
+        if env.v is None:
+            return None, "missing protocol version"
 
     return env, None

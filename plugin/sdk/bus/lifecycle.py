@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,113 +11,11 @@ from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
-import ormsgpack
+from plugin.sdk.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
 
-
-try:
-    import zmq
-except Exception:  # pragma: no cover
-    zmq = None
-
-
-class _MessagePlaneRpcClient:
-    def __init__(self, *, plugin_id: str, endpoint: str) -> None:
-        if zmq is None:
-            raise RuntimeError("pyzmq is not available")
-        self._plugin_id = str(plugin_id)
-        self._endpoint = str(endpoint)
-        try:
-            import threading
-
-            self._tls = threading.local()
-        except Exception:
-            self._tls = None
-
-    def _get_sock(self):
-        if self._tls is not None:
-            sock = getattr(self._tls, "sock", None)
-            if sock is not None:
-                return sock
-        if zmq is None:
-            return None
-        ctx = zmq.Context.instance()
-        sock = ctx.socket(zmq.DEALER)
-        ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
-        try:
-            sock.setsockopt(zmq.IDENTITY, ident)
-        except Exception:
-            pass
-        try:
-            sock.setsockopt(zmq.LINGER, 0)
-        except Exception:
-            pass
-        sock.connect(self._endpoint)
-        if self._tls is not None:
-            try:
-                self._tls.sock = sock
-            except Exception:
-                pass
-        return sock
-
-    def request(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
-        if zmq is None:
-            return None
-        sock = self._get_sock()
-        if sock is None:
-            return None
-        req_id = str(uuid.uuid4())
-        req = {"v": 1, "op": str(op), "req_id": req_id, "args": dict(args or {}), "from_plugin": self._plugin_id}
-
-        enc = "msgpack"
-        try:
-            raw = ormsgpack.packb(req)
-        except Exception:
-            enc = "json"
-            try:
-                raw = json.dumps(req, ensure_ascii=False).encode("utf-8")
-            except Exception:
-                return None
-        try:
-            sock.send(raw, flags=0)
-        except Exception:
-            return None
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
-        deadline = time.time() + max(0.0, float(timeout))
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            try:
-                events = dict(poller.poll(timeout=int(remaining * 1000)))
-            except Exception:
-                return None
-            if sock not in events:
-                continue
-            try:
-                resp_raw = sock.recv(flags=0)
-            except Exception:
-                return None
-
-            resp = None
-            if enc == "msgpack":
-                try:
-                    resp = ormsgpack.unpackb(resp_raw)
-                except Exception:
-                    resp = None
-            if resp is None:
-                try:
-                    resp = json.loads(resp_raw.decode("utf-8"))
-                except Exception:
-                    resp = None
-            if not isinstance(resp, dict):
-                continue
-            if resp.get("req_id") != req_id:
-                continue
-            return resp
 
 @dataclass(frozen=True)
 class LifecycleRecord(BusRecord):
