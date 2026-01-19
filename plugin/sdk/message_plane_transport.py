@@ -44,6 +44,19 @@ class MessagePlaneRpcClient:
             sock.setsockopt(zmq.LINGER, 0)
         except Exception:
             pass
+        try:
+            # TCP_NODELAY for lower latency
+            sock.setsockopt(getattr(zmq, 'TCP_NODELAY', 1), 1)
+        except Exception:
+            pass
+        try:
+            sock.setsockopt(zmq.RCVHWM, 1000)
+        except Exception:
+            pass
+        try:
+            sock.setsockopt(zmq.SNDHWM, 1000)
+        except Exception:
+            pass
         sock.connect(self._endpoint)
         if self._tls is not None:
             try:

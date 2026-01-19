@@ -251,32 +251,39 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
 
 
 class RustMessagePlaneRunner(MessagePlaneRunner):
-    def __init__(self, *, endpoints: MessagePlaneEndpoints, binary_path: Optional[str] = None) -> None:
+    def __init__(self, *, endpoints: MessagePlaneEndpoints, binary_path: Optional[str] = None, workers: int = 0) -> None:
         self._endpoints = endpoints
         self._binary_path = _resolve_rust_message_plane_bin(binary_path or "neko-message-plane")
+        self._workers = workers
         self._proc: subprocess.Popen | None = None
 
     def start(self) -> MessagePlaneEndpoints:
         if self._proc is not None and self._proc.poll() is None:
             return self._endpoints
 
+        cmd = [
+            self._binary_path,
+            "--rpc-endpoint",
+            str(self._endpoints.rpc),
+            "--ingest-endpoint",
+            str(self._endpoints.ingest),
+            "--pub-endpoint",
+            str(self._endpoints.pub),
+        ]
+        
+        if self._workers != 0:
+            cmd.extend(["--workers", str(self._workers)])
+
         try:
             self._proc = subprocess.Popen(
-                [
-                    self._binary_path,
-                    "--rpc-endpoint",
-                    str(self._endpoints.rpc),
-                    "--ingest-endpoint",
-                    str(self._endpoints.ingest),
-                    "--pub-endpoint",
-                    str(self._endpoints.pub),
-                ],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=None,
                 stderr=None,
                 close_fds=True,
             )
-            logger.info("message_plane rust process started pid={}", int(self._proc.pid))
+            workers_info = f"workers={self._workers or 'auto'}"
+            logger.info("message_plane rust process started pid={} {}", int(self._proc.pid), workers_info)
         except Exception as e:
             self._proc = None
             logger.warning("message_plane rust process start failed: {}", e)
@@ -371,6 +378,7 @@ def build_message_plane_runner() -> MessagePlaneRunner:
         MESSAGE_PLANE_BACKEND,
         MESSAGE_PLANE_RUST_BIN,
         MESSAGE_PLANE_RUN_MODE,
+        MESSAGE_PLANE_WORKERS,
         MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
         MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
         MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
@@ -384,5 +392,9 @@ def build_message_plane_runner() -> MessagePlaneRunner:
     )
 
     if backend == "rust":
-        return RustMessagePlaneRunner(endpoints=endpoints, binary_path=str(MESSAGE_PLANE_RUST_BIN))
+        return RustMessagePlaneRunner(
+            endpoints=endpoints,
+            binary_path=str(MESSAGE_PLANE_RUST_BIN),
+            workers=int(MESSAGE_PLANE_WORKERS),
+        )
     return PythonMessagePlaneRunner(run_mode=str(MESSAGE_PLANE_RUN_MODE), endpoints=endpoints)

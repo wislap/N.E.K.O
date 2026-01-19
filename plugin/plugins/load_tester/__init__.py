@@ -124,14 +124,14 @@ class LoadTestPlugin(NekoPluginBase):
             throttle_seconds = float(kwargs.pop("throttle_seconds", 0.0) or 0.0)
         except Exception:
             throttle_seconds = 0.0
-        count = 0
-        errors = 0
         lock = threading.Lock()
         err_types: Counter[str] = Counter()
         err_samples: Dict[str, str] = {}
+        worker_results: list[tuple[int, int]] = []
 
         def _worker() -> None:
-            nonlocal count, errors
+            local_count = 0
+            local_errors = 0
             while True:
                 if self._stop_event.is_set():
                     break
@@ -140,11 +140,10 @@ class LoadTestPlugin(NekoPluginBase):
                     break
                 try:
                     fn(*args, **kwargs)
-                    with lock:
-                        count += 1
+                    local_count += 1
                 except Exception as e:  # pragma: no cover - defensive
+                    local_errors += 1
                     with lock:
-                        errors += 1
                         tname = type(e).__name__
                         err_types[tname] += 1
                         if tname not in err_samples:
@@ -169,6 +168,10 @@ class LoadTestPlugin(NekoPluginBase):
                             time.sleep(to_sleep)
                         except Exception:
                             pass
+            
+            # Save local results
+            with lock:
+                worker_results.append((local_count, local_errors))
 
         threads = []
         worker_count = max(1, int(workers))
@@ -176,12 +179,24 @@ class LoadTestPlugin(NekoPluginBase):
             t = threading.Thread(target=_worker, daemon=True)
             threads.append(t)
             t.start()
+        
+        # Join with timeout to avoid infinite waiting
+        join_timeout = duration_seconds + 10.0  # Allow extra time for cleanup
         for t in threads:
             try:
-                t.join()
+                t.join(timeout=join_timeout)
+                if t.is_alive():
+                    try:
+                        self.logger.warning("[load_tester] worker thread did not finish in time")
+                    except Exception:
+                        pass
             except Exception:
                 # 避免 join 异常中断整个压测
                 pass
+
+        # Aggregate results from all workers
+        count = sum(c for c, _ in worker_results)
+        errors = sum(e for _, e in worker_results)
 
         elapsed = time.perf_counter() - start
         qps = float(count) / elapsed if elapsed > 0 else 0.0

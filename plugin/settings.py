@@ -254,6 +254,12 @@ if MESSAGE_PLANE_BACKEND not in ("python", "rust"):
 # Env: NEKO_MESSAGE_PLANE_RUST_BIN, default="neko-message-plane"
 MESSAGE_PLANE_RUST_BIN = os.getenv("NEKO_MESSAGE_PLANE_RUST_BIN", "neko-message-plane").strip()
 
+# Rust message_plane 工作线程数（当 MESSAGE_PLANE_BACKEND=rust 时使用）
+# - 0: 自动检测 CPU 核心数（默认，最少 4 个）
+# - >0: 手动指定工作线程数
+# Env: NEKO_MESSAGE_PLANE_WORKERS, default=0
+MESSAGE_PLANE_WORKERS = _get_int_env("NEKO_MESSAGE_PLANE_WORKERS", 0)
+
 # Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
 # Env: NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT, default="tcp://127.0.0.1:38865"
 MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
@@ -529,6 +535,7 @@ __all__ = [
     # Message plane backend
     "MESSAGE_PLANE_BACKEND",
     "MESSAGE_PLANE_RUST_BIN",
+    "MESSAGE_PLANE_WORKERS",
     "MESSAGE_PLANE_RUN_MODE",
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
     "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
