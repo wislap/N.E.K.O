@@ -25,6 +25,7 @@ from plugin.server.bus_subscriptions import bus_subscription_manager
 from plugin.server.auth import generate_admin_code, set_admin_code
 from plugin.server.services import _enqueue_lifecycle
 from plugin.server.message_plane_bridge import start_bridge, stop_bridge
+from plugin.server.message_plane_runner import build_message_plane_runner
 from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
@@ -40,6 +41,8 @@ _message_plane_rpc = None
 _message_plane_ingest = None
 _message_plane_pub = None
 _message_plane_proc: subprocess.Popen | None = None
+
+_message_plane_runner = None
 
 
 def _start_message_plane_embedded() -> None:
@@ -298,43 +301,16 @@ async def startup() -> None:
 
     # Start message_plane before loading/starting any plugin processes to avoid startup races.
     try:
-        from plugin.settings import (
-            MESSAGE_PLANE_RUN_MODE,
-            MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT,
-            MESSAGE_PLANE_ZMQ_PUB_ENDPOINT,
-            MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
-        )
-
+        global _message_plane_runner
+        _message_plane_runner = build_message_plane_runner()
+        _ = _message_plane_runner.start()
         try:
-            logger.info(
-                "message_plane run_mode resolved={} env.NEKO_MESSAGE_PLANE_RUN_MODE={}",
-                str(MESSAGE_PLANE_RUN_MODE),
-                str(os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE")),
-            )
-        except Exception:
-            pass
-
-        if str(MESSAGE_PLANE_RUN_MODE) == "external":
-            _start_message_plane_external()
-        else:
-            _start_message_plane_embedded()
-
-        # Wait for endpoints to bind so plugins won't hit connection-refused at startup.
-        try:
-            ok_rpc = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT), timeout_s=3.0)
-            ok_pub = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_PUB_ENDPOINT), timeout_s=3.0)
-            ok_ing = _wait_tcp_ready(str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT), timeout_s=3.0)
-            if not (ok_rpc and ok_pub and ok_ing):
-                logger.warning(
-                    "message_plane endpoints not ready in time rpc_ok={} pub_ok={} ingest_ok={}",
-                    bool(ok_rpc),
-                    bool(ok_pub),
-                    bool(ok_ing),
-                )
+            if not _message_plane_runner.health_check(timeout_s=1.0):
+                logger.warning("message_plane health_check failed (may still be starting)")
         except Exception:
             pass
     except Exception:
-        pass
+        _message_plane_runner = None
     
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
@@ -445,12 +421,11 @@ async def _shutdown_internal() -> None:
         pass
 
     try:
-        from plugin.settings import MESSAGE_PLANE_RUN_MODE
-
-        if str(MESSAGE_PLANE_RUN_MODE) == "external":
-            _stop_message_plane_external()
-        else:
-            _stop_message_plane_embedded()
+        global _message_plane_runner
+        r = _message_plane_runner
+        _message_plane_runner = None
+        if r is not None:
+            r.stop()
     except Exception:
         pass
 

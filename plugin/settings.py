@@ -240,6 +240,18 @@ PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS = _get_float_env(
 
 # ========== Message Plane (High-Frequency Bus) ==========
 
+# Message plane 后端实现选择
+# - python: 使用当前 Python message_plane 实现（默认）
+# - rust: 使用外部 Rust message_plane 可执行文件
+# Env: NEKO_MESSAGE_PLANE_BACKEND, default="python"
+MESSAGE_PLANE_BACKEND = os.getenv("NEKO_MESSAGE_PLANE_BACKEND", "python").strip().lower()
+if MESSAGE_PLANE_BACKEND not in ("python", "rust"):
+    MESSAGE_PLANE_BACKEND = "python"
+
+# Rust message_plane 可执行文件路径（当 MESSAGE_PLANE_BACKEND=rust 时使用）
+# Env: NEKO_MESSAGE_PLANE_RUST_BIN, default="neko-message-plane"
+MESSAGE_PLANE_RUST_BIN = os.getenv("NEKO_MESSAGE_PLANE_RUST_BIN", "neko-message-plane").strip()
+
 # Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
 # Env: NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT, default="tcp://127.0.0.1:38865"
 MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
@@ -511,6 +523,15 @@ __all__ = [
     "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS",
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
     "SYNC_CALL_IN_HANDLER_POLICY",
+
+    # Message plane backend
+    "MESSAGE_PLANE_BACKEND",
+    "MESSAGE_PLANE_RUST_BIN",
+    "MESSAGE_PLANE_RUN_MODE",
+    "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
+    "MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
+    "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT",
+    "MESSAGE_PLANE_VALIDATE_MODE",
     
     # 插件Logger配置
     "PLUGIN_LOG_LEVEL",
