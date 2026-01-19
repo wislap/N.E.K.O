@@ -1601,6 +1601,7 @@ class BusList(Generic[TRecord]):
             try:
                 import time as _time
                 import json as _json
+                import os as _os
                 import ormsgpack as _ormsgpack
                 try:
                     import zmq as _zmq
@@ -1641,12 +1642,24 @@ class BusList(Generic[TRecord]):
                         pass
 
                 req_id = f"replay:{getattr(ctx, 'plugin_id', '')}:{uuid.uuid4()}"
+                # Performance knob: allow full reload to request light records from message_plane
+                # (omit payload) to reduce IPC and JSON processing cost.
+                # Env: NEKO_BUSLIST_RELOAD_FULL_LIGHT=1
+                try:
+                    light_mode = str(_os.getenv("NEKO_BUSLIST_RELOAD_FULL_LIGHT", "0")).strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    )
+                except Exception:
+                    light_mode = False
                 req = {
                     "v": 1,
                     "op": "bus.replay",
                     "req_id": req_id,
                     "from_plugin": getattr(ctx, "plugin_id", ""),
-                    "args": {"store": str(bus), "plan": plan_dict, "light": False},
+                    "args": {"store": str(bus), "plan": plan_dict, "light": bool(light_mode)},
                 }
                 try:
                     raw = _ormsgpack.packb(req)

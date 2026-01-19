@@ -76,6 +76,25 @@ def _rpc_health_check(endpoint: str, *, timeout_s: float = 1.0) -> bool:
         return False
 
 
+def _resolve_rust_message_plane_bin(configured: str) -> str:
+    # Priority:
+    # 1) Explicit path from settings/env
+    # 2) Binary bundled in wheel (neko-message-plane-bin)
+    # 3) Fallback to PATH
+    cfg = str(configured or "").strip()
+    if cfg and cfg != "neko-message-plane":
+        return cfg
+    try:
+        from neko_message_plane_wheel import get_binary_path
+
+        p = str(get_binary_path() or "").strip()
+        if p:
+            return p
+    except Exception:
+        pass
+    return cfg or "neko-message-plane"
+
+
 class PythonMessagePlaneRunner(MessagePlaneRunner):
     def __init__(self, *, run_mode: str, endpoints: MessagePlaneEndpoints) -> None:
         self._run_mode = str(run_mode)
@@ -234,7 +253,7 @@ class PythonMessagePlaneRunner(MessagePlaneRunner):
 class RustMessagePlaneRunner(MessagePlaneRunner):
     def __init__(self, *, endpoints: MessagePlaneEndpoints, binary_path: Optional[str] = None) -> None:
         self._endpoints = endpoints
-        self._binary_path = binary_path or "neko-message-plane"
+        self._binary_path = _resolve_rust_message_plane_bin(binary_path or "neko-message-plane")
         self._proc: subprocess.Popen | None = None
 
     def start(self) -> MessagePlaneEndpoints:
@@ -263,9 +282,63 @@ class RustMessagePlaneRunner(MessagePlaneRunner):
             logger.warning("message_plane rust process start failed: {}", e)
             return self._endpoints
 
-        _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=3.0)
-        _wait_tcp_ready(str(self._endpoints.ingest), timeout_s=3.0)
-        _wait_tcp_ready(str(self._endpoints.pub), timeout_s=3.0)
+        # Don't block the main event loop (FastAPI lifespan). Do the readiness wait in background.
+        try:
+            time.sleep(0.05)
+        except Exception:
+            pass
+        try:
+            if self._proc is not None and self._proc.poll() is not None:
+                rc = self._proc.returncode
+                logger.warning("message_plane rust process exited early (code={})", rc)
+                return self._endpoints
+        except Exception:
+            pass
+
+        def _bg_wait_ready() -> None:
+            try:
+                # Give the process a short window to bind sockets and accept RPC.
+                deadline = time.time() + 5.0
+                last_err: str | None = None
+                while time.time() < deadline:
+                    try:
+                        # If the process died, stop waiting.
+                        if self._proc is not None and self._proc.poll() is not None:
+                            logger.warning(
+                                "message_plane rust process exited early during readiness wait (code={})",
+                                self._proc.returncode,
+                            )
+                            return
+                    except Exception:
+                        pass
+
+                    if not _wait_tcp_ready(str(self._endpoints.rpc), timeout_s=0.5):
+                        last_err = "rpc not ready"
+                    elif not _wait_tcp_ready(str(self._endpoints.ingest), timeout_s=0.5):
+                        last_err = "ingest not ready"
+                    elif not _wait_tcp_ready(str(self._endpoints.pub), timeout_s=0.5):
+                        last_err = "pub not ready"
+                    else:
+                        ok = self.health_check(timeout_s=0.5)
+                        if ok:
+                            logger.info("message_plane rust ready")
+                            return
+                        last_err = "rpc health_check failed"
+
+                    try:
+                        time.sleep(0.2)
+                    except Exception:
+                        pass
+
+                logger.warning("message_plane rust health_check failed (may still be starting): {}", last_err)
+            except Exception as e:
+                logger.warning("message_plane rust readiness wait failed: {}", e)
+
+        try:
+            t = threading.Thread(target=_bg_wait_ready, daemon=True, name="message-plane-rust-wait")
+            t.start()
+        except Exception:
+            pass
         return self._endpoints
 
     def stop(self) -> None:

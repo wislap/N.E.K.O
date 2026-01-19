@@ -245,6 +245,8 @@ PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS = _get_float_env(
 # - rust: 使用外部 Rust message_plane 可执行文件
 # Env: NEKO_MESSAGE_PLANE_BACKEND, default="python"
 MESSAGE_PLANE_BACKEND = os.getenv("NEKO_MESSAGE_PLANE_BACKEND", "python").strip().lower()
+if MESSAGE_PLANE_BACKEND in ("wheel", "rust-wheel", "rust_wheel"):
+    MESSAGE_PLANE_BACKEND = "rust"
 if MESSAGE_PLANE_BACKEND not in ("python", "rust"):
     MESSAGE_PLANE_BACKEND = "python"
 
