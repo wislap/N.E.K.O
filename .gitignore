@@ -59,11 +59,6 @@ Cargo.lock
 # Ignore embedded Rust subprojects (not part of current PR)
 /rust/neko-message-plane/
 
-# Ignore plugin Rust subprojects (not part of current PR)
-/plugin/rust/neko-message-plane/
-/plugin/rust/neko_message_plane_wheel/
-/plugin/rust/neko_plugin_cli/
-
 # Node/Front-end temp (if any)
 node_modules/
 *.cache/
