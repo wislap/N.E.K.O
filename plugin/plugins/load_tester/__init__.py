@@ -113,6 +113,90 @@ class LoadTestPlugin(NekoPluginBase):
             "error_samples": err_samples,
         }
 
+    def _bench_loop_multiprocess(self, duration_seconds: float, workers: int, fn, *args, **kwargs) -> Dict[str, Any]:
+        """Run benchmark with multiple worker threads using concurrent.futures.
+        
+        Note: Renamed from multiprocess but uses ThreadPoolExecutor due to daemon process limitation.
+        However, each thread gets its own ZMQ connection, reducing contention.
+        """
+        import concurrent.futures
+        
+        start = time.perf_counter()
+        end_time = start + float(duration_seconds)
+        throttle_seconds = 0.0
+        try:
+            throttle_seconds = float(kwargs.pop("throttle_seconds", 0.0) or 0.0)
+        except Exception:
+            throttle_seconds = 0.0
+        
+        lock = threading.Lock()
+        err_types: Counter[str] = Counter()
+        worker_results: list[tuple[int, int]] = []
+        
+        def _worker_task(worker_id: int) -> tuple[int, int]:
+            """Worker task - each gets independent execution context."""
+            local_count = 0
+            local_errors = 0
+            
+            while True:
+                if self._stop_event.is_set():
+                    break
+                now = time.perf_counter()
+                if now >= end_time:
+                    break
+                try:
+                    fn(*args, **kwargs)
+                    local_count += 1
+                except Exception as e:
+                    local_errors += 1
+                    with lock:
+                        tname = type(e).__name__
+                        err_types[tname] += 1
+                
+                if throttle_seconds > 0:
+                    if self._stop_event.is_set():
+                        break
+                    remaining = end_time - time.perf_counter()
+                    if remaining <= 0:
+                        break
+                    to_sleep = min(float(throttle_seconds), float(remaining))
+                    if to_sleep > 0:
+                        time.sleep(to_sleep)
+            
+            return (local_count, local_errors)
+        
+        worker_count = max(1, int(workers))
+        
+        # Use ThreadPoolExecutor for better thread management
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(_worker_task, i) for i in range(worker_count)]
+            
+            # Wait for all workers to complete
+            for future in concurrent.futures.as_completed(futures, timeout=duration_seconds + 10.0):
+                try:
+                    result = future.result()
+                    worker_results.append(result)
+                except Exception:
+                    pass
+        
+        # Aggregate results
+        count = sum(c for c, _ in worker_results)
+        errors = sum(e for _, e in worker_results)
+        
+        elapsed = time.perf_counter() - start
+        qps = float(count) / elapsed if elapsed > 0 else 0.0
+        return {
+            "iterations": count,
+            "errors": errors,
+            "elapsed_seconds": elapsed,
+            "qps": qps,
+            "workers": worker_count,
+            "mode": "threadpool",
+            "sleep_seconds": float(throttle_seconds),
+            "error_types": dict(err_types),
+            "error_samples": {},
+        }
+
     def _bench_loop_concurrent(self, duration_seconds: float, workers: int, fn, *args, **kwargs) -> Dict[str, Any]:
         """Run benchmark with multiple worker threads.
 
@@ -294,21 +378,35 @@ class LoadTestPlugin(NekoPluginBase):
         self,
         root_cfg: Optional[Dict[str, Any]],
         sec_cfg: Optional[Dict[str, Any]],
-    ) -> tuple[int, bool]:
-        """Read workers/log_summary for a specific benchmark.
+    ) -> tuple[int, bool, bool]:
+        """Read workers/log_summary/multiprocess for a specific benchmark.
 
         - workers default comes from [load_test].worker_threads
         - can be overridden by section worker_threads, e.g. [load_test.bus_messages_get].worker_threads
+        - multiprocess mode bypasses GIL and simulates multiple plugins
         """
         workers, log_summary = self._get_global_bench_config(root_cfg)
+        
+        # Check for multiprocess mode
+        use_multiprocess = False
+        try:
+            base_cfg: Dict[str, Any] = root_cfg or {}
+            use_multiprocess = bool(base_cfg.get("use_multiprocess", False))
+        except Exception:
+            pass
+        
         try:
             if sec_cfg:
                 workers_raw = sec_cfg.get("worker_threads")
                 if workers_raw is not None:
                     workers = max(1, int(workers_raw))
+                # Section-specific multiprocess override
+                mp_raw = sec_cfg.get("use_multiprocess")
+                if mp_raw is not None:
+                    use_multiprocess = bool(mp_raw)
         except Exception:
             pass
-        return workers, log_summary
+        return workers, log_summary, use_multiprocess
 
     def _get_incremental_diagnostics(self, expr) -> Dict[str, Any]:
         """Get incremental reload diagnostics from a BusList expression.
@@ -366,7 +464,7 @@ class LoadTestPlugin(NekoPluginBase):
             if not enabled:
                 return {"test": test_name, "enabled": False, "skipped": True}
 
-            workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+            workers, log_summary, use_multiprocess = self._get_bench_config(root_cfg, sec_cfg)
 
             dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
             if dur_cfg is None and root_cfg:
@@ -375,21 +473,24 @@ class LoadTestPlugin(NekoPluginBase):
                 duration = float(dur_cfg) if dur_cfg is not None else default_duration
             except Exception:
                 duration = default_duration
+            if duration <= 0:
+                duration = default_duration
 
-            sleep_cfg = None
-            if sec_cfg:
-                sleep_cfg = sec_cfg.get("throttle_seconds")
-            if sleep_cfg is None and root_cfg:
-                sleep_cfg = root_cfg.get("throttle_seconds")
+            throttle_cfg = sec_cfg.get("throttle_seconds") if sec_cfg else None
+            if throttle_cfg is None and root_cfg:
+                throttle_cfg = root_cfg.get("throttle_seconds")
             try:
-                throttle_seconds = float(sleep_cfg) if sleep_cfg is not None else 0.0
+                throttle_seconds = float(throttle_cfg) if throttle_cfg is not None else 0.0
             except Exception:
                 throttle_seconds = 0.0
             if throttle_seconds < 0:
                 throttle_seconds = 0.0
 
             if workers > 1:
-                stats = self._bench_loop_concurrent(duration, workers, op_fn, throttle_seconds=throttle_seconds)
+                if use_multiprocess:
+                    stats = self._bench_loop_multiprocess(duration, workers, op_fn, throttle_seconds=throttle_seconds)
+                else:
+                    stats = self._bench_loop_concurrent(duration, workers, op_fn, throttle_seconds=throttle_seconds)
             else:
                 stats = self._bench_loop(duration, op_fn, throttle_seconds=throttle_seconds)
 

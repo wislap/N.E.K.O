@@ -23,8 +23,10 @@ class MessagePlaneRpcClient:
             import threading
 
             self._tls = threading.local()
+            self._lock = threading.Lock()  # Protect socket creation
         except Exception:
             self._tls = None
+            self._lock = None
         
         # Connection warmup: establish connection early to reduce first-request latency
         self._warmup()
@@ -36,47 +38,80 @@ class MessagePlaneRpcClient:
                 return sock
         if zmq is None:
             return None
-        ctx = zmq.Context.instance()
-        sock = ctx.socket(zmq.DEALER)
-        ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
-        try:
-            sock.setsockopt(zmq.IDENTITY, ident)
-        except Exception:
-            pass
-        try:
-            sock.setsockopt(zmq.LINGER, 0)
-        except Exception:
-            pass
-        try:
-            # TCP_NODELAY for lower latency
-            sock.setsockopt(getattr(zmq, 'TCP_NODELAY', 1), 1)
-        except Exception:
-            pass
-        try:
-            # Increase buffer sizes for better throughput
-            sock.setsockopt(zmq.RCVBUF, 2*1024*1024)  # 2MB receive buffer
-        except Exception:
-            pass
-        try:
-            sock.setsockopt(zmq.SNDBUF, 2*1024*1024)  # 2MB send buffer
-        except Exception:
-            pass
-        try:
-            # Increase high water mark for better burst performance
-            sock.setsockopt(zmq.RCVHWM, 10000)
-        except Exception:
-            pass
-        try:
-            sock.setsockopt(zmq.SNDHWM, 10000)
-        except Exception:
-            pass
-        sock.connect(self._endpoint)
-        if self._tls is not None:
+        
+        # Protect socket creation with lock to avoid ZMQ assertion failures
+        if self._lock is not None:
+            with self._lock:
+                # Double-check after acquiring lock
+                if self._tls is not None:
+                    sock = getattr(self._tls, "sock", None)
+                    if sock is not None:
+                        return sock
+                
+                # Use thread-local context to avoid context lock contention
+                if self._tls is not None:
+                    ctx = getattr(self._tls, "ctx", None)
+                    if ctx is None:
+                        ctx = zmq.Context()
+                        self._tls.ctx = ctx
+                else:
+                    ctx = zmq.Context.instance()
+                
+                sock = ctx.socket(zmq.DEALER)
+                ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
+                try:
+                    sock.setsockopt(zmq.IDENTITY, ident)
+                except Exception:
+                    pass
+                try:
+                    sock.setsockopt(zmq.LINGER, 0)
+                except Exception:
+                    pass
+                try:
+                    # TCP_NODELAY for lower latency
+                    sock.setsockopt(getattr(zmq, 'TCP_NODELAY', 1), 1)
+                except Exception:
+                    pass
+                try:
+                    # Increase buffer sizes for better throughput
+                    sock.setsockopt(zmq.RCVBUF, 2*1024*1024)  # 2MB receive buffer
+                except Exception:
+                    pass
+                try:
+                    sock.setsockopt(zmq.SNDBUF, 2*1024*1024)  # 2MB send buffer
+                except Exception:
+                    pass
+                try:
+                    # Increase high water mark for better burst performance
+                    sock.setsockopt(zmq.RCVHWM, 10000)
+                except Exception:
+                    pass
+                try:
+                    sock.setsockopt(zmq.SNDHWM, 10000)
+                except Exception:
+                    pass
+                sock.connect(self._endpoint)
+                if self._tls is not None:
+                    try:
+                        self._tls.sock = sock
+                    except Exception:
+                        pass
+                return sock
+        else:
+            # No threading support, use global context
+            ctx = zmq.Context.instance()
+            sock = ctx.socket(zmq.DEALER)
+            ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
             try:
-                self._tls.sock = sock
+                sock.setsockopt(zmq.IDENTITY, ident)
             except Exception:
                 pass
-        return sock
+            try:
+                sock.setsockopt(zmq.LINGER, 0)
+            except Exception:
+                pass
+            sock.connect(self._endpoint)
+            return sock
 
     def _next_req_id(self) -> str:
         if self._tls is not None:
@@ -122,11 +157,13 @@ class MessagePlaneRpcClient:
             if remaining <= 0:
                 return None
             try:
+                # poll() releases GIL during wait - this is key for multi-threading!
                 if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
                     continue
             except Exception:
                 return None
             try:
+                # recv() releases GIL during blocking I/O
                 resp_raw = sock.recv(flags=0)
             except Exception:
                 return None

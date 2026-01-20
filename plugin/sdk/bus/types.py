@@ -1663,11 +1663,22 @@ class BusList(Generic[TRecord]):
                 if not endpoint:
                     return None
 
+                # Use thread-local socket to avoid multi-threading issues
                 sock = None
                 try:
-                    sock = getattr(ctx, "_mp_replay_sock", None)
+                    import threading
+                    tls = getattr(ctx, "_mp_replay_tls", None)
+                    if tls is None:
+                        tls = threading.local()
+                        setattr(ctx, "_mp_replay_tls", tls)
+                    sock = getattr(tls, "sock", None)
                 except Exception:
-                    sock = None
+                    # No threading support, fall back to ctx-level socket
+                    try:
+                        sock = getattr(ctx, "_mp_replay_sock", None)
+                    except Exception:
+                        sock = None
+                
                 if sock is None:
                     zctx = _zmq.Context.instance()
                     sock = zctx.socket(_zmq.DEALER)
@@ -1681,10 +1692,20 @@ class BusList(Generic[TRecord]):
                     except Exception:
                         pass
                     sock.connect(endpoint)
+                    
+                    # Store in thread-local storage if available
                     try:
-                        setattr(ctx, "_mp_replay_sock", sock)
+                        import threading
+                        tls = getattr(ctx, "_mp_replay_tls", None)
+                        if tls is not None:
+                            tls.sock = sock
+                        else:
+                            setattr(ctx, "_mp_replay_sock", sock)
                     except Exception:
-                        pass
+                        try:
+                            setattr(ctx, "_mp_replay_sock", sock)
+                        except Exception:
+                            pass
 
                 req_id = f"replay:{getattr(ctx, 'plugin_id', '')}:{uuid.uuid4()}"
                 # Performance knob: allow full reload to request light records from message_plane
