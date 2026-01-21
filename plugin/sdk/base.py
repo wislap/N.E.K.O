@@ -10,6 +10,8 @@ from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .config import PluginConfig
 from .plugins import Plugins
 from .version import SDK_VERSION
+from .freeze import FreezableCheckpoint
+from .store import PluginStore
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
     NEKO_PLUGIN_TAG,
@@ -38,13 +40,43 @@ class PluginMeta:
 
 
 class NekoPluginBase:
-    """插件都继承这个基类."""
+    """插件都继承这个基类.
+    
+    Attributes:
+        __freezable__: 声明需要在冻结时保存的属性名列表。
+            示例: __freezable__ = ["counter", "cache", "user_prefs"]
+        __freeze_mode__: 冻结模式配置（默认 "off"，需在 toml 中启用）。
+            - "auto": 所有 entry 执行后自动 checkpoint
+            - "manual": 需要在 @plugin_entry(checkpoint=True) 显式启用
+            - "off": 完全禁用冻结功能（默认）
+            
+            优先级：toml [plugin_checkpoint].freeze_mode > 类属性 > 默认值
+    """
+    
+    # 子类可以覆盖这个列表，声明需要冻结保存的属性
+    __freezable__: List[str] = []
+    # 子类可以覆盖这个值，控制冻结模式（默认 off，需在 toml 中启用）
+    __freeze_mode__: str = "off"  # "auto" | "manual" | "off"
     
     def __init__(self, ctx: "PluginContext"):
         self.ctx: "PluginContext" = ctx
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
         self.config = PluginConfig(ctx)
         self.plugins = Plugins(ctx)
+        
+        # 初始化冻结 checkpoint 管理器和持久化存储
+        config_path = getattr(ctx, "config_path", None)
+        plugin_dir = config_path.parent if config_path else Path.cwd()
+        self._freeze_checkpoint = FreezableCheckpoint(
+            plugin_id=self._plugin_id,
+            plugin_dir=plugin_dir,
+            logger=getattr(ctx, "logger", None),
+        )
+        self.store = PluginStore(
+            plugin_id=self._plugin_id,
+            plugin_dir=plugin_dir,
+            logger=getattr(ctx, "logger", None),
+        )
 
     def get_input_schema(self) -> Dict[str, Any]:
         """默认从类属性 input_schema 取."""

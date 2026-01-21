@@ -17,7 +17,7 @@ from queue import Empty
 from loguru import logger as loguru_logger
 
 from plugin.sdk.events import EVENT_META_ATTR, EventHandler
-from plugin.sdk.decorators import WORKER_MODE_ATTR
+from plugin.sdk.decorators import WORKER_MODE_ATTR, CHECKPOINT_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.runtime.communication import PluginCommunicationResourceManager
@@ -234,6 +234,41 @@ def _plugin_process_runner(
             pass
         instance = cls(ctx)
 
+        # 获取 freezable 属性列表和冻结模式（用于 checkpoint）
+        freezable_keys = getattr(instance, "__freezable__", []) or []
+        # 优先级：effective config [plugin_checkpoint].freeze_mode > 类属性 __freeze_mode__ > 默认 "off"
+        freeze_mode = getattr(instance, "__freeze_mode__", "off")
+        # 从 effective config 读取 freeze_mode（包含 profile 覆写）
+        try:
+            effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
+            checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
+            if isinstance(checkpoint_cfg, dict):
+                cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
+                if cfg_freeze_mode in ("auto", "manual", "off"):
+                    freeze_mode = cfg_freeze_mode
+                    logger.debug("[Plugin Process] freeze_mode from effective config: {}", freeze_mode)
+        except Exception as e:
+            logger.debug("[Plugin Process] Could not read plugin_checkpoint from effective config: {}", e)
+        if freezable_keys:
+            logger.info("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, freeze_mode)
+            # 如果有冻结状态，尝试恢复
+            freeze_checkpoint = getattr(instance, "_freeze_checkpoint", None)
+            if freeze_checkpoint and freeze_checkpoint.has_frozen_state():
+                logger.info("[Plugin Process] Found frozen state, restoring...")
+                freeze_checkpoint.load_frozen_state(instance)
+                freeze_checkpoint.clear_frozen_state()  # 恢复后清除
+        
+        def _should_checkpoint(method) -> bool:
+            """判断是否应该执行 checkpoint"""
+            if not freezable_keys or freeze_mode == "off":
+                return False
+            # 检查方法级别的 checkpoint 配置
+            method_checkpoint = getattr(method, CHECKPOINT_ATTR, None)
+            if method_checkpoint is not None:
+                return method_checkpoint  # 方法显式指定
+            # 遵循类级别配置
+            return freeze_mode == "auto"
+
         entry_map: Dict[str, Any] = {}
         events_by_type: Dict[str, Dict[str, Any]] = {}
 
@@ -378,6 +413,45 @@ def _plugin_process_runner(
 
             if msg["type"] == "STOP":
                 break
+
+            if msg["type"] == "FREEZE":
+                # 冻结插件：保存状态到文件，然后停止进程
+                req_id = msg.get("req_id", "unknown")
+                logger.info("[Plugin Process] Received FREEZE command, req_id={}", req_id)
+                
+                ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+                
+                try:
+                    # 触发 freeze lifecycle 事件（如果存在）
+                    freeze_fn = lifecycle_events.get("freeze")
+                    if freeze_fn:
+                        logger.info("[Plugin Process] Executing freeze lifecycle...")
+                        with ctx._handler_scope("lifecycle.freeze"):
+                            if asyncio.iscoroutinefunction(freeze_fn):
+                                asyncio.run(freeze_fn())
+                            else:
+                                freeze_fn()
+                    
+                    # 保存冻结状态
+                    if freezable_keys:
+                        fc = getattr(instance, "_freeze_checkpoint", None)
+                        if fc:
+                            fc.save_frozen_state(instance, freezable_keys)
+                            logger.info("[Plugin Process] Frozen state saved")
+                    
+                    ret_payload["success"] = True
+                    ret_payload["data"] = {"frozen": True, "freezable_keys": freezable_keys}
+                except Exception as e:
+                    logger.exception("[Plugin Process] Freeze failed")
+                    ret_payload["error"] = str(e)
+                
+                res_queue.put(ret_payload)
+                
+                # 冻结后停止进程
+                if ret_payload["success"]:
+                    logger.info("[Plugin Process] Freeze successful, stopping process...")
+                    break
+                continue
 
             if msg["type"] == "BUS_CHANGE":
                 try:
@@ -586,6 +660,14 @@ def _plugin_process_runner(
                                         result = worker_executor.wait_for_result(future, timeout)
                                     ret_payload["success"] = True
                                     ret_payload["data"] = result
+                                    # Checkpoint after successful execution (if enabled)
+                                    if _should_checkpoint(method):
+                                        try:
+                                            fc = getattr(instance, "_freeze_checkpoint", None)
+                                            if fc:
+                                                fc.checkpoint(instance, freezable_keys)
+                                        except Exception:
+                                            pass
                                 except TimeoutError as e:
                                     logger.error("Worker task {} timed out", entry_id)
                                     ret_payload["error"] = str(e)
@@ -624,6 +706,14 @@ def _plugin_process_runner(
                             try:
                                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                     result_container["result"] = asyncio.run(method(**args))
+                                # Checkpoint after successful execution (if enabled)
+                                if _should_checkpoint(method):
+                                    try:
+                                        fc = getattr(instance, "_freeze_checkpoint", None)
+                                        if fc:
+                                            fc.checkpoint(instance, freezable_keys)
+                                    except Exception:
+                                        pass
                             except Exception as e:
                                 result_container["exception"] = e
                             finally:
@@ -680,6 +770,15 @@ def _plugin_process_runner(
                     
                     ret_payload["success"] = True
                     ret_payload["data"] = res
+                    
+                    # Checkpoint after successful sync execution (if enabled)
+                    if _should_checkpoint(method):
+                        try:
+                            fc = getattr(instance, "_freeze_checkpoint", None)
+                            if fc:
+                                fc.checkpoint(instance, freezable_keys)
+                        except Exception:
+                            pass
                     
                 except PluginError as e:
                     # 插件系统已知异常，直接使用
@@ -1030,6 +1129,30 @@ class PluginHost:
                 ),
             },
         )
+    
+    async def freeze(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
+        """
+        冻结插件：保存状态到文件，然后停止进程
+        
+        Args:
+            timeout: 超时时间
+        
+        Returns:
+            冻结结果，包含 frozen 状态和 freezable_keys
+        """
+        self.logger.info(f"[PluginHost] Freezing plugin {self.plugin_id}")
+        
+        # 发送 FREEZE 命令并等待结果
+        result = await self.comm_manager.send_freeze_command(timeout=timeout)
+        
+        if result.get("success"):
+            # 等待进程结束
+            await asyncio.to_thread(self._shutdown_process, timeout)
+            self.logger.info(f"[PluginHost] Plugin {self.plugin_id} frozen successfully")
+        else:
+            self.logger.error(f"[PluginHost] Plugin {self.plugin_id} freeze failed: {result.get('error')}")
+        
+        return result
     
     def _shutdown_process(self, timeout: float = PROCESS_SHUTDOWN_TIMEOUT) -> bool:
         """

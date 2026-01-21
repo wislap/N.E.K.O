@@ -328,6 +328,31 @@ class PluginCommunicationResourceManager:
         # 发送命令并等待结果
         return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"custom event {event_type}.{event_id}")
 
+    async def send_freeze_command(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
+        """
+        发送冻结命令到插件进程
+        
+        Args:
+            timeout: 超时时间(秒)
+        
+        Returns:
+            冻结结果字典，包含 success, data, error
+        """
+        req_id = str(uuid.uuid4())
+        
+        self.logger.info(
+            "[CommManager] Sending FREEZE command: plugin_id=%s, req_id=%s",
+            self.plugin_id,
+            req_id,
+        )
+        
+        freeze_msg = {
+            "type": "FREEZE",
+            "req_id": req_id,
+        }
+        
+        return await self._send_command_and_wait(req_id, freeze_msg, timeout, "freeze")
+
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         """Push a bus change notification to plugin process.
 

@@ -19,6 +19,10 @@ class WorkerConfig:
     priority: int = 0
 
 
+# Checkpoint 配置的属性名
+CHECKPOINT_ATTR = "_neko_checkpoint"
+
+
 def neko_plugin(cls):
     """
     简单版插件装饰器：
@@ -39,12 +43,14 @@ def on_event(
     input_schema: dict | None = None,
     kind: str = "action",
     auto_start: bool = False,
+    checkpoint: bool | None = None,
     extra: dict | None = None,
 ) -> Callable:
     """
     通用事件装饰器。
     - event_type: "plugin_entry" / "lifecycle" / "message" / "timer" ...
     - id: 在"本插件内部"的事件 id（不带插件 id）
+    - checkpoint: 执行后是否 checkpoint（None=遵循 __freeze_mode__）
     """
     def decorator(fn: Callable):
         meta = EventMeta(
@@ -58,6 +64,9 @@ def on_event(
             extra=extra or {},
         )
         setattr(fn, EVENT_META_ATTR, meta)
+        # 设置 checkpoint 配置（None 表示遵循类级别 __freeze_mode__）
+        if checkpoint is not None:
+            setattr(fn, CHECKPOINT_ATTR, checkpoint)
         return fn
     return decorator
 
@@ -114,11 +123,18 @@ def plugin_entry(
     input_schema: dict | None = None,
     kind: str = "action",
     auto_start: bool = False,
+    checkpoint: bool | None = None,
     extra: dict | None = None,
 ) -> Callable:
     """
     语法糖：专门用来声明"对外可调用入口"的装饰器。
     本质上是 on_event(event_type="plugin_entry").
+    
+    Args:
+        checkpoint: 执行后是否 checkpoint 保存状态
+            - None: 遵循类级别 __freeze_mode__ 配置
+            - True: 强制启用 checkpoint
+            - False: 强制禁用 checkpoint
     """
     return on_event(
         event_type="plugin_entry",
@@ -128,6 +144,7 @@ def plugin_entry(
         input_schema=input_schema,
         kind=kind,
         auto_start=auto_start,
+        checkpoint=checkpoint,
         extra=extra,
     )
 

@@ -482,3 +482,102 @@ async def reload_plugin(plugin_id: str) -> Dict[str, Any]:
     })
     return result
 
+
+async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
+    """
+    冻结插件：保存状态并停止进程
+    
+    冻结后插件进程会停止，但状态会被保存到文件。
+    下次启动时会自动恢复状态。
+    
+    Args:
+        plugin_id: 插件ID
+    
+    Returns:
+        操作结果
+    """
+    # 检查插件是否存在
+    host = state.plugin_hosts.get(plugin_id)
+    if not host:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plugin '{plugin_id}' is not running"
+        )
+    
+    try:
+        _enqueue_lifecycle({
+            "type": "plugin_freeze_requested",
+            "plugin_id": plugin_id,
+            "time": now_iso(),
+        })
+        
+        # 调用 host.freeze() 保存状态并停止进程
+        result = await host.freeze(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+        
+        if result.get("success"):
+            # 从状态中移除
+            with state.plugin_hosts_lock:
+                if plugin_id in state.plugin_hosts:
+                    del state.plugin_hosts[plugin_id]
+            
+            logger.info(f"Plugin {plugin_id} frozen successfully")
+            _enqueue_lifecycle({
+                "type": "plugin_frozen",
+                "plugin_id": plugin_id,
+                "time": now_iso(),
+                "data": result.get("data"),
+            })
+            return {
+                "success": True,
+                "plugin_id": plugin_id,
+                "message": "Plugin frozen successfully",
+                "freezable_keys": result.get("data", {}).get("freezable_keys", []),
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to freeze plugin: {result.get('error')}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to freeze plugin {plugin_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to freeze plugin: {str(e)}"
+        ) from e
+
+
+async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
+    """
+    解冻插件：启动进程并恢复状态
+    
+    如果插件有冻结状态，启动时会自动恢复。
+    这个函数本质上就是 start_plugin，但语义上表示从冻结状态恢复。
+    
+    Args:
+        plugin_id: 插件ID
+    
+    Returns:
+        操作结果
+    """
+    _enqueue_lifecycle({
+        "type": "plugin_unfreeze_requested",
+        "plugin_id": plugin_id,
+        "time": now_iso(),
+    })
+    
+    # 调用 start_plugin，它会自动检测并恢复冻结状态
+    result = await start_plugin(plugin_id)
+    
+    if result.get("success"):
+        _enqueue_lifecycle({
+            "type": "plugin_unfrozen",
+            "plugin_id": plugin_id,
+            "time": now_iso(),
+        })
+        result["message"] = "Plugin unfrozen successfully"
+    
+    return result
+

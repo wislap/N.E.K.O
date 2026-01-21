@@ -354,6 +354,23 @@ PLUGIN_LOG_BACKUP_COUNT = 10
 PLUGIN_LOG_MAX_FILES = 20
 
 
+# ========== Checkpoint 持久化配置 ==========
+
+# Checkpoint 持久化模式
+# - "memory": 仅内存缓存，进程退出时丢失（默认）
+# - "interval": 每隔 N 次 checkpoint 后写一次磁盘
+# - "always": 每次 checkpoint 都写磁盘（性能较差）
+# Env: NEKO_CHECKPOINT_PERSIST_MODE, default="memory"
+CHECKPOINT_PERSIST_MODE = os.getenv("NEKO_CHECKPOINT_PERSIST_MODE", "memory").strip().lower()
+if CHECKPOINT_PERSIST_MODE not in ("memory", "interval", "always"):
+    CHECKPOINT_PERSIST_MODE = "memory"
+
+# Checkpoint 持久化间隔（当 CHECKPOINT_PERSIST_MODE="interval" 时生效）
+# 每 N 次 checkpoint 后写一次磁盘
+# Env: NEKO_CHECKPOINT_PERSIST_INTERVAL, default=10
+CHECKPOINT_PERSIST_INTERVAL = _get_int_env("NEKO_CHECKPOINT_PERSIST_INTERVAL", 10)
+
+
 # ========== 插件加载行为配置 ==========
 
 # 是否启用插件依赖检查
@@ -549,6 +566,10 @@ __all__ = [
     "PLUGIN_LOG_MAX_BYTES",
     "PLUGIN_LOG_BACKUP_COUNT",
     "PLUGIN_LOG_MAX_FILES",
+    
+    # Checkpoint 配置
+    "CHECKPOINT_PERSIST_MODE",
+    "CHECKPOINT_PERSIST_INTERVAL",
     
     # 验证函数
     "validate_config",
