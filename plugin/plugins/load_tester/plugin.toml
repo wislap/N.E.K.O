@@ -27,6 +27,8 @@ worker_threads = 4
 use_multiprocess = true
 timeout = 1
 sleep_seconds = 2
+# Set to true to auto-run all benchmarks on plugin startup (default: false)
+auto_run_on_startup = false
 [load_test.push_messages]
 enable = true
 

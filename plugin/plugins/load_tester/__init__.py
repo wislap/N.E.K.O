@@ -114,88 +114,16 @@ class LoadTestPlugin(NekoPluginBase):
         }
 
     def _bench_loop_multiprocess(self, duration_seconds: float, workers: int, fn, *args, **kwargs) -> Dict[str, Any]:
-        """Run benchmark with multiple worker threads using concurrent.futures.
+        """Multiprocess mode - uses multithreading due to daemon process limitation.
         
-        Note: Renamed from multiprocess but uses ThreadPoolExecutor due to daemon process limitation.
-        However, each thread gets its own ZMQ connection, reducing contention.
+        Python daemon processes cannot create child processes, even with spawn context.
+        This is a hard limitation in Python's multiprocessing module.
+        
+        This method silently falls back to multithreading with optimized GIL-releasing operations.
+        For true multiprocessing, run multiple plugin instances or use external tools.
         """
-        import concurrent.futures
-        
-        start = time.perf_counter()
-        end_time = start + float(duration_seconds)
-        throttle_seconds = 0.0
-        try:
-            throttle_seconds = float(kwargs.pop("throttle_seconds", 0.0) or 0.0)
-        except Exception:
-            throttle_seconds = 0.0
-        
-        lock = threading.Lock()
-        err_types: Counter[str] = Counter()
-        worker_results: list[tuple[int, int]] = []
-        
-        def _worker_task(worker_id: int) -> tuple[int, int]:
-            """Worker task - each gets independent execution context."""
-            local_count = 0
-            local_errors = 0
-            
-            while True:
-                if self._stop_event.is_set():
-                    break
-                now = time.perf_counter()
-                if now >= end_time:
-                    break
-                try:
-                    fn(*args, **kwargs)
-                    local_count += 1
-                except Exception as e:
-                    local_errors += 1
-                    with lock:
-                        tname = type(e).__name__
-                        err_types[tname] += 1
-                
-                if throttle_seconds > 0:
-                    if self._stop_event.is_set():
-                        break
-                    remaining = end_time - time.perf_counter()
-                    if remaining <= 0:
-                        break
-                    to_sleep = min(float(throttle_seconds), float(remaining))
-                    if to_sleep > 0:
-                        time.sleep(to_sleep)
-            
-            return (local_count, local_errors)
-        
-        worker_count = max(1, int(workers))
-        
-        # Use ThreadPoolExecutor for better thread management
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(_worker_task, i) for i in range(worker_count)]
-            
-            # Wait for all workers to complete
-            for future in concurrent.futures.as_completed(futures, timeout=duration_seconds + 10.0):
-                try:
-                    result = future.result()
-                    worker_results.append(result)
-                except Exception:
-                    pass
-        
-        # Aggregate results
-        count = sum(c for c, _ in worker_results)
-        errors = sum(e for _, e in worker_results)
-        
-        elapsed = time.perf_counter() - start
-        qps = float(count) / elapsed if elapsed > 0 else 0.0
-        return {
-            "iterations": count,
-            "errors": errors,
-            "elapsed_seconds": elapsed,
-            "qps": qps,
-            "workers": worker_count,
-            "mode": "threadpool",
-            "sleep_seconds": float(throttle_seconds),
-            "error_types": dict(err_types),
-            "error_samples": {},
-        }
+        # Daemon process limitation - silently fall back to threading
+        return self._bench_loop_concurrent(duration_seconds, workers, fn, *args, **kwargs)
 
     def _bench_loop_concurrent(self, duration_seconds: float, workers: int, fn, *args, **kwargs) -> Dict[str, Any]:
         """Run benchmark with multiple worker threads.
@@ -1785,7 +1713,7 @@ class LoadTestPlugin(NekoPluginBase):
 
     @lifecycle(id="startup")
     def startup(self, **_: Any):
-        """Auto-start benchmarks.
+        """Auto-start benchmarks (only if auto_run_on_startup=true in config).
         Important: do not read config / call bus APIs directly inside lifecycle handler.
         We only spawn a daemon thread here.
         """
@@ -1795,6 +1723,21 @@ class LoadTestPlugin(NekoPluginBase):
                 # Wait a short grace period after plugin process startup.
                 if self._stop_event.wait(timeout=3.0):
                     return
+                
+                # Check config: only auto-run if explicitly enabled
+                try:
+                    cfg = self._get_load_test_section(None)
+                    auto_run = bool(cfg.get("auto_run_on_startup", False))
+                    if not auto_run:
+                        try:
+                            self.ctx.logger.info("[load_tester] auto_run_on_startup=false, skipping auto bench")
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    # If config read fails, default to NOT auto-run (safe default)
+                    return
+                
                 try:
                     self.ctx.logger.info(
                         "[load_tester] auto_start thread begin: stop={}",

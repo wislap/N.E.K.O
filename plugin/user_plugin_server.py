@@ -310,15 +310,19 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
     - GET /plugin/status?plugin_id=xxx  -> 指定插件状态
     """
     try:
+        loop = asyncio.get_running_loop()
         if plugin_id:
-            result = status_manager.get_plugin_status(plugin_id)
+            # status_manager.get_plugin_status 可能有锁竞争，放到线程池执行
+            result = await loop.run_in_executor(None, status_manager.get_plugin_status, plugin_id)
             # 兼容字段：部分调用方可能依赖 time 字段
             if isinstance(result, dict) and "time" not in result:
                 result["time"] = now_iso()
             return result
         else:
+            # status_manager.get_plugin_status 可能有锁竞争，放到线程池执行
+            plugins_status = await loop.run_in_executor(None, status_manager.get_plugin_status)
             return {
-                "plugins": status_manager.get_plugin_status(),
+                "plugins": plugins_status,
                 "time": now_iso(),
             }
     except HTTPException:
@@ -344,7 +348,9 @@ async def list_plugins():
     }
     """
     try:
-        plugins = build_plugin_list()
+        # build_plugin_list 可能有锁竞争，放到线程池执行
+        loop = asyncio.get_running_loop()
+        plugins = await loop.run_in_executor(None, build_plugin_list)
         
         if plugins:
             return {"plugins": plugins, "message": ""}

@@ -44,6 +44,10 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     Returns:
         操作结果
     """
+    import time
+    _start_time = time.perf_counter()
+    logger.info("[start_plugin] BEGIN: plugin_id={}", plugin_id)
+    
     # 检查插件是否已运行
     if plugin_id in state.plugin_hosts:
         host = state.plugin_hosts[plugin_id]
@@ -79,8 +83,14 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 detail="TOML library not available. Please install 'tomli' package."
             ) from None
     
-    with open(config_path, 'rb') as f:
-        conf = tomllib.load(f)
+    # 文件读取是同步 I/O，放到线程池执行
+    def _read_toml():
+        with open(config_path, 'rb') as f:
+            return tomllib.load(f)
+    
+    loop = asyncio.get_running_loop()
+    conf = await loop.run_in_executor(None, _read_toml)
+    logger.info("[start_plugin] TOML loaded: {:.3f}s", time.perf_counter() - _start_time)
 
     # Apply user profile overlay (including [plugin_runtime]) so manual start
     # respects the same runtime gating rules as startup load.
@@ -88,10 +98,14 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         from plugin.server.config_service import _apply_user_config_profiles
 
         if isinstance(conf, dict):
-            conf = _apply_user_config_profiles(
-                plugin_id=str(plugin_id),
-                base_config=conf,
-                config_path=config_path,
+            # _apply_user_config_profiles 可能有文件 I/O，放到线程池执行
+            conf = await loop.run_in_executor(
+                None,
+                lambda: _apply_user_config_profiles(
+                    plugin_id=str(plugin_id),
+                    base_config=conf,
+                    config_path=config_path,
+                )
             )
     except Exception:
         pass
@@ -158,14 +172,21 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             "plugin_id": plugin_id,
             "time": now_iso(),
         })
-        host = PluginProcessHost(
-            plugin_id=plugin_id,
-            entry_point=entry,
-            config_path=config_path
+        # PluginProcessHost.__init__ 会同步创建进程，放到线程池执行避免阻塞事件循环
+        logger.info("[start_plugin] Creating process host: {:.3f}s", time.perf_counter() - _start_time)
+        host = await loop.run_in_executor(
+            None,
+            lambda: PluginProcessHost(
+                plugin_id=plugin_id,
+                entry_point=entry,
+                config_path=config_path
+            )
         )
+        logger.info("[start_plugin] Process host created: {:.3f}s", time.perf_counter() - _start_time)
         
         # 启动通信资源
         await host.start(message_target_queue=state.message_queue)
+        logger.info("[start_plugin] Communication started: {:.3f}s", time.perf_counter() - _start_time)
         
         # 注册到状态
         with state.plugin_hosts_lock:
@@ -222,7 +243,11 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         # 扫描元数据
         module_path, class_name = entry.split(":", 1)
         try:
-            mod = importlib.import_module(module_path)
+            # importlib.import_module 是同步阻塞操作，必须放到线程池执行
+            logger.info("[start_plugin] Importing module: {:.3f}s", time.perf_counter() - _start_time)
+            loop = asyncio.get_running_loop()
+            mod = await loop.run_in_executor(None, importlib.import_module, module_path)
+            logger.info("[start_plugin] Module imported: {:.3f}s", time.perf_counter() - _start_time)
             cls = getattr(mod, class_name)
             scan_static_metadata(plugin_id, cls, conf, pdata)
             
@@ -335,7 +360,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 logger.warning("Failed to cleanup plugin {} after initialization failure", plugin_id)
             raise
         
-        logger.info(f"Plugin {plugin_id} started successfully")
+        logger.info("[start_plugin] DONE: plugin_id={}, total={:.3f}s", plugin_id, time.perf_counter() - _start_time)
         _enqueue_lifecycle({
             "type": "plugin_started",
             "plugin_id": plugin_id,
