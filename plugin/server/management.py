@@ -34,19 +34,20 @@ def _get_plugin_config_path(plugin_id: str) -> Optional[Path]:
     return None
 
 
-async def start_plugin(plugin_id: str) -> Dict[str, Any]:
+async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str, Any]:
     """
     启动插件
     
     Args:
         plugin_id: 插件ID
+        restore_state: 是否恢复保存的状态（用于 unfreeze 场景）
     
     Returns:
         操作结果
     """
     import time
     _start_time = time.perf_counter()
-    logger.info("[start_plugin] BEGIN: plugin_id={}", plugin_id)
+    logger.info("[start_plugin] BEGIN: plugin_id={}, restore_state={}", plugin_id, restore_state)
     
     # 检查插件是否已运行
     if plugin_id in state.plugin_hosts:
@@ -62,6 +63,13 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 "plugin_id": plugin_id,
                 "message": "Plugin is already running"
             }
+    
+    # 检查插件是否处于冻结状态
+    if state.is_plugin_frozen(plugin_id) and not restore_state:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Plugin '{plugin_id}' is frozen. Use unfreeze_plugin to restore it."
+        )
     
     # 获取配置路径
     config_path = _get_plugin_config_path(plugin_id)
@@ -188,59 +196,19 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         await host.start(message_target_queue=state.message_queue)
         logger.info("[start_plugin] Communication started: {:.3f}s", time.perf_counter() - _start_time)
         
-        # 注册到状态
-        with state.plugin_hosts_lock:
-            # 注意：这里不要在持有 plugin_hosts_lock 时调用 _resolve_plugin_id_conflict。
-            # _resolve_plugin_id_conflict 内部也会尝试获取 plugin_hosts_lock，threading.Lock 不是可重入锁，
-            # 会导致自锁死，从而让整个 FastAPI 事件循环看起来“卡死”。
-            if plugin_id in state.plugin_hosts:
-                existing_host = state.plugin_hosts.get(plugin_id)
-                if existing_host is not None and existing_host is not host:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Plugin '{plugin_id}' is already registered in plugin_hosts"
-                    )
-            
-            # 检查进程是否还在运行
-            if hasattr(host, 'process') and host.process:
-                if not host.process.is_alive():
-                    logger.error(
-                        "Plugin {} process died immediately after startup (exitcode: {})",
-                        plugin_id, host.process.exitcode
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Plugin '{plugin_id}' process died immediately after startup (exitcode: {host.process.exitcode})"
-                    )
-                logger.info(
-                    "Plugin {} registered in plugin_hosts (pid: {}, alive: {})",
-                    plugin_id, host.process.pid, host.process.is_alive()
-                )
-            else:
-                logger.warning("Plugin {} host has no process object", plugin_id)
-            
-            state.plugin_hosts[plugin_id] = host
-            logger.info(
-                "Plugin {} successfully registered in plugin_hosts (pid: {}). Total running plugins: {}",
-                plugin_id,
-                host.process.pid if hasattr(host, 'process') and host.process else 'N/A',
-                len(state.plugin_hosts)
-            )
-        
-        # 验证注册是否成功
-        with state.plugin_hosts_lock:
-            if plugin_id not in state.plugin_hosts:
+        # 检查进程是否还在运行（在获取锁之前）
+        if hasattr(host, 'process') and host.process:
+            if not host.process.is_alive():
                 logger.error(
-                    "Plugin {} was not found in plugin_hosts after registration! This should not happen.",
-                    plugin_id
+                    "Plugin {} process died immediately after startup (exitcode: {})",
+                    plugin_id, host.process.exitcode
                 )
-            else:
-                logger.debug(
-                    "Plugin {} confirmed in plugin_hosts after registration",
-                    plugin_id
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Plugin '{plugin_id}' process died immediately after startup (exitcode: {host.process.exitcode})"
                 )
         
-        # 扫描元数据
+        # 扫描元数据（在注册之前，避免在持有锁时导入模块）
         module_path, class_name = entry.split(":", 1)
         try:
             # importlib.import_module 是同步阻塞操作，必须放到线程池执行
@@ -249,7 +217,11 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             mod = await loop.run_in_executor(None, importlib.import_module, module_path)
             logger.info("[start_plugin] Module imported: {:.3f}s", time.perf_counter() - _start_time)
             cls = getattr(mod, class_name)
-            scan_static_metadata(plugin_id, cls, conf, pdata)
+            
+            # scan_static_metadata 使用 inspect.getmembers，可能较慢，放到线程池执行
+            logger.info("[start_plugin] Scanning metadata: {:.3f}s", time.perf_counter() - _start_time)
+            await loop.run_in_executor(None, scan_static_metadata, plugin_id, cls, conf, pdata)
+            logger.info("[start_plugin] Metadata scanned: {:.3f}s", time.perf_counter() - _start_time)
             
             # 读取作者信息
             author_data = pdata.get("author")
@@ -328,25 +300,35 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                     detail=f"Plugin '{plugin_id}' is already registered (duplicate detected)"
                 )
             
-            # 如果 ID 被进一步重命名（双重冲突），需要更新 plugin_hosts 中的键
+            # 如果 ID 被进一步重命名，更新 plugin_id
             if resolved_id != plugin_id:
                 logger.warning(
-                    "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
+                    "Plugin ID changed during registration from '{}' to '{}', will use new ID",
                     plugin_id, resolved_id
                 )
-                # 更新 plugin_hosts 中的键
-                with state.plugin_hosts_lock:
-                    if plugin_id in state.plugin_hosts:
-                        host = state.plugin_hosts.pop(plugin_id)
-                        state.plugin_hosts[resolved_id] = host
-                        # 更新 host 的 plugin_id（如果可能）
-                        if hasattr(host, 'plugin_id'):
-                            host.plugin_id = resolved_id
-                        logger.info(
-                            "Plugin host moved from '{}' to '{}' in plugin_hosts",
-                            plugin_id, resolved_id
-                        )
+                # 更新 host 的 plugin_id（如果可能）
+                if hasattr(host, 'plugin_id'):
+                    host.plugin_id = resolved_id
                 plugin_id = resolved_id
+            
+            # 现在可以安全地注册到 plugin_hosts（register_plugin 已完成，不会再获取锁）
+            with state.plugin_hosts_lock:
+                # 再次检查是否有冲突
+                if plugin_id in state.plugin_hosts:
+                    existing_host = state.plugin_hosts.get(plugin_id)
+                    if existing_host is not None and existing_host is not host:
+                        logger.warning(
+                            "Plugin {} already exists in plugin_hosts, will replace",
+                            plugin_id
+                        )
+                
+                state.plugin_hosts[plugin_id] = host
+                logger.info(
+                    "Plugin {} successfully registered in plugin_hosts (pid: {}). Total running plugins: {}",
+                    plugin_id,
+                    host.process.pid if hasattr(host, 'process') and host.process else 'N/A',
+                    len(state.plugin_hosts)
+                )
         except Exception as e:
             logger.exception("Failed to initialize plugin {} after process start", plugin_id)
             try:
@@ -487,8 +469,8 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
     """
     冻结插件：保存状态并停止进程
     
-    冻结后插件进程会停止，但状态会被保存到文件。
-    下次启动时会自动恢复状态。
+    冻结后插件进程会停止，但状态会被保存。
+    只能通过 unfreeze_plugin 恢复冻结的插件。
     
     Args:
         plugin_id: 插件ID
@@ -499,6 +481,12 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
     # 检查插件是否存在
     host = state.plugin_hosts.get(plugin_id)
     if not host:
+        # 检查是否已经冻结
+        if state.is_plugin_frozen(plugin_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Plugin '{plugin_id}' is already frozen"
+            )
         raise HTTPException(
             status_code=404,
             detail=f"Plugin '{plugin_id}' is not running"
@@ -515,10 +503,13 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
         result = await host.freeze(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
         
         if result.get("success"):
-            # 从状态中移除
+            # 从运行状态中移除
             with state.plugin_hosts_lock:
                 if plugin_id in state.plugin_hosts:
                     del state.plugin_hosts[plugin_id]
+            
+            # 标记为冻结状态
+            state.mark_plugin_frozen(plugin_id)
             
             logger.info(f"Plugin {plugin_id} frozen successfully")
             _enqueue_lifecycle({
@@ -553,15 +544,30 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     """
     解冻插件：启动进程并恢复状态
     
-    如果插件有冻结状态，启动时会自动恢复。
-    这个函数本质上就是 start_plugin，但语义上表示从冻结状态恢复。
+    只能用于已冻结的插件。如果插件未冻结，请使用 start_plugin。
     
     Args:
         plugin_id: 插件ID
     
     Returns:
         操作结果
+    
+    Raises:
+        HTTPException: 如果插件未冻结或已在运行
     """
+    # 检查插件是否处于冻结状态
+    if not state.is_plugin_frozen(plugin_id):
+        # 检查是否已在运行
+        if plugin_id in state.plugin_hosts:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Plugin '{plugin_id}' is already running. Use stop_plugin first if you want to restart."
+            )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plugin '{plugin_id}' is not frozen. Use start_plugin for normal startup."
+        )
+    
     _enqueue_lifecycle({
         "type": "plugin_unfreeze_requested",
         "plugin_id": plugin_id,
@@ -569,15 +575,19 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     })
     
     # 调用 start_plugin，它会自动检测并恢复冻结状态
-    result = await start_plugin(plugin_id)
+    result = await start_plugin(plugin_id, restore_state=True)
     
     if result.get("success"):
+        # 取消冻结状态标记
+        state.unmark_plugin_frozen(plugin_id)
+        
         _enqueue_lifecycle({
             "type": "plugin_unfrozen",
             "plugin_id": plugin_id,
             "time": now_iso(),
         })
         result["message"] = "Plugin unfrozen successfully"
+        result["restored_from_frozen"] = True
     
     return result
 

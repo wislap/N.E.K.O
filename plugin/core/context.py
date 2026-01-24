@@ -106,6 +106,7 @@ class PluginContext:
     _push_seq: int = 0
     _push_lock: Optional[Any] = None
     _push_batcher: Optional[Any] = None
+    _restored_from_freeze: bool = False  # 标记是否从冻结状态恢复
 
     @functools.cached_property
     def bus(self) -> _BusHub:

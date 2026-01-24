@@ -53,6 +53,9 @@ class HelloPlugin(NekoPluginBase):
                 timer_id = f"testPlugin_debug_{int(time.time())}"
                 asyncio.run(self.config.set("debug.timer.timer_id", timer_id))
 
+            # Cache the timer_id on instance for reliable shutdown
+            self._debug_timer_id = timer_id
+
             # Keep startup non-blocking: do the update in background as well.
             loaded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             asyncio.run(self.config.set("debug.timer.loaded_at", loaded_at))
@@ -326,23 +329,30 @@ class HelloPlugin(NekoPluginBase):
     @lifecycle(id="shutdown")
     def shutdown(self, **_) -> Any:
         # 停止调试定时器（如果存在）
-        try:
-            cfg = self._read_local_toml()
-            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
-            timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
-            timer_id = str(timer_cfg.get("timer_id", debug_cfg.get("timer_id", ""))).strip()
-            if timer_id:
-                try:
-                    self.plugins.call_entry(
-                        "timer_service:stop_timer",
-                        {"timer_id": timer_id},
-                        timeout=5.0,
-                    )
-                    self.file_logger.info("Debug timer stopped: timer_id={}", timer_id)
-                except Exception as e:
-                    self.file_logger.warning("Failed to stop debug timer: {}", e)
-        except Exception:
-            pass
+        # 优先使用缓存的 timer_id，避免读取过时的 toml 配置
+        timer_id = getattr(self, "_debug_timer_id", None)
+        if not timer_id:
+            # 回退到读取 toml 配置
+            try:
+                cfg = self._read_local_toml()
+                debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+                timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
+                timer_id = str(timer_cfg.get("timer_id", debug_cfg.get("timer_id", ""))).strip()
+            except Exception:
+                pass
+        
+        if timer_id:
+            try:
+                self.plugins.call_entry(
+                    "timer_service:stop_timer",
+                    {"timer_id": timer_id},
+                    timeout=5.0,
+                )
+                self.file_logger.info("Debug timer stopped: timer_id={}", timer_id)
+                # 清除缓存的 timer_id
+                self._debug_timer_id = None
+            except Exception as e:
+                self.file_logger.warning("Failed to stop debug timer: {}", e)
 
         for w in list(getattr(self, "_active_watchers", []) or []):
             try:

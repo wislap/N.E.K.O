@@ -113,10 +113,19 @@ class PluginCommunicationResourceManager:
         # 注意：put 也可能阻塞，因此放到 executor 里并带超时。
         try:
             await asyncio.to_thread(self.res_queue.put, _SHUTDOWN_SENTINEL, True, QUEUE_GET_TIMEOUT)
-            await asyncio.to_thread(self.message_queue.put, _SHUTDOWN_SENTINEL, True, QUEUE_GET_TIMEOUT)
-        except Exception:
+        except Exception as e:
             # shutdown 需要尽力而为：即使唤醒失败也继续走超时等待/取消逻辑
-            pass
+            self.logger.debug(
+                "Failed to awake res_queue during shutdown for plugin {}: {}",
+                self.plugin_id, e
+            )
+        try:
+            await asyncio.to_thread(self.message_queue.put, _SHUTDOWN_SENTINEL, True, QUEUE_GET_TIMEOUT)
+        except Exception as e:
+            self.logger.debug(
+                "Failed to awake message_queue during shutdown for plugin {}: {}",
+                self.plugin_id, e
+            )
 
         # 给消费者一个很短的“自然退出”窗口，避免 shutdown 被拖慢。
         # 之后直接 cancel，以确保在 timeout 内尽快结束。
@@ -150,6 +159,13 @@ class PluginCommunicationResourceManager:
         
         # 清理所有待处理的 Future
         self._cleanup_pending_futures()
+        
+        # 回收后台清理任务，避免 loop 关闭时遗留 pending 任务
+        if self._background_tasks:
+            for task in list(self._background_tasks):
+                task.cancel()
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
         
         # 关闭线程池
         if self._executor:
@@ -254,14 +270,14 @@ class PluginCommunicationResourceManager:
         
         # 关键日志：记录发送触发命令
         self.logger.info(
-            "[CommManager] Sending TRIGGER command: plugin_id=%s, entry_id=%s, req_id=%s",
+            "[CommManager] Sending TRIGGER command: plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id,
             entry_id,
             req_id,
         )
         # 详细参数信息使用 DEBUG
         self.logger.debug(
-            "[CommManager] Args: type=%s, keys=%s, content=%s",
+            "[CommManager] Args: type={}, keys={}, content={}",
             type(args),
             list(args.keys()) if isinstance(args, dict) else "N/A",
             args,
@@ -275,7 +291,7 @@ class PluginCommunicationResourceManager:
             "args": args
         }
         self.logger.debug(
-            "[CommManager] TRIGGER message: %s",
+            "[CommManager] TRIGGER message: {}",
             trigger_msg,
         )
         
@@ -308,7 +324,7 @@ class PluginCommunicationResourceManager:
         req_id = str(uuid.uuid4())
         
         self.logger.info(
-            "[CommManager] Sending TRIGGER_CUSTOM command: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
+            "[CommManager] Sending TRIGGER_CUSTOM command: plugin_id={}, event_type={}, event_id={}, req_id={}",
             self.plugin_id,
             event_type,
             event_id,
@@ -335,12 +351,12 @@ class PluginCommunicationResourceManager:
             timeout: 超时时间(秒)
         
         Returns:
-            冻结结果字典，包含 success, data, error
+            冻结结果字典，包含 success, data, error 键
         """
         req_id = str(uuid.uuid4())
         
         self.logger.info(
-            "[CommManager] Sending FREEZE command: plugin_id=%s, req_id=%s",
+            "[CommManager] Sending FREEZE command: plugin_id={}, req_id={}",
             self.plugin_id,
             req_id,
         )
@@ -350,7 +366,21 @@ class PluginCommunicationResourceManager:
             "req_id": req_id,
         }
         
-        return await self._send_command_and_wait(req_id, freeze_msg, timeout, "freeze")
+        result = await self._send_command_and_wait(req_id, freeze_msg, timeout, "freeze")
+        
+        # 规范化返回格式，确保包含 success, data, error 键
+        if not isinstance(result, dict):
+            return {"success": False, "data": None, "error": f"Unexpected result type: {type(result)}"}
+        
+        # 如果结果已经有 success 键，直接返回
+        if "success" in result:
+            return result
+        
+        # 否则包装为标准格式
+        if "error" in result:
+            return {"success": False, "data": result.get("data"), "error": result.get("error")}
+        
+        return {"success": True, "data": result, "error": None}
 
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         """Push a bus change notification to plugin process.
@@ -544,7 +574,7 @@ class PluginCommunicationResourceManager:
                                 state.append_message_record(msg)
                             except Exception:
                                 self.logger.debug(
-                                    "Failed to store message to bus for plugin %s",
+                                    "Failed to store message to bus for plugin {}",
                                     self.plugin_id,
                                     exc_info=True,
                                 )
@@ -581,7 +611,7 @@ class PluginCommunicationResourceManager:
                                 # 输出上一条日志的重复统计（如果有）
                                 if last_key is not None and self._last_forward_log_repeat_count > 0:
                                     self.logger.info(
-                                        "[MESSAGE FORWARD] (suppressed %d duplicate messages for Plugin: %s | Source: %s | Priority: %s | Description: %s)",
+                                        "[MESSAGE FORWARD] (suppressed {} duplicate messages for Plugin: {} | Source: {} | Priority: {} | Description: {})",
                                         self._last_forward_log_repeat_count,
                                         last_key[0],
                                         last_key[1],

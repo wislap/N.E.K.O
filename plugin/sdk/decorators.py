@@ -19,8 +19,10 @@ class WorkerConfig:
     priority: int = 0
 
 
-# Checkpoint 配置的属性名
-CHECKPOINT_ATTR = "_neko_checkpoint"
+# 状态持久化配置的属性名
+PERSIST_ATTR = "_neko_persist"
+# 向后兼容别名
+CHECKPOINT_ATTR = PERSIST_ATTR
 
 
 def neko_plugin(cls):
@@ -47,15 +49,20 @@ def on_event(
     input_schema: dict | None = None,
     kind: EntryKind = "action",
     auto_start: bool = False,
-    checkpoint: bool | None = None,
+    persist: bool | None = None,
+    checkpoint: bool | None = None,  # 向后兼容别名
     extra: dict | None = None,
 ) -> Callable:
     """
     通用事件装饰器。
     - event_type: "plugin_entry" / "lifecycle" / "message" / "timer" ...
     - id: 在"本插件内部"的事件 id（不带插件 id）
-    - checkpoint: 执行后是否 checkpoint（None=遵循 __freeze_mode__）
+    - persist: 执行后是否保存状态（None=遵循 __persist_mode__）
+    - checkpoint: persist 的向后兼容别名
     """
+    # 向后兼容：checkpoint 参数映射到 persist
+    effective_persist = persist if persist is not None else checkpoint
+    
     def decorator(fn: Callable):
         meta = EventMeta(
             event_type=event_type,         # type: ignore[arg-type]
@@ -68,9 +75,9 @@ def on_event(
             extra=extra or {},
         )
         setattr(fn, EVENT_META_ATTR, meta)
-        # 设置 checkpoint 配置（None 表示遵循类级别 __freeze_mode__）
-        if checkpoint is not None:
-            setattr(fn, CHECKPOINT_ATTR, checkpoint)
+        # 设置 persist 配置（None 表示遵循类级别 __persist_mode__）
+        if effective_persist is not None:
+            setattr(fn, PERSIST_ATTR, effective_persist)
         return fn
     return decorator
 
@@ -127,7 +134,8 @@ def plugin_entry(
     input_schema: dict | None = None,
     kind: EntryKind = "action",
     auto_start: bool = False,
-    checkpoint: bool | None = None,
+    persist: bool | None = None,
+    checkpoint: bool | None = None,  # 向后兼容别名
     extra: dict | None = None,
 ) -> Callable:
     """
@@ -135,10 +143,11 @@ def plugin_entry(
     本质上是 on_event(event_type="plugin_entry").
     
     Args:
-        checkpoint: 执行后是否 checkpoint 保存状态
-            - None: 遵循类级别 __freeze_mode__ 配置
-            - True: 强制启用 checkpoint
-            - False: 强制禁用 checkpoint
+        persist: 执行后是否保存状态
+            - None: 遵循类级别 __persist_mode__ 配置
+            - True: 强制启用状态保存
+            - False: 强制禁用状态保存
+        checkpoint: persist 的向后兼容别名
     """
     return on_event(
         event_type="plugin_entry",
@@ -148,6 +157,7 @@ def plugin_entry(
         input_schema=input_schema,
         kind=kind,
         auto_start=auto_start,
+        persist=persist,
         checkpoint=checkpoint,
         extra=extra,
     )
@@ -155,12 +165,20 @@ def plugin_entry(
 
 def lifecycle(
     *,
-    id: Literal["startup", "shutdown", "reload"],
+    id: Literal["startup", "shutdown", "reload", "freeze", "unfreeze"],
     name: str | None = None,
     description: str = "",
     extra: dict | None = None,
 ) -> Callable:
-    """生命周期事件装饰器"""
+    """生命周期事件装饰器
+    
+    支持的生命周期事件：
+    - startup: 插件启动时调用
+    - shutdown: 插件停止时调用
+    - reload: 插件重载时调用
+    - freeze: 插件冻结前调用（可用于清理资源、保存额外状态）
+    - unfreeze: 插件从冻结状态恢复后调用（可用于重新初始化资源）
+    """
     return on_event(
         event_type="lifecycle",
         id=id,

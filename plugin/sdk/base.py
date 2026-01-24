@@ -10,7 +10,7 @@ from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .config import PluginConfig
 from .plugins import Plugins
 from .version import SDK_VERSION
-from .freeze import FreezableCheckpoint
+from .state import StatePersistence
 from .store import PluginStore
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
@@ -43,20 +43,20 @@ class NekoPluginBase:
     """插件都继承这个基类.
     
     Attributes:
-        __freezable__: 声明需要在冻结时保存的属性名列表。
+        __freezable__: 声明需要持久化保存的属性名列表。
             示例: __freezable__ = ["counter", "cache", "user_prefs"]
-        __freeze_mode__: 冻结模式配置（默认 "off"，需在 toml 中启用）。
-            - "auto": 所有 entry 执行后自动 checkpoint
-            - "manual": 需要在 @plugin_entry(checkpoint=True) 显式启用
-            - "off": 完全禁用冻结功能（默认）
+        __persist_mode__: 状态持久化模式配置（默认 "off"，需在 toml 中启用）。
+            - "auto": 所有 entry 执行后自动保存状态
+            - "manual": 只在 freeze 时保存，或在 @plugin_entry(persist=True) 显式启用
+            - "off": 完全禁用持久化功能（默认）
             
-            优先级：toml [plugin_checkpoint].freeze_mode > 类属性 > 默认值
+            优先级：toml [plugin_state].persist_mode > 类属性 > 默认值
     """
     
-    # 子类可以覆盖这个列表，声明需要冻结保存的属性
+    # 子类可以覆盖这个列表，声明需要持久化保存的属性
     __freezable__: List[str] = []
-    # 子类可以覆盖这个值，控制冻结模式（默认 off，需在 toml 中启用）
-    __freeze_mode__: str = "off"  # "auto" | "manual" | "off"
+    # 子类可以覆盖这个值，控制持久化模式（默认 off，需在 toml 中启用）
+    __persist_mode__: str = "off"  # "auto" | "manual" | "off"
     
     def __init__(self, ctx: "PluginContext"):
         self.ctx: "PluginContext" = ctx
@@ -67,11 +67,31 @@ class NekoPluginBase:
         # 初始化冻结 checkpoint 管理器和持久化存储
         config_path = getattr(ctx, "config_path", None)
         plugin_dir = config_path.parent if config_path else Path.cwd()
-        self._freeze_checkpoint = FreezableCheckpoint(
+        
+        # 读取 state_backend 配置（默认 off，需要开发者显式启用）
+        state_backend = "off"  # 默认禁用
+        try:
+            from plugin.settings import PLUGIN_STATE_BACKEND_DEFAULT
+            state_backend = PLUGIN_STATE_BACKEND_DEFAULT
+            # 尝试从插件配置覆盖
+            if hasattr(self, 'config'):
+                cfg = self.config.dump_effective_sync(timeout=1.0)
+                state_cfg = cfg.get("plugin_state", {})
+                if isinstance(state_cfg, dict):
+                    cfg_backend = state_cfg.get("backend")
+                    if cfg_backend in ("memory", "file", "off"):
+                        state_backend = cfg_backend
+        except Exception:
+            pass
+        
+        self._state_persistence = StatePersistence(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
             logger=getattr(ctx, "logger", None),
+            backend=state_backend,
         )
+        # 向后兼容别名
+        self._freeze_checkpoint = self._state_persistence
         self.store = PluginStore(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,

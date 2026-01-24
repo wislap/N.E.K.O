@@ -100,6 +100,9 @@ class MessagePlaneRpcServer:
         self._ctx = zmq.Context.instance()
         self._sock = self._ctx.socket(zmq.ROUTER)
         self._sock.linger = 0
+        # Warn if binding to non-localhost address
+        if not any(x in endpoint for x in ("127.0.0.1", "localhost", "::1")):
+            logger.warning("[message_plane] binding to non-localhost endpoint: {} - ensure this is intentional", endpoint)
         self._sock.bind(self.endpoint)
         if stores is not None:
             self._stores = stores
@@ -538,32 +541,14 @@ class MessagePlaneRpcServer:
         self._sock.send_multipart([*envelope, payload])
 
     def _light_item(self, ev: Dict[str, Any]) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        try:
-            out["seq"] = ev.get("seq")
-        except Exception:
-            pass
-        try:
-            out["ts"] = ev.get("ts")
-        except Exception:
-            pass
-        try:
-            out["store"] = ev.get("store")
-        except Exception:
-            pass
-        try:
-            out["topic"] = ev.get("topic")
-        except Exception:
-            pass
-        try:
-            idx = ev.get("index")
-        except Exception:
-            idx = None
-        if isinstance(idx, dict):
-            out["index"] = idx
-        else:
-            out["index"] = {}
-        return out
+        idx = ev.get("index")
+        return {
+            "seq": ev.get("seq"),
+            "ts": ev.get("ts"),
+            "store": ev.get("store"),
+            "topic": ev.get("topic"),
+            "index": idx if isinstance(idx, dict) else {},
+        }
 
     def _handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(req, dict):

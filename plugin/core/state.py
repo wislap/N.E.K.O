@@ -95,6 +95,15 @@ class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._next_id = 1
+        
+        # 内存 freeze 存储
+        self._frozen_states: Dict[str, bytes] = {}  # plugin_id -> serialized state
+        self._frozen_states_lock = threading.Lock()
+        
+        # 冻结插件跟踪（记录哪些插件处于冻结状态）
+        self._frozen_plugins: Set[str] = set()  # plugin_id set
+        self._frozen_plugins_lock = threading.Lock()
+        
         self._subs: Dict[str, Dict[int, Callable[[str, Dict[str, Any]], None]]] = {
             "messages": {},
             "events": {},
@@ -1028,6 +1037,9 @@ class GlobalState:
             try:
                 event_map = self.plugin_response_event_map
                 event_map.pop(rid, None)
+                # 同时清理原始 request_id 的事件（如果不同）
+                if request_id != rid:
+                    event_map.pop(request_id, None)
             except Exception:
                 logger.bind(component="server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
@@ -1036,8 +1048,10 @@ class GlobalState:
         try:
             event_map = self.plugin_response_event_map
             event_map.pop(rid, None)
+            # 同时清理原始 request_id 的事件（如果不同）
+            if request_id != rid:
+                event_map.pop(request_id, None)
         except Exception:
-
             logger.bind(component="server").debug(
                 f"Failed to remove response event for request_id={request_id}", exc_info=True
             )
@@ -1126,6 +1140,9 @@ class GlobalState:
             try:
                 event_map = self.plugin_response_event_map
                 event_map.pop(rid, None)
+                # 同时清理原始 request_id 的事件（如果不同）
+                if request_id != rid:
+                    event_map.pop(request_id, None)
             except Exception:
                 logger.bind(component="server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
@@ -1207,6 +1224,48 @@ class GlobalState:
     def cleanup_plugin_comm_resources(self) -> None:
         """Backward-compatible alias for shutdown code paths."""
         self.close_plugin_resources()
+    
+    def save_frozen_state_memory(self, plugin_id: str, state_data: bytes) -> None:
+        """保存插件的冻结状态到内存"""
+        with self._frozen_states_lock:
+            self._frozen_states[plugin_id] = state_data
+    
+    def get_frozen_state_memory(self, plugin_id: str) -> Optional[bytes]:
+        """从内存获取插件的冻结状态"""
+        with self._frozen_states_lock:
+            return self._frozen_states.get(plugin_id)
+    
+    def clear_frozen_state_memory(self, plugin_id: str) -> None:
+        """清除插件的内存冻结状态"""
+        with self._frozen_states_lock:
+            self._frozen_states.pop(plugin_id, None)
+    
+    def has_frozen_state_memory(self, plugin_id: str) -> bool:
+        """检查插件是否有内存冻结状态"""
+        with self._frozen_states_lock:
+            return plugin_id in self._frozen_states
+    
+    # ========== 冻结插件状态跟踪 ==========
+    
+    def mark_plugin_frozen(self, plugin_id: str) -> None:
+        """标记插件为冻结状态"""
+        with self._frozen_plugins_lock:
+            self._frozen_plugins.add(plugin_id)
+    
+    def unmark_plugin_frozen(self, plugin_id: str) -> None:
+        """取消插件的冻结状态标记"""
+        with self._frozen_plugins_lock:
+            self._frozen_plugins.discard(plugin_id)
+    
+    def is_plugin_frozen(self, plugin_id: str) -> bool:
+        """检查插件是否处于冻结状态"""
+        with self._frozen_plugins_lock:
+            return plugin_id in self._frozen_plugins
+    
+    def get_frozen_plugins(self) -> List[str]:
+        """获取所有冻结的插件ID列表"""
+        with self._frozen_plugins_lock:
+            return list(self._frozen_plugins)
 
     def add_user_context_event(self, bucket_id: str, event: Dict[str, Any]) -> None:
         if not isinstance(bucket_id, str) or not bucket_id:

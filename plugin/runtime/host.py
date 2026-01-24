@@ -17,7 +17,7 @@ from queue import Empty
 from loguru import logger as loguru_logger
 
 from plugin.sdk.events import EVENT_META_ATTR, EventHandler
-from plugin.sdk.decorators import WORKER_MODE_ATTR, CHECKPOINT_ATTR
+from plugin.sdk.decorators import WORKER_MODE_ATTR, PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.runtime.communication import PluginCommunicationResourceManager
@@ -236,40 +236,55 @@ def _plugin_process_runner(
             pass
         instance = cls(ctx)
 
-        # 获取 freezable 属性列表和冻结模式（用于 checkpoint）
+        # 获取 freezable 属性列表和持久化模式
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        # 优先级：effective config [plugin_checkpoint].freeze_mode > 类属性 __freeze_mode__ > 默认 "off"
-        freeze_mode = getattr(instance, "__freeze_mode__", "off")
-        # 从 effective config 读取 freeze_mode（包含 profile 覆写）
+        # 优先级：effective config [plugin_state].persist_mode > 类属性 __persist_mode__ > __freeze_mode__(兼容) > 默认 "off"
+        persist_mode = getattr(instance, "__persist_mode__", None)
+        if persist_mode is None:
+            persist_mode = getattr(instance, "__freeze_mode__", "off")  # 向后兼容
+        # 从 effective config 读取 persist_mode（包含 profile 覆写）
         try:
             effective_cfg = instance.config.dump_effective_sync(timeout=3.0)
-            checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
-            if isinstance(checkpoint_cfg, dict):
-                cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                if cfg_freeze_mode in ("auto", "manual", "off"):
-                    freeze_mode = cfg_freeze_mode
-                    logger.debug("[Plugin Process] freeze_mode from effective config: {}", freeze_mode)
+            # 新配置项 [plugin_state]
+            state_cfg = effective_cfg.get("plugin_state", {})
+            if isinstance(state_cfg, dict):
+                cfg_persist_mode = state_cfg.get("persist_mode")
+                if cfg_persist_mode in ("auto", "manual", "off"):
+                    persist_mode = cfg_persist_mode
+                    logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
+            # 向后兼容：旧配置项 [plugin_checkpoint]
+            if persist_mode == "off":
+                checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
+                if isinstance(checkpoint_cfg, dict):
+                    cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
+                    if cfg_freeze_mode in ("auto", "manual", "off"):
+                        persist_mode = cfg_freeze_mode
+                        logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
-            logger.debug("[Plugin Process] Could not read plugin_checkpoint from effective config: {}", e)
-        if freezable_keys:
-            logger.info("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, freeze_mode)
-            # 如果有冻结状态，尝试恢复
-            freeze_checkpoint = getattr(instance, "_freeze_checkpoint", None)
-            if freeze_checkpoint and freeze_checkpoint.has_frozen_state():
-                logger.info("[Plugin Process] Found frozen state, restoring...")
-                freeze_checkpoint.load_frozen_state(instance)
-                freeze_checkpoint.clear_frozen_state()  # 恢复后清除
+            logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+        # 标记是否从冻结状态恢复（用于触发 unfreeze 生命周期事件）
+        ctx._restored_from_freeze = False
         
-        def _should_checkpoint(method) -> bool:
-            """判断是否应该执行 checkpoint"""
-            if not freezable_keys or freeze_mode == "off":
+        if freezable_keys:
+            logger.info("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
+            # 如果有保存的状态，尝试恢复
+            state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            if state_persistence and state_persistence.has_saved_state():
+                logger.info("[Plugin Process] Found saved state, restoring...")
+                state_persistence.load(instance)
+                state_persistence.clear()  # 恢复后清除
+                ctx._restored_from_freeze = True  # 标记为从冻结恢复
+        
+        def _should_persist(method) -> bool:
+            """判断是否应该保存状态"""
+            if not freezable_keys or persist_mode == "off":
                 return False
-            # 检查方法级别的 checkpoint 配置
-            method_checkpoint = getattr(method, CHECKPOINT_ATTR, None)
-            if method_checkpoint is not None:
-                return method_checkpoint  # 方法显式指定
+            # 检查方法级别的 persist 配置
+            method_persist = getattr(method, PERSIST_ATTR, None)
+            if method_persist is not None:
+                return method_persist  # 方法显式指定
             # 遵循类级别配置
-            return freeze_mode == "auto"
+            return persist_mode == "auto"
 
         entry_map: Dict[str, Any] = {}
         events_by_type: Dict[str, Dict[str, Any]] = {}
@@ -318,6 +333,29 @@ def _plugin_process_runner(
                 logger.exception(error_msg)
                 # 记录错误但不中断进程启动
                 # 如果启动失败是致命的，可以在这里 raise PluginLifecycleError
+        
+        # 生命周期：unfreeze（如果是从冻结状态恢复）
+        # 通过检查是否有状态被恢复来判断是否是从冻结恢复
+        _restored_from_freeze = False
+        if freezable_keys:
+            state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            # 检查 ctx 中是否有恢复标记（由状态恢复逻辑设置）
+            _restored_from_freeze = getattr(ctx, "_restored_from_freeze", False)
+        
+        unfreeze_fn = lifecycle_events.get("unfreeze")
+        if unfreeze_fn and _restored_from_freeze:
+            try:
+                logger.info("[Plugin Process] Executing unfreeze lifecycle (restored from frozen state)...")
+                with ctx._handler_scope("lifecycle.unfreeze"):
+                    if asyncio.iscoroutinefunction(unfreeze_fn):
+                        asyncio.run(unfreeze_fn())
+                    else:
+                        unfreeze_fn()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
+                error_msg = f"Error in lifecycle.unfreeze: {str(e)}"
+                logger.exception(error_msg)
 
         # 定时任务：timer auto_start interval
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
@@ -436,9 +474,9 @@ def _plugin_process_runner(
                     
                     # 保存冻结状态
                     if freezable_keys:
-                        fc = getattr(instance, "_freeze_checkpoint", None)
-                        if fc:
-                            fc.save_frozen_state(instance, freezable_keys)
+                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                        if sp:
+                            sp.save(instance, freezable_keys, reason="freeze")
                             logger.info("[Plugin Process] Frozen state saved")
                     
                     ret_payload["success"] = True
@@ -656,18 +694,26 @@ def _plugin_process_runner(
                             
                             # 等待结果（会阻塞当前线程，但这是在命令循环线程里）
                             # 为了不阻塞命令循环，我们在单独线程里等待
-                            def _wait_worker_result():
+                            # 注意：必须绑定闭包变量，避免被后续命令覆盖
+                            def _wait_worker_result(
+                                entry_id=entry_id,
+                                run_id=run_id,
+                                future=future,
+                                timeout=timeout,
+                                ret_payload=ret_payload,
+                                method=method,
+                            ):
                                 try:
                                     with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                         result = worker_executor.wait_for_result(future, timeout)
                                     ret_payload["success"] = True
                                     ret_payload["data"] = result
-                                    # Checkpoint after successful execution (if enabled)
-                                    if _should_checkpoint(method):
+                                    # Save state after successful execution (if enabled)
+                                    if _should_persist(method):
                                         try:
-                                            fc = getattr(instance, "_freeze_checkpoint", None)
-                                            if fc:
-                                                fc.checkpoint(instance, freezable_keys)
+                                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                                            if sp:
+                                                sp.save(instance, freezable_keys, reason="auto")
                                         except Exception:
                                             pass
                                 except TimeoutError as e:
@@ -708,12 +754,12 @@ def _plugin_process_runner(
                             try:
                                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                     result_container["result"] = asyncio.run(method(**args))
-                                # Checkpoint after successful execution (if enabled)
-                                if _should_checkpoint(method):
+                                # Save state after successful execution (if enabled)
+                                if _should_persist(method):
                                     try:
-                                        fc = getattr(instance, "_freeze_checkpoint", None)
-                                        if fc:
-                                            fc.checkpoint(instance, freezable_keys)
+                                        sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                                        if sp:
+                                            sp.save(instance, freezable_keys, reason="auto")
                                     except Exception:
                                         pass
                             except Exception as e:
@@ -773,12 +819,12 @@ def _plugin_process_runner(
                     ret_payload["success"] = True
                     ret_payload["data"] = res
                     
-                    # Checkpoint after successful sync execution (if enabled)
-                    if _should_checkpoint(method):
+                    # Save state after successful sync execution (if enabled)
+                    if _should_persist(method):
                         try:
-                            fc = getattr(instance, "_freeze_checkpoint", None)
-                            if fc:
-                                fc.checkpoint(instance, freezable_keys)
+                            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+                            if sp:
+                                sp.save(instance, freezable_keys, reason="auto")
                         except Exception:
                             pass
                     
