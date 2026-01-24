@@ -4,7 +4,7 @@
 提供插件开发所需的装饰器。
 """
 from dataclasses import dataclass
-from typing import Type, Callable, Literal
+from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
 
@@ -34,6 +34,10 @@ def neko_plugin(cls):
     return cls
 
 
+# Entry kind 类型（包含所有可能的 kind 值）
+EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"]
+
+
 def on_event(
     *,
     event_type: str,
@@ -41,7 +45,7 @@ def on_event(
     name: str | None = None,
     description: str = "",
     input_schema: dict | None = None,
-    kind: str = "action",
+    kind: EntryKind = "action",
     auto_start: bool = False,
     checkpoint: bool | None = None,
     extra: dict | None = None,
@@ -121,7 +125,7 @@ def plugin_entry(
     name: str | None = None,
     description: str = "",
     input_schema: dict | None = None,
-    kind: str = "action",
+    kind: EntryKind = "action",
     auto_start: bool = False,
     checkpoint: bool | None = None,
     extra: dict | None = None,
@@ -239,7 +243,7 @@ def custom_event(
     name: str | None = None,
     description: str = "",
     input_schema: dict | None = None,
-    kind: str = "custom",
+    kind: EntryKind = "custom",
     auto_start: bool = False,
     trigger_method: str = "message",  # "message" | "command" | "auto"
     extra: dict | None = None,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Coroutine, Dict, Optional, Union, overload
 
 
 class PluginConfigError(RuntimeError):
@@ -119,12 +119,21 @@ class PluginConfig:
             raise PluginConfigError(f"Failed to read config: {e}", operation="dump") from e
         return self._unwrap(cfg, operation="dump")
 
-    def dump(self, *, timeout: float = 5.0):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+    @overload
+    def dump(self, *, timeout: float = ...) -> Coroutine[Any, Any, Dict[str, Any]]: ...  # 异步环境
+    @overload
+    def dump(self, *, timeout: float = ...) -> Dict[str, Any]: ...  # 同步环境
+    
+    def dump(self, *, timeout: float = 5.0) -> "Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]":
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。
+        
+        Returns:
+            在事件循环中返回 Coroutine，否则返回 Dict
+        """
         coro = self._dump_async(timeout=timeout)
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_sync(coro, operation="dump")
 
     def dump_sync(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_sync(self._dump_async(timeout=timeout), operation="dump")
@@ -217,12 +226,23 @@ class PluginConfig:
                 raise
             return default
 
-    def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+    @overload
+    def get(self, path: str, default: Any = ..., *, timeout: float = ...) -> Coroutine[Any, Any, Any]: ...
+    @overload
+    def get(self, path: str, default: Any = ..., *, timeout: float = ...) -> Any: ...
+    
+    def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> "Union[Any, Coroutine[Any, Any, Any]]":
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。
+        
+        Args:
+            path: 配置路径，例如 "debug.enabled"
+            default: 默认值（未找到时返回）
+            timeout: 超时时间
+        """
         coro = self._get_async(path, default=default, timeout=timeout)
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_sync(coro, operation="get")
 
     def get_sync(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
         return self._run_sync(self._get_async(path, default=default, timeout=timeout), operation="get")
@@ -245,12 +265,22 @@ class PluginConfig:
             raise PluginConfigError(f"Failed to update config: {e}", operation="update") from e
         return self._unwrap(updated, operation="update")
 
-    def update(self, patch: Dict[str, Any], *, timeout: float = 10.0):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+    @overload
+    def update(self, patch: Dict[str, Any], *, timeout: float = ...) -> Coroutine[Any, Any, Dict[str, Any]]: ...
+    @overload
+    def update(self, patch: Dict[str, Any], *, timeout: float = ...) -> Dict[str, Any]: ...
+    
+    def update(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> "Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]":
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。
+        
+        Args:
+            patch: 要更新的配置字典
+            timeout: 超时时间
+        """
         coro = self._update_async(patch, timeout=timeout)
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_sync(coro, operation="update")
 
     def update_sync(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
         return self._run_sync(self._update_async(patch, timeout=timeout), operation="update")
@@ -260,12 +290,23 @@ class PluginConfig:
         _set_by_path(patch, path, value)
         return await self._update_async(patch, timeout=timeout)
 
-    def set(self, path: str, value: Any, *, timeout: float = 10.0):
-        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+    @overload
+    def set(self, path: str, value: Any, *, timeout: float = ...) -> Coroutine[Any, Any, Dict[str, Any]]: ...
+    @overload
+    def set(self, path: str, value: Any, *, timeout: float = ...) -> Dict[str, Any]: ...
+    
+    def set(self, path: str, value: Any, *, timeout: float = 10.0) -> "Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]":
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。
+        
+        Args:
+            path: 配置路径，例如 "debug.enabled"
+            value: 要设置的值
+            timeout: 超时时间
+        """
         coro = self._set_async(path, value, timeout=timeout)
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_sync(coro, operation="set")
 
     def set_sync(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
         return self._run_sync(self._set_async(path, value, timeout=timeout), operation="set")

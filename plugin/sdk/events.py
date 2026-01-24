@@ -29,7 +29,7 @@ class EventMeta:
     input_schema: Dict[str, Any] | None = None
 
     # 以下字段主要给 plugin_entry / lifecycle 用
-    kind: Literal["service", "action", "hook", "custom"] = "action"
+    kind: Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"] = "action"
     auto_start: bool = False    # event_type == "lifecycle" 或 "plugin_entry" 时可用
     # 预留更多字段（后续扩展用）
     extra: Dict[str, Any] | None = None
