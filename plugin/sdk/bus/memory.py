@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS

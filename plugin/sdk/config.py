@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Coroutine, Dict, Optional, Union, overload
+from typing import TYPE_CHECKING, Any, Coroutine, Dict, Optional, Union, overload
+
+if TYPE_CHECKING:
+    from .types import PluginContextProtocol
 
 
 class PluginConfigError(RuntimeError):
@@ -64,7 +67,7 @@ def _set_by_path(root: Dict[str, Any], path: str, value: Any) -> Dict[str, Any]:
 class PluginConfig:
     """High-level wrapper around `PluginContext.get_own_config/update_own_config`."""
 
-    ctx: Any
+    ctx: "PluginContextProtocol"
 
     def _unwrap(self, value: Any, *, operation: str) -> Dict[str, Any]:
         if not isinstance(value, dict):

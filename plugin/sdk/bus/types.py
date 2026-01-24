@@ -104,6 +104,7 @@ class _BusRevSink:
 
 
 def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
+    """确保总线订阅(内部函数,ctx可以是PluginContext或PluginContextProtocol)"""
     b = str(bus).strip()
     if b not in ("messages", "events", "lifecycle"):
         return

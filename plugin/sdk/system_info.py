@@ -3,14 +3,42 @@ from __future__ import annotations
 import platform
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
+
+if TYPE_CHECKING:
+    from .types import PluginContextProtocol
 
 
 @dataclass
 class SystemInfo:
-    ctx: Any
+    """系统信息查询器
+    
+    提供系统配置和环境信息的查询功能。通过self.ctx.bus.system_info或直接实例化使用。
+    
+    Attributes:
+        ctx: 插件上下文
+    """
+    ctx: "PluginContextProtocol"
 
     async def get_system_config(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        """获取系统配置
+        
+        查询插件服务器的系统配置信息。
+        
+        Args:
+            timeout: 超时时间(秒)
+        
+        Returns:
+            系统配置字典
+        
+        Raises:
+            RuntimeError: 如果ctx.get_system_config不可用
+            TimeoutError: 如果查询超时
+        
+        Example:
+            >>> system_info = SystemInfo(ctx)
+            >>> config = await system_info.get_system_config()
+        """
         if not hasattr(self.ctx, "get_system_config"):
             raise RuntimeError("ctx.get_system_config is not available")
         result = await self.ctx.get_system_config(timeout=timeout)
@@ -19,10 +47,24 @@ class SystemInfo:
         return result
 
     async def get_server_settings(self, *, timeout: float = 5.0) -> Dict[str, Any]:
-        """Return a flat dict of plugin server settings.
-
-        This is a convenience wrapper around ``ctx.get_system_config`` that
-        extracts the ``config`` field from the IPC response.
+        """获取插件服务器设置
+        
+        这是get_system_config()的便捷封装,直接返回服务器配置字典。
+        从IPC响应中提取config字段。
+        
+        Args:
+            timeout: 超时时间(秒)
+        
+        Returns:
+            服务器设置字典
+        
+        Raises:
+            RuntimeError: 如果ctx.get_system_config不可用
+            TimeoutError: 如果查询超时
+        
+        Example:
+            >>> settings = await system_info.get_server_settings()
+            >>> print(settings.get("plugin_dir"))
         """
 
         result = await self.get_system_config(timeout=timeout)
@@ -32,6 +74,34 @@ class SystemInfo:
         return cfg if isinstance(cfg, dict) else {}
 
     def get_python_env(self) -> Dict[str, Any]:
+        """获取Python环境信息
+        
+        收集当前Python运行环境的详细信息,包括版本、平台、架构等。
+        
+        Returns:
+            包含Python和操作系统信息的字典,格式为:
+            {
+                "python": {
+                    "version": "3.11.0",
+                    "version_info": {"major": 3, "minor": 11, ...},
+                    "implementation": "CPython",
+                    "executable": "/usr/bin/python3",
+                    ...
+                },
+                "os": {
+                    "platform": "linux",
+                    "system": "Linux",
+                    "release": "5.15.0",
+                    "machine": "x86_64",
+                    ...
+                }
+            }
+        
+        Example:
+            >>> env = system_info.get_python_env()
+            >>> print(f"Python {env['python']['version']}")
+            >>> print(f"OS: {env['os']['system']}")
+        """
         impl = platform.python_implementation()
 
         try:

@@ -5,11 +5,12 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from plugin.sdk.bus.memory import MemoryList
+    from .types import PluginContextProtocol
 
 
 @dataclass
 class MemoryClient:
-    ctx: Any
+    ctx: "PluginContextProtocol"
     _bus_client: Optional[Any] = None
 
     def _bus(self) -> Any:
@@ -17,7 +18,8 @@ class MemoryClient:
             # Lazy import to avoid circular import during plugin bootstrap.
             from plugin.sdk.bus.memory import MemoryClient as BusMemoryClient
 
-            self._bus_client = BusMemoryClient(self.ctx)
+            # Type: ignore because bus client expects concrete PluginContext with internal methods
+            self._bus_client = BusMemoryClient(self.ctx)  # type: ignore[arg-type]
         return self._bus_client
 
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList":

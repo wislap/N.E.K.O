@@ -24,6 +24,7 @@ from .plugins import Plugins
 from .events import EventMeta, EventHandler
 from .system_info import SystemInfo
 from .memory import MemoryClient
+from .types import PluginContextProtocol
 
 __all__ = [
     # 版本和错误码
@@ -51,6 +52,8 @@ __all__ = [
     "EventHandler",
     "SystemInfo",
     "MemoryClient",
+    # 类型定义
+    "PluginContextProtocol",
 ]
 
 # 便捷导入：开发者可以这样使用
