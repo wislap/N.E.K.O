@@ -143,30 +143,29 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     构建插件列表
     
     返回格式化的插件信息列表，包括每个插件的入口点信息。
+    
+    锁顺序规范: plugins_lock -> plugin_hosts_lock -> event_handlers_lock
     """
     result = []
     
-    with state.plugins_lock:
-        if not state.plugins:
-            return result
-        
-        # 创建副本以避免长时间持有锁
-        plugins_copy = dict(state.plugins)
+    # 一次性获取所有需要的数据快照，避免在循环中反复获取锁
+    # 使用快照方法确保线程安全
+    plugins_copy = state.get_plugins_snapshot()
+    if not plugins_copy:
+        return result
+    
+    hosts_copy = state.get_plugin_hosts_snapshot()
+    running_plugins = set(hosts_copy.keys())
+    event_handlers_copy = state.get_event_handlers_snapshot()
     
     logger.info("加载插件列表成功")
-    
-    # 获取运行状态（需要检查 plugin_hosts）
-    with state.plugin_hosts_lock:
-        running_plugins = set(state.plugin_hosts.keys())
-        # 创建 host 的副本以便后续检查（在锁外使用）
-        hosts_copy = dict(state.plugin_hosts)
     
     for plugin_id, plugin_meta in plugins_copy.items():
         try:
             plugin_info = plugin_meta.copy()
             plugin_info["entries"] = []
             
-            # 检查插件是否正在运行
+            # 检查插件是否正在运行（使用快照数据，无需再获取锁）
             is_running = False
             if plugin_id in running_plugins:
                 host = hosts_copy.get(plugin_id)
@@ -175,11 +174,8 @@ def build_plugin_list() -> List[Dict[str, Any]]:
             
             plugin_info["status"] = "running" if is_running else "stopped"
             
-            # 处理每个插件的入口点
+            # 处理每个插件的入口点（使用快照数据，无需再获取锁）
             seen = set()  # 用于去重 (event_type, id)
-            # 创建 event_handlers 的副本以避免长时间持有锁
-            with state.event_handlers_lock:
-                event_handlers_copy = dict(state.event_handlers)
             for key, eh in event_handlers_copy.items():
                 if not (key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:plugin_entry:")):
                     continue
@@ -299,20 +295,20 @@ async def trigger_plugin(
     }
     _enqueue_event(event)
     
-    # 首先检查插件是否已注册
-    with state.plugins_lock:
-        plugin_registered = plugin_id in state.plugins
+    # 一次性获取快照，减少锁持有时间
+    # 锁顺序: plugins_lock -> plugin_hosts_lock
+    plugins_snapshot = state.get_plugins_snapshot()
+    hosts_snapshot = state.get_plugin_hosts_snapshot()
     
-    # 获取插件宿主（检查是否正在运行）
-    with state.plugin_hosts_lock:
-        host = state.plugin_hosts.get(plugin_id)
-        all_running_plugin_ids = list(state.plugin_hosts.keys())
+    plugin_registered = plugin_id in plugins_snapshot
+    host = hosts_snapshot.get(plugin_id)
+    all_running_plugin_ids = list(hosts_snapshot.keys())
     
     if not host:
         logger.debug(
             "Plugin {} not found in plugin_hosts. Registered plugins: {}, Running plugins: {}",
             plugin_id,
-            list(state.plugins.keys()) if state.plugins else [],
+            list(plugins_snapshot.keys()),
             all_running_plugin_ids
         )
         # 插件未运行，检查是否已注册
@@ -331,7 +327,7 @@ async def trigger_plugin(
             plugin_response = fail(
                 ErrorCode.NOT_FOUND,
                 f"Plugin '{plugin_id}' is not found/registered",
-                details={"known_plugins": list(state.plugins.keys()) if state.plugins else []},
+                details={"known_plugins": list(plugins_snapshot.keys())},
                 trace_id=trace_id,
             )
 

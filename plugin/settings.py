@@ -131,9 +131,12 @@ PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 1.0
 # ========== 线程池配置 ==========
 
 # 通信资源管理器的线程池最大工作线程数
-# - 根据 CPU 核心数动态设置，适合 I/O 密集型任务；
-# - 公式：``min(4, CPU核心数 + 2)``，避免在低核机器上创建过多线程。
-COMMUNICATION_THREAD_POOL_MAX_WORKERS = min(4, (os.cpu_count() or 1) + 2)
+# - 每个插件的通信管理器需要至少 3 个线程：
+#   1. _consume_results - 持续读取结果队列
+#   2. _consume_messages - 持续读取消息队列
+#   3. _send_command_and_wait - 发送命令到插件
+# - 公式：``max(8, (CPU核心数 or 1) + 4)``，确保多插件场景下有足够的线程
+COMMUNICATION_THREAD_POOL_MAX_WORKERS = max(32, (os.cpu_count() or 1) + 8)
 
 
 # ========== 消息拉取默认上限 ==========

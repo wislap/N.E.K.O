@@ -1738,20 +1738,47 @@ class LoadTestPlugin(NekoPluginBase):
                     # If config read fails, default to NOT auto-run (safe default)
                     return
                 
+                # Check and set _run_all_running flag to prevent concurrent runs
                 try:
-                    self.ctx.logger.info(
-                        "[load_tester] auto_start thread begin: stop={}",
-                        self._stop_event.is_set(),
-                    )
+                    with self._run_all_guard:
+                        if self._run_all_running:
+                            try:
+                                self.ctx.logger.info("[load_tester] auto_start skipped: benchmark already running")
+                            except Exception:
+                                pass
+                            return
+                        self._run_all_running = True
                 except Exception:
                     pass
-                if self._stop_event.is_set():
-                    return
-                self._run_all_benchmarks_sync(duration_seconds=5.0)
+                
                 try:
-                    self.ctx.logger.info("[load_tester] auto_start thread finished")
-                except Exception:
-                    pass
+                    try:
+                        self.ctx.logger.info(
+                            "[load_tester] auto_start thread begin: stop={}",
+                            self._stop_event.is_set(),
+                        )
+                    except Exception:
+                        pass
+                    if self._stop_event.is_set():
+                        return
+                    with self._bench_lock:
+                        self._run_all_benchmarks_sync(duration_seconds=5.0)
+                    try:
+                        self.ctx.logger.info("[load_tester] auto_start thread finished")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    try:
+                        self.ctx.logger.warning("[load_tester] auto_start benchmark failed: {}", e)
+                    except Exception:
+                        pass
+                finally:
+                    # Always clear the running flag
+                    try:
+                        with self._run_all_guard:
+                            self._run_all_running = False
+                    except Exception:
+                        pass
             except Exception as e:
                 try:
                     self.ctx.logger.warning("[load_tester] startup auto_start failed: {}", e)

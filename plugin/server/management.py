@@ -280,21 +280,25 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
                     plugin_id
                 )
                 # 移除刚注册的 host
+                # 先在锁内获取并移除 host，然后在锁外关闭进程（避免在持有锁时执行 async 操作）
+                existing_host = None
                 with state.plugin_hosts_lock:
                     if plugin_id in state.plugin_hosts:
                         existing_host = state.plugin_hosts.pop(plugin_id)
-                        # 尝试关闭进程
-                        try:
-                            if hasattr(existing_host, 'shutdown'):
-                                await existing_host.shutdown(timeout=1.0)
-                            elif hasattr(existing_host, 'process') and existing_host.process:
-                                existing_host.process.terminate()
-                                existing_host.process.join(timeout=1.0)
-                        except Exception as e:
-                            logger.warning(
-                                "Error shutting down duplicate plugin {}: {}",
-                                plugin_id, e, exc_info=True
-                            )
+                
+                # 在锁外关闭进程
+                if existing_host is not None:
+                    try:
+                        if hasattr(existing_host, 'shutdown'):
+                            await existing_host.shutdown(timeout=1.0)
+                        elif hasattr(existing_host, 'process') and existing_host.process:
+                            existing_host.process.terminate()
+                            existing_host.process.join(timeout=1.0)
+                    except Exception as e:
+                        logger.warning(
+                            "Error shutting down duplicate plugin {}: {}",
+                            plugin_id, e, exc_info=True
+                        )
                 raise HTTPException(
                     status_code=400,
                     detail=f"Plugin '{plugin_id}' is already registered (duplicate detected)"

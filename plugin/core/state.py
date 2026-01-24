@@ -39,9 +39,39 @@ except Exception:  # pragma: no cover
     ormsgpack = None
 
 from plugin.sdk.message_plane_transport import format_rpc_error
+from contextlib import contextmanager
 
 
 MAX_DELETED_BUS_IDS = 20000
+
+# 默认锁超时时间（秒）
+DEFAULT_LOCK_TIMEOUT = 10.0
+
+
+@contextmanager
+def timed_lock(lock: threading.Lock, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
+    """
+    带超时的锁获取上下文管理器
+    
+    Args:
+        lock: 要获取的锁
+        timeout: 超时时间（秒）
+        name: 锁名称（用于日志）
+    
+    Raises:
+        TimeoutError: 如果在超时时间内无法获取锁
+    """
+    acquired = lock.acquire(timeout=timeout)
+    if not acquired:
+        logger.error(
+            "Failed to acquire lock '{}' within {}s - possible deadlock detected",
+            name, timeout
+        )
+        raise TimeoutError(f"Failed to acquire lock '{name}' within {timeout}s")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 class BusChangeHub:
@@ -173,6 +203,40 @@ class GlobalState:
 
         self._message_plane_rpc_lock = threading.Lock()
         self._message_plane_rpc: Optional[Any] = None
+
+    # 带超时的锁上下文管理器（用于防止死锁）
+    @contextmanager
+    def acquire_plugins_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugins_lock（带超时）"""
+        with timed_lock(self.plugins_lock, timeout, "plugins_lock"):
+            yield
+
+    @contextmanager
+    def acquire_plugin_hosts_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugin_hosts_lock（带超时）"""
+        with timed_lock(self.plugin_hosts_lock, timeout, "plugin_hosts_lock"):
+            yield
+
+    @contextmanager
+    def acquire_event_handlers_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 event_handlers_lock（带超时）"""
+        with timed_lock(self.event_handlers_lock, timeout, "event_handlers_lock"):
+            yield
+
+    def get_plugins_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """获取 plugins 的快照（线程安全）"""
+        with self.plugins_lock:
+            return dict(self.plugins)
+
+    def get_plugin_hosts_snapshot(self) -> Dict[str, Any]:
+        """获取 plugin_hosts 的快照（线程安全）"""
+        with self.plugin_hosts_lock:
+            return dict(self.plugin_hosts)
+
+    def get_event_handlers_snapshot(self) -> Dict[str, EventHandler]:
+        """获取 event_handlers 的快照（线程安全）"""
+        with self.event_handlers_lock:
+            return dict(self.event_handlers)
 
     def _bump_bus_rev(self, bus: str) -> int:
         b = str(bus).strip()

@@ -689,42 +689,38 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
     """
     result = {}
     
-    # 优先从 plugin_hosts 获取信息（更完整）
+    # 锁顺序规范: plugins_lock -> plugin_hosts_lock -> event_handlers_lock
+    # 先从 plugins 获取插件元数据
+    with state.plugins_lock:
+        if plugin_id in state.plugins:
+            plugin_meta_raw = state.plugins[plugin_id]
+            if isinstance(plugin_meta_raw, dict):
+                result["plugin_meta"] = plugin_meta_raw
+                meta_config_path = plugin_meta_raw.get("config_path")
+                meta_entry_point = plugin_meta_raw.get("entry_point")
+                if meta_config_path:
+                    result["config_path"] = meta_config_path
+                if meta_entry_point:
+                    result["entry_point"] = meta_entry_point
+            else:
+                result["plugin_meta"] = plugin_meta_raw
+                meta_config_path = getattr(plugin_meta_raw, "config_path", None)
+                meta_entry_point = getattr(plugin_meta_raw, "entry_point", None)
+                if meta_config_path:
+                    result["config_path"] = meta_config_path
+                if meta_entry_point:
+                    result["entry_point"] = meta_entry_point
+    
+    # 再从 plugin_hosts 获取运行时信息（可能更新）
     with state.plugin_hosts_lock:
         if plugin_id in state.plugin_hosts:
             host = state.plugin_hosts[plugin_id]
-            # 尝试获取 host 的配置信息
             config_path = getattr(host, 'config_path', None)
             entry_point = getattr(host, 'entry_point', None)
             if config_path:
                 result["config_path"] = config_path
             if entry_point:
                 result["entry_point"] = entry_point
-    
-    # 从 plugins 获取插件元数据（如果还没有）
-    with state.plugins_lock:
-        if plugin_id in state.plugins:
-            plugin_meta_raw = state.plugins[plugin_id]
-            # plugin_meta 可能是字典（model_dump()的结果）或 PluginMeta 对象
-            if isinstance(plugin_meta_raw, dict):
-                # 如果是字典，尝试构建 PluginMeta 对象或直接使用字典
-                result["plugin_meta"] = plugin_meta_raw
-                # 某些情况下插件已停止，plugin_hosts 中没有 host，只能从 plugins 元数据读取路径/入口信息
-                meta_config_path = plugin_meta_raw.get("config_path")
-                meta_entry_point = plugin_meta_raw.get("entry_point")
-                if meta_config_path and "config_path" not in result:
-                    result["config_path"] = meta_config_path
-                if meta_entry_point and "entry_point" not in result:
-                    result["entry_point"] = meta_entry_point
-            else:
-                # 如果是对象，直接使用
-                result["plugin_meta"] = plugin_meta_raw
-                meta_config_path = getattr(plugin_meta_raw, "config_path", None)
-                meta_entry_point = getattr(plugin_meta_raw, "entry_point", None)
-                if meta_config_path and "config_path" not in result:
-                    result["config_path"] = meta_config_path
-                if meta_entry_point and "entry_point" not in result:
-                    result["entry_point"] = meta_entry_point
     
     # 如果获取到了任何信息，返回结果
     if result:
