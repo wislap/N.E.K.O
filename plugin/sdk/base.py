@@ -12,6 +12,7 @@ from .plugins import Plugins
 from .version import SDK_VERSION
 from .state import StatePersistence
 from .store import PluginStore
+from .database import PluginDatabase
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
     NEKO_PLUGIN_TAG,
@@ -92,10 +93,44 @@ class NekoPluginBase:
         )
         # 向后兼容别名
         self._freeze_checkpoint = self._state_persistence
+        
+        # 读取 store 配置（默认禁用，需要在 plugin.toml 中显式启用）
+        store_enabled = False  # 默认禁用
+        try:
+            if hasattr(self, 'config'):
+                cfg = self.config.dump_effective_sync(timeout=1.0)
+                store_cfg = cfg.get("plugin", {}).get("store", {})
+                if isinstance(store_cfg, dict):
+                    store_enabled = store_cfg.get("enabled", False)
+        except Exception:
+            pass
+        
         self.store = PluginStore(
             plugin_id=self._plugin_id,
             plugin_dir=plugin_dir,
             logger=getattr(ctx, "logger", None),
+            enabled=store_enabled,
+        )
+        
+        # 读取 database 配置（默认禁用，需要在 plugin.toml 中显式启用）
+        db_enabled = False  # 默认禁用
+        db_name = None  # 默认使用 {plugin_id}.db
+        try:
+            if hasattr(self, 'config'):
+                cfg = self.config.dump_effective_sync(timeout=1.0)
+                db_cfg = cfg.get("plugin", {}).get("database", {})
+                if isinstance(db_cfg, dict):
+                    db_enabled = db_cfg.get("enabled", False)
+                    db_name = db_cfg.get("name")  # 可选：自定义数据库文件名
+        except Exception:
+            pass
+        
+        self.db = PluginDatabase(
+            plugin_id=self._plugin_id,
+            plugin_dir=plugin_dir,
+            logger=getattr(ctx, "logger", None),
+            enabled=db_enabled,
+            db_name=db_name,
         )
 
     def get_input_schema(self) -> Dict[str, Any]:

@@ -5,7 +5,7 @@
 // API 基础配置
 // 开发环境使用代理，生产环境使用完整 URL
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || (
-  import.meta.env.DEV ? '' : 'http://localhost:48916'
+  import.meta.env.DEV ? '' : window.location.origin
 )
 export const API_TIMEOUT = 30000 // 30秒
 

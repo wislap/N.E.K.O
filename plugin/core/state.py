@@ -149,8 +149,8 @@ class GlobalState:
         self.plugin_hosts: Dict[str, Any] = {}
         self.plugin_status_lock = threading.Lock()
         self.plugins_lock = threading.Lock()  # 保护 plugins 字典的线程安全
-        self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
         self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
+        self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
         self._event_queue: Optional[asyncio.Queue] = None
         self._lifecycle_queue: Optional[asyncio.Queue] = None
         self._message_queue: Optional[asyncio.Queue] = None
@@ -203,6 +203,15 @@ class GlobalState:
 
         self._message_plane_rpc_lock = threading.Lock()
         self._message_plane_rpc: Optional[Any] = None
+        
+        # 快照缓存机制（减少锁竞争）
+        self._snapshot_cache_lock = threading.Lock()
+        self._snapshot_cache: Dict[str, Dict[str, Any]] = {
+            "plugins": {"data": None, "timestamp": 0.0},
+            "hosts": {"data": None, "timestamp": 0.0},
+            "handlers": {"data": None, "timestamp": 0.0},
+        }
+        self._snapshot_cache_ttl: float = 0.5  # 500ms缓存TTL
 
     # 带超时的锁上下文管理器（用于防止死锁）
     @contextmanager
@@ -223,20 +232,225 @@ class GlobalState:
         with timed_lock(self.event_handlers_lock, timeout, "event_handlers_lock"):
             yield
 
-    def get_plugins_snapshot(self) -> Dict[str, Dict[str, Any]]:
-        """获取 plugins 的快照（线程安全）"""
-        with self.plugins_lock:
+    def get_plugins_snapshot(self, timeout: float = 2.0) -> Dict[str, Dict[str, Any]]:
+        """获取 plugins 的快照（线程安全，带超时）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            
+        Returns:
+            plugins 字典的浅拷贝
+            
+        Raises:
+            TimeoutError: 如果无法在超时时间内获取锁
+        """
+        acquired = self.plugins_lock.acquire(timeout=timeout)
+        if not acquired:
+            logger.warning("Failed to acquire plugins_lock within {}s, returning empty snapshot", timeout)
+            return {}
+        try:
             return dict(self.plugins)
+        finally:
+            self.plugins_lock.release()
 
-    def get_plugin_hosts_snapshot(self) -> Dict[str, Any]:
-        """获取 plugin_hosts 的快照（线程安全）"""
-        with self.plugin_hosts_lock:
+    def get_plugin_hosts_snapshot(self, timeout: float = 2.0) -> Dict[str, Any]:
+        """获取 plugin_hosts 的快照（线程安全，带超时）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            
+        Returns:
+            plugin_hosts 字典的浅拷贝
+            
+        Raises:
+            TimeoutError: 如果无法在超时时间内获取锁
+        """
+        acquired = self.plugin_hosts_lock.acquire(timeout=timeout)
+        if not acquired:
+            logger.warning("Failed to acquire plugin_hosts_lock within {}s, returning empty snapshot", timeout)
+            return {}
+        try:
             return dict(self.plugin_hosts)
+        finally:
+            self.plugin_hosts_lock.release()
 
-    def get_event_handlers_snapshot(self) -> Dict[str, EventHandler]:
-        """获取 event_handlers 的快照（线程安全）"""
-        with self.event_handlers_lock:
+    def get_event_handlers_snapshot(self, timeout: float = 2.0) -> Dict[str, EventHandler]:
+        """获取 event_handlers 的快照（线程安全，带超时）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            
+        Returns:
+            event_handlers 字典的浅拷贝
+            
+        Raises:
+            TimeoutError: 如果无法在超时时间内获取锁
+        """
+        acquired = self.event_handlers_lock.acquire(timeout=timeout)
+        if not acquired:
+            logger.warning("Failed to acquire event_handlers_lock within {}s, returning empty snapshot", timeout)
+            return {}
+        try:
             return dict(self.event_handlers)
+        finally:
+            self.event_handlers_lock.release()
+    
+    def get_plugins_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Dict[str, Any]]:
+        """获取 plugins 的快照（带缓存，减少锁竞争）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            force: 是否强制刷新缓存
+            
+        Returns:
+            plugins 字典的浅拷贝
+        """
+        import time
+        now = time.time()
+        
+        # 检查缓存
+        if not force:
+            with self._snapshot_cache_lock:
+                cache = self._snapshot_cache["plugins"]
+                if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
+                    return cache["data"]
+        
+        # 缓存失效或强制刷新，获取新快照
+        snapshot = self.get_plugins_snapshot(timeout=timeout)
+        
+        # 更新缓存
+        with self._snapshot_cache_lock:
+            self._snapshot_cache["plugins"]["data"] = snapshot
+            self._snapshot_cache["plugins"]["timestamp"] = now
+        
+        return snapshot
+    
+    def get_plugin_hosts_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Any]:
+        """获取 plugin_hosts 的快照（带缓存，减少锁竞争）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            force: 是否强制刷新缓存
+            
+        Returns:
+            plugin_hosts 字典的浅拷贝
+        """
+        import time
+        now = time.time()
+        
+        # 检查缓存
+        if not force:
+            with self._snapshot_cache_lock:
+                cache = self._snapshot_cache["hosts"]
+                if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
+                    return cache["data"]
+        
+        # 缓存失效或强制刷新，获取新快照
+        snapshot = self.get_plugin_hosts_snapshot(timeout=timeout)
+        
+        # 更新缓存
+        with self._snapshot_cache_lock:
+            self._snapshot_cache["hosts"]["data"] = snapshot
+            self._snapshot_cache["hosts"]["timestamp"] = now
+        
+        return snapshot
+    
+    def get_event_handlers_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, EventHandler]:
+        """获取 event_handlers 的快照（带缓存，减少锁竞争）
+        
+        Args:
+            timeout: 锁获取超时时间（秒），默认2秒
+            force: 是否强制刷新缓存
+            
+        Returns:
+            event_handlers 字典的浅拷贝
+        """
+        import time
+        now = time.time()
+        
+        # 检查缓存
+        if not force:
+            with self._snapshot_cache_lock:
+                cache = self._snapshot_cache["handlers"]
+                if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
+                    return cache["data"]
+        
+        # 缓存失效或强制刷新，获取新快照
+        snapshot = self.get_event_handlers_snapshot(timeout=timeout)
+        
+        # 更新缓存
+        with self._snapshot_cache_lock:
+            self._snapshot_cache["handlers"]["data"] = snapshot
+            self._snapshot_cache["handlers"]["timestamp"] = now
+        
+        return snapshot
+    
+    def invalidate_snapshot_cache(self, cache_type: Optional[str] = None) -> None:
+        """使快照缓存失效
+        
+        Args:
+            cache_type: 要失效的缓存类型 ('plugins', 'hosts', 'handlers')，None表示全部失效
+        """
+        with self._snapshot_cache_lock:
+            if cache_type is None:
+                # 全部失效
+                for key in self._snapshot_cache:
+                    self._snapshot_cache[key]["timestamp"] = 0.0
+            elif cache_type in self._snapshot_cache:
+                # 指定类型失效
+                self._snapshot_cache[cache_type]["timestamp"] = 0.0
+    
+    @contextmanager
+    def acquire_locks_in_order(self, *lock_names: str, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """按顺序获取多个锁，防止死锁
+        
+        Args:
+            lock_names: 锁名称列表，必须按照规范顺序：'plugins', 'hosts', 'handlers'
+            timeout: 每个锁的获取超时时间
+            
+        Example:
+            with state.acquire_locks_in_order('plugins', 'hosts'):
+                # 安全地访问 plugins 和 plugin_hosts
+                ...
+        """
+        lock_order = {'plugins': 1, 'hosts': 2, 'handlers': 3}
+        lock_map = {
+            'plugins': self.plugins_lock,
+            'hosts': self.plugin_hosts_lock,
+            'handlers': self.event_handlers_lock,
+        }
+        
+        # 验证锁名称和顺序
+        for name in lock_names:
+            if name not in lock_order:
+                raise ValueError(f"Unknown lock name: {name}")
+        
+        # 检查顺序是否正确
+        sorted_names = sorted(lock_names, key=lambda n: lock_order[n])
+        if list(lock_names) != sorted_names:
+            logger.warning(
+                "Lock acquisition order violation detected! Expected: {}, Got: {}",
+                sorted_names, list(lock_names)
+            )
+            raise RuntimeError(f"Lock order violation: {list(lock_names)} should be {sorted_names}")
+        
+        # 按顺序获取锁
+        acquired_locks = []
+        try:
+            for name in lock_names:
+                lock = lock_map[name]
+                if not lock.acquire(timeout=timeout):
+                    logger.error("Failed to acquire {} lock within {}s", name, timeout)
+                    raise TimeoutError(f"Failed to acquire {name} lock within {timeout}s")
+                acquired_locks.append(lock)
+            yield
+        finally:
+            # 释放所有已获取的锁（逆序释放）
+            for lock in reversed(acquired_locks):
+                try:
+                    lock.release()
+                except Exception:
+                    pass
 
     def _bump_bus_rev(self, bus: str) -> int:
         b = str(bus).strip()

@@ -46,10 +46,12 @@ class PluginStore:
         plugin_id: str,
         plugin_dir: Path,
         logger: Optional["LoguruLogger"] = None,
+        enabled: bool = True,
     ):
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
         self.logger = logger
+        self.enabled = enabled
         
         # 数据库文件路径
         self._db_path = self.plugin_dir / "store.db"
@@ -57,11 +59,17 @@ class PluginStore:
         # 线程本地连接（每个线程一个连接）
         self._local = threading.local()
         
-        # 初始化数据库
-        self._init_db()
+        # 初始化数据库（仅在启用时）
+        if self.enabled:
+            self._init_db()
+        else:
+            if self.logger:
+                self.logger.debug(f"[Store] PluginStore disabled for plugin {self.plugin_id}")
     
     def _get_conn(self) -> sqlite3.Connection:
         """获取当前线程的数据库连接"""
+        if not self.enabled:
+            raise RuntimeError(f"PluginStore is disabled for plugin {self.plugin_id}")
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = sqlite3.connect(
                 str(self._db_path),
@@ -107,6 +115,8 @@ class PluginStore:
         Returns:
             存储的值，如果不存在则返回 default
         """
+        if not self.enabled:
+            return default
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT value FROM kv_store WHERE key = ?",
@@ -130,6 +140,10 @@ class PluginStore:
             key: 键名
             value: 值（必须可序列化）
         """
+        if not self.enabled:
+            if self.logger:
+                self.logger.warning(f"[Store] Attempted to set key '{key}' but store is disabled")
+            return
         import time
         
         conn = self._get_conn()
@@ -155,6 +169,8 @@ class PluginStore:
         Returns:
             True 如果删除成功，False 如果键不存在
         """
+        if not self.enabled:
+            return False
         conn = self._get_conn()
         cursor = conn.execute(
             "DELETE FROM kv_store WHERE key = ?",
@@ -173,6 +189,8 @@ class PluginStore:
         Returns:
             True 如果存在
         """
+        if not self.enabled:
+            return False
         conn = self._get_conn()
         cursor = conn.execute(
             "SELECT 1 FROM kv_store WHERE key = ?",
@@ -190,6 +208,8 @@ class PluginStore:
         Returns:
             键名列表
         """
+        if not self.enabled:
+            return []
         conn = self._get_conn()
         if prefix:
             cursor = conn.execute(
@@ -207,6 +227,8 @@ class PluginStore:
         Returns:
             删除的记录数
         """
+        if not self.enabled:
+            return 0
         conn = self._get_conn()
         cursor = conn.execute("DELETE FROM kv_store")
         conn.commit()
@@ -219,6 +241,8 @@ class PluginStore:
         Returns:
             记录数量
         """
+        if not self.enabled:
+            return 0
         conn = self._get_conn()
         cursor = conn.execute("SELECT COUNT(*) as cnt FROM kv_store")
         row = cursor.fetchone()
@@ -231,6 +255,8 @@ class PluginStore:
         Returns:
             所有键值对的字典
         """
+        if not self.enabled:
+            return {}
         conn = self._get_conn()
         cursor = conn.execute("SELECT key, value FROM kv_store")
         result = {}

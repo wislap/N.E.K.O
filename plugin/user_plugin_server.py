@@ -10,6 +10,7 @@ from typing import Optional
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, Request, Query, Body, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
@@ -133,6 +135,13 @@ from plugin.server.ws_run import ws_run_endpoint
 from plugin.server.ws_run import issue_run_token
 from plugin.server.blob_store import blob_store
 from plugin.server.ws_admin import ws_admin_endpoint
+
+# 创建专用线程池，避免默认线程池饥饿导致所有请求阻塞
+# 默认线程池通常只有8-12个线程，高并发时会导致连心跳和静态文件也超时
+_api_executor = ThreadPoolExecutor(
+    max_workers=max(16, (os.cpu_count() or 1) * 4),
+    thread_name_prefix="api-worker"
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -264,7 +273,7 @@ async def available():
         with state.plugins_lock:
             return len(state.plugins)
     
-    plugins_count = await loop.run_in_executor(None, _get_count)
+    plugins_count = await loop.run_in_executor(_api_executor, _get_count)
     return {
         "status": "ok",
         "available": True,
@@ -297,8 +306,10 @@ async def server_info(_: str = require_admin):
         for pid in running_plugins:
             host = state.plugin_hosts.get(pid)
             if host:
+                # 不调用 is_alive()，因为可能阻塞事件循环
+                # 如果 host 存在于 plugin_hosts 中，就认为它是 running 的
                 running_plugins_status[pid] = {
-                    "alive": host.is_alive() if hasattr(host, 'is_alive') else False,
+                    "alive": True,  # 在 plugin_hosts 中即表示 running
                     "pid": host.process.pid if hasattr(host, 'process') and host.process else None
                 }
         
@@ -310,7 +321,7 @@ async def server_info(_: str = require_admin):
             "running_plugins_status": running_plugins_status,
         }
     
-    info = await loop.run_in_executor(None, _get_info)
+    info = await loop.run_in_executor(_api_executor, _get_info)
     info["sdk_version"] = SDK_VERSION
     info["time"] = now_iso()
     return info
@@ -327,14 +338,14 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
         loop = asyncio.get_running_loop()
         if plugin_id:
             # status_manager.get_plugin_status 可能有锁竞争，放到线程池执行
-            result = await loop.run_in_executor(None, status_manager.get_plugin_status, plugin_id)
+            result = await loop.run_in_executor(_api_executor, status_manager.get_plugin_status, plugin_id)
             # 兼容字段：部分调用方可能依赖 time 字段
             if isinstance(result, dict) and "time" not in result:
                 result["time"] = now_iso()
             return result
         else:
             # status_manager.get_plugin_status 可能有锁竞争，放到线程池执行
-            plugins_status = await loop.run_in_executor(None, status_manager.get_plugin_status)
+            plugins_status = await loop.run_in_executor(_api_executor, status_manager.get_plugin_status)
             return {
                 "plugins": plugins_status,
                 "time": now_iso(),
@@ -364,7 +375,7 @@ async def list_plugins():
     try:
         # build_plugin_list 可能有锁竞争，放到线程池执行
         loop = asyncio.get_running_loop()
-        plugins = await loop.run_in_executor(None, build_plugin_list)
+        plugins = await loop.run_in_executor(_api_executor, build_plugin_list)
         
         if plugins:
             return {"plugins": plugins, "message": ""}
@@ -802,19 +813,13 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
                 if plugin_running:
                     host = state.plugin_hosts[plugin_id]
                     # 检查进程状态
-                    process_alive = False
-                    if hasattr(host, "process") and host.process:
-                        process_alive = host.process.is_alive()
-                        if process_alive:
-                            logger.debug(
-                                f"Plugin {plugin_id} is running (pid: {host.process.pid})"
-                            )
-                        else:
-                            # 进程已退出，记录退出码
-                            exitcode = getattr(host.process, 'exitcode', None)
-                            logger.debug(
-                                f"Plugin {plugin_id} process is not alive (exitcode: {exitcode}, pid: {host.process.pid if hasattr(host.process, 'pid') else 'N/A'})"
-                            )
+                    # 不调用 process.is_alive()，因为可能阻塞事件循环
+                    # 如果 host 存在且有 process，就认为它是 alive 的
+                    process_alive = hasattr(host, "process") and host.process is not None
+                    if process_alive:
+                        logger.debug(
+                            f"Plugin {plugin_id} is running (pid: {host.process.pid if hasattr(host.process, 'pid') else 'unknown'})"
+                        )
                     else:
                         logger.debug(f"Plugin {plugin_id} host has no process object")
                 else:
@@ -825,7 +830,7 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
                     return plugin_registered, plugin_running, host, process_alive, all_running_plugins
                 return plugin_registered, plugin_running, host, process_alive, None
         
-        plugin_registered, plugin_running, host, process_alive, all_running_plugins = await loop.run_in_executor(None, _check_plugin)
+        plugin_registered, plugin_running, host, process_alive, all_running_plugins = await loop.run_in_executor(_api_executor, _check_plugin)
         
         if all_running_plugins is not None:
             logger.info(

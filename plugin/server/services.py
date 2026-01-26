@@ -149,14 +149,19 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     result = []
     
     # 一次性获取所有需要的数据快照，避免在循环中反复获取锁
-    # 使用快照方法确保线程安全
-    plugins_copy = state.get_plugins_snapshot()
-    if not plugins_copy:
+    # 使用带缓存的快照方法（500ms TTL），进一步减少锁竞争
+    try:
+        plugins_copy = state.get_plugins_snapshot_cached(timeout=2.0)
+        if not plugins_copy:
+            return result
+        
+        hosts_copy = state.get_plugin_hosts_snapshot_cached(timeout=2.0)
+        running_plugins = set(hosts_copy.keys())
+        event_handlers_copy = state.get_event_handlers_snapshot_cached(timeout=2.0)
+    except Exception as e:
+        logger.warning("Failed to get state snapshots in build_plugin_list: {}", e)
+        # 如果无法获取快照，返回空列表而不是阻塞
         return result
-    
-    hosts_copy = state.get_plugin_hosts_snapshot()
-    running_plugins = set(hosts_copy.keys())
-    event_handlers_copy = state.get_event_handlers_snapshot()
     
     logger.info("加载插件列表成功")
     
@@ -166,11 +171,9 @@ def build_plugin_list() -> List[Dict[str, Any]]:
             plugin_info["entries"] = []
             
             # 检查插件是否正在运行（使用快照数据，无需再获取锁）
-            is_running = False
-            if plugin_id in running_plugins:
-                host = hosts_copy.get(plugin_id)
-                if host and hasattr(host, 'is_alive'):
-                    is_running = host.is_alive()
+            # 注意：不调用 host.is_alive()，因为 multiprocessing.Process.is_alive() 可能阻塞事件循环
+            # 直接使用 plugin_id 是否在 running_plugins 中来判断
+            is_running = plugin_id in running_plugins
             
             plugin_info["status"] = "running" if is_running else "stopped"
             
@@ -296,9 +299,34 @@ async def trigger_plugin(
     _enqueue_event(event)
     
     # 一次性获取快照，减少锁持有时间
+    # 使用带缓存的快照方法（500ms TTL），在高并发场景下几乎不需要等待锁
     # 锁顺序: plugins_lock -> plugin_hosts_lock
-    plugins_snapshot = state.get_plugins_snapshot()
-    hosts_snapshot = state.get_plugin_hosts_snapshot()
+    try:
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+    except Exception as e:
+        logger.warning(
+            "Failed to get state snapshots for plugin {}: {}, using fallback",
+            plugin_id,
+            e
+        )
+        # 快速失败：如果无法获取快照，直接返回错误
+        plugin_response = fail(
+            ErrorCode.NOT_READY,
+            "System is busy, please retry",
+            details={"hint": "State snapshots unavailable"},
+            retriable=True,
+            trace_id=trace_id,
+        )
+        return {
+            "success": False,
+            "plugin_id": plugin_id,
+            "executed_entry": entry_id,
+            "args": args,
+            "plugin_response": plugin_response,
+            "received_at": event["received_at"],
+            "plugin_forward_error": None,
+        }
     
     plugin_registered = plugin_id in plugins_snapshot
     host = hosts_snapshot.get(plugin_id)

@@ -23,6 +23,11 @@ conflicts = [
 enabled = true
 auto_start = true
 
+# PluginStore 配置（默认禁用，不会创建 store.db 文件）
+# 如需启用持久化 KV 存储，设置 enabled = true
+[plugin.store]
+enabled = false
+
 [debug.timer]
 enable = false
 interval_seconds = 3
