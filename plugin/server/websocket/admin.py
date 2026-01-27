@@ -9,9 +9,9 @@ from typing import Any, Dict, Optional, Set, Tuple
 from fastapi import WebSocket
 
 from plugin.core.state import state
-from plugin.server.auth import get_admin_code
+from plugin.server.infrastructure.auth import get_admin_code
 from plugin.server.management import stop_plugin
-from plugin.server.runs import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
+from plugin.server.runs.manager import RunCreateRequest, get_run, list_export_for_run, list_runs, cancel_run, create_run
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from plugin.server.requests.typing import SendResponse
-from plugin.server.runs import ExportItem, append_export_item
+from plugin.server.runs.manager import ExportItem, append_export_item
 from plugin.settings import EXPORT_INLINE_BINARY_MAX_BYTES
 
 

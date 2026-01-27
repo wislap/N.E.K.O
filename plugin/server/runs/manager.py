@@ -215,7 +215,7 @@ _runs_emit_min_interval_s: float = 0.2
 
 def _publish_bus_record(*, store: str, record: Dict[str, Any]) -> None:
     try:
-        from plugin.server.message_plane_bridge import publish_record
+        from plugin.server.messaging.plane_bridge import publish_record
 
         publish_record(store=str(store), record=dict(record), topic="all")
     except Exception:

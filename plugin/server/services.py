@@ -24,8 +24,8 @@ from plugin.api.exceptions import (
     PluginExecutionError,
     PluginCommunicationError,
 )
-from plugin.server.error_handler import handle_plugin_error
-from plugin.server.utils import now_iso
+from plugin.server.infrastructure.error_handler import handle_plugin_error
+from plugin.server.infrastructure.utils import now_iso
 from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,

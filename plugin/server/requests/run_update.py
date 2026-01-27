@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, Optional
 
 from plugin.server.requests.typing import SendResponse
-from plugin.server.runs import get_run, update_run_from_plugin
+from plugin.server.runs.manager import get_run, update_run_from_plugin
 
 
 async def handle_run_update(request: Dict[str, Any], send_response: SendResponse) -> None:

@@ -19,14 +19,14 @@ from plugin.core.state import state
 from plugin.runtime.registry import load_plugins_from_toml
 from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
-from plugin.server.metrics_service import metrics_collector
+from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.plugin_router import plugin_router
-from plugin.server.bus_subscriptions import bus_subscription_manager
-from plugin.server.auth import generate_admin_code, set_admin_code
+from plugin.server.messaging.bus_subscriptions import bus_subscription_manager
+from plugin.server.infrastructure.auth import generate_admin_code, set_admin_code
 from plugin.server.services import _enqueue_lifecycle
-from plugin.server.message_plane_bridge import start_bridge, stop_bridge
-from plugin.server.message_plane_runner import build_message_plane_runner
-from plugin.server.utils import now_iso
+from plugin.server.messaging.plane_bridge import start_bridge, stop_bridge
+from plugin.server.messaging.plane_runner import build_message_plane_runner
+from plugin.server.infrastructure.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     NEKO_LOGURU_LEVEL,

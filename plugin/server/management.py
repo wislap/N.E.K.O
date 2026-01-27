@@ -23,7 +23,7 @@ from plugin.settings import (
 )
 from plugin.sdk.version import SDK_VERSION
 from plugin.server.services import _enqueue_lifecycle
-from plugin.server.utils import now_iso
+from plugin.server.infrastructure.utils import now_iso
 
 
 def _get_plugin_config_path(plugin_id: str) -> Optional[Path]:

@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from plugin.core.state import state
-from plugin.server.bus_subscriptions import new_sub_id
+from plugin.server.messaging.bus_subscriptions import new_sub_id
 from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS
 from plugin.server.requests.typing import SendResponse
 

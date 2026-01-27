@@ -787,7 +787,7 @@ class GlobalState:
                 return
             self._event_store.append(record)
         try:
-            from plugin.server.message_plane_bridge import publish_record
+            from plugin.server.messaging.plane_bridge import publish_record
 
             publish_record(store="events", record=dict(record), topic="all")
         except Exception:
@@ -818,7 +818,7 @@ class GlobalState:
         if not kept:
             return 0
         try:
-            from plugin.server.message_plane_bridge import publish_record
+            from plugin.server.messaging.plane_bridge import publish_record
 
             for rec in kept:
                 if isinstance(rec, dict):
@@ -842,7 +842,7 @@ class GlobalState:
                 return
             self._lifecycle_store.append(record)
         try:
-            from plugin.server.message_plane_bridge import publish_record
+            from plugin.server.messaging.plane_bridge import publish_record
 
             publish_record(store="lifecycle", record=dict(record), topic="all")
         except Exception:
@@ -873,7 +873,7 @@ class GlobalState:
         if not kept:
             return 0
         try:
-            from plugin.server.message_plane_bridge import publish_record
+            from plugin.server.messaging.plane_bridge import publish_record
 
             for rec in kept:
                 if isinstance(rec, dict):
@@ -1128,7 +1128,7 @@ class GlobalState:
 
     def sync_message_plane_events(self) -> int:
         try:
-            from plugin.server.message_plane_bridge import publish_snapshot
+            from plugin.server.messaging.plane_bridge import publish_snapshot
 
             items = self.list_event_records()
             publish_snapshot(store="events", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
@@ -1138,7 +1138,7 @@ class GlobalState:
 
     def sync_message_plane_lifecycle(self) -> int:
         try:
-            from plugin.server.message_plane_bridge import publish_snapshot
+            from plugin.server.messaging.plane_bridge import publish_snapshot
 
             items = self.list_lifecycle_records()
             publish_snapshot(store="lifecycle", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
