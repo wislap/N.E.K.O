@@ -940,12 +940,18 @@ class PluginHost:
         # Event/Manager proxies and wait_for_plugin_response will never be woken.
         try:
             _ = state.plugin_response_map
-        except Exception:
-            pass
+        except Exception as e:
+            loguru_logger.warning(
+                "Failed to pre-initialize plugin_response_map for plugin {}: {}",
+                plugin_id, e
+            )
         try:
             _ = state.plugin_response_notify_event
-        except Exception:
-            pass
+        except Exception as e:
+            loguru_logger.warning(
+                "Failed to pre-initialize plugin_response_notify_event for plugin {}: {}",
+                plugin_id, e
+            )
         
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,

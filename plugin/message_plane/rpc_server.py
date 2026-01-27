@@ -40,6 +40,7 @@ from .validation import validate_rpc_envelope
 _MAX_USER_REGEX_LEN = 128
 _MAX_REGEX_TEXT_LEN = 1024
 _REGEX_TIMEOUT_SECONDS = 0.02
+_MAX_PLAN_DEPTH = 16
 
 
 def _validate_regex_pattern(pattern: str, *, strict: bool) -> Optional[bool]:
@@ -423,7 +424,9 @@ class MessagePlaneRpcServer:
             return kept
         return None
 
-    def _eval_plan(self, st: TopicStore, node: Any) -> Optional[List[Dict[str, Any]]]:
+    def _eval_plan(self, st: TopicStore, node: Any, depth: int = 0) -> Optional[List[Dict[str, Any]]]:
+        if depth > _MAX_PLAN_DEPTH:
+            return None
         if not isinstance(node, dict):
             return None
         kind = node.get("kind")
@@ -492,15 +495,15 @@ class MessagePlaneRpcServer:
 
         if kind == "unary":
             child = node.get("child")
-            base = self._eval_plan(st, child)
+            base = self._eval_plan(st, child, depth + 1)
             if base is None:
                 return None
             out = self._apply_unary_op(base, op=op, params=params)
             return out
 
         if kind == "binary":
-            left = self._eval_plan(st, node.get("left"))
-            right = self._eval_plan(st, node.get("right"))
+            left = self._eval_plan(st, node.get("left"), depth + 1)
+            right = self._eval_plan(st, node.get("right"), depth + 1)
             if left is None or right is None:
                 return None
             return self._apply_binary_op(left, right, op=op)

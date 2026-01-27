@@ -5,11 +5,6 @@
 """
 import asyncio
 import itertools
-import json
-import os
-import queue
-import re
-import signal
 import threading
 import time
 import uuid
@@ -241,8 +236,8 @@ class GlobalState:
         Returns:
             plugins 字典的浅拷贝
             
-        Raises:
-            TimeoutError: 如果无法在超时时间内获取锁
+        Note:
+            超时会返回空字典而非抛异常
         """
         acquired = self.plugins_lock.acquire(timeout=timeout)
         if not acquired:
@@ -262,8 +257,8 @@ class GlobalState:
         Returns:
             plugin_hosts 字典的浅拷贝
             
-        Raises:
-            TimeoutError: 如果无法在超时时间内获取锁
+        Note:
+            超时会返回空字典而非抛异常
         """
         acquired = self.plugin_hosts_lock.acquire(timeout=timeout)
         if not acquired:
@@ -283,8 +278,8 @@ class GlobalState:
         Returns:
             event_handlers 字典的浅拷贝
             
-        Raises:
-            TimeoutError: 如果无法在超时时间内获取锁
+        Note:
+            超时会返回空字典而非抛异常
         """
         acquired = self.event_handlers_lock.acquire(timeout=timeout)
         if not acquired:
@@ -313,7 +308,7 @@ class GlobalState:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["plugins"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
-                    return cache["data"]
+                    return dict(cache["data"])
         
         # 缓存失效或强制刷新，获取新快照
         snapshot = self.get_plugins_snapshot(timeout=timeout)
@@ -343,7 +338,7 @@ class GlobalState:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["hosts"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
-                    return cache["data"]
+                    return dict(cache["data"])
         
         # 缓存失效或强制刷新，获取新快照
         snapshot = self.get_plugin_hosts_snapshot(timeout=timeout)
@@ -373,7 +368,7 @@ class GlobalState:
             with self._snapshot_cache_lock:
                 cache = self._snapshot_cache["handlers"]
                 if cache["data"] is not None and (now - cache["timestamp"]) < self._snapshot_cache_ttl:
-                    return cache["data"]
+                    return dict(cache["data"])
         
         # 缓存失效或强制刷新，获取新快照
         snapshot = self.get_event_handlers_snapshot(timeout=timeout)

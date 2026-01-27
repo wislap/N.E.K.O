@@ -5,7 +5,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
 from multiprocessing import freeze_support
+import multiprocessing
 freeze_support()
+
+# 设置 multiprocessing 启动方法（确保跨进程共享结构的一致性）
+# 在 Linux/macOS 上使用 fork，在 Windows 上使用 spawn（默认）
+if sys.platform != "win32":
+    try:
+        multiprocessing.set_start_method('fork', force=False)
+    except RuntimeError:
+        # 启动方法已经设置过，忽略
+        pass
 
 # 检查是否需要执行初始化（用于防止 Windows spawn 方式创建的子进程重复初始化）
 # 方案：首次导入时设置环境变量标记，子进程会继承这个标记从而跳过初始化
@@ -628,13 +638,19 @@ async def on_shutdown():
         
         # 等待预加载任务完成（如果还在运行）
         global _preload_task
-        if _preload_task and not _preload_task.done():
+        if _preload_task:
             try:
                 await asyncio.wait_for(_preload_task, timeout=1.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                logger.debug("预加载任务清理时超时或取消（正常关闭流程）")
-            except Exception:
-                logger.debug("预加载任务清理时出错（正常关闭流程）")
+            except asyncio.TimeoutError:
+                _preload_task.cancel()
+                try:
+                    await _preload_task
+                except asyncio.CancelledError:
+                    logger.debug("预加载任务清理时超时并已取消（正常关闭流程）")
+            except asyncio.CancelledError:
+                logger.debug("预加载任务清理时已取消（正常关闭流程）")
+            except Exception as e:
+                logger.debug(f"预加载任务清理时出错（正常关闭流程）: {e}", exc_info=True)
         
         logger.info("✅ 资源清理完成")
 
