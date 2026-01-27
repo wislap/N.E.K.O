@@ -125,6 +125,9 @@ class LLMSessionManager:
         # 防止并发启动的标志
         self.is_starting_session = False
         
+        # 预热进行中标志：防止预热期间向TTS发送空包
+        self._is_warmup_in_progress = False
+        
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
@@ -219,6 +222,13 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
+        if self._is_warmup_in_progress:
+            logger.debug("⏭️ 跳过预热期间的TTS信号发送")
+            # 仍然发送 turn end 消息（不影响其他逻辑）
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            return
+        
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
@@ -944,6 +954,9 @@ class LLMSessionManager:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()
                         
+                        # 设置预热标志，防止预热期间向TTS发送空包
+                        self._is_warmup_in_progress = True
+                        
                         # 创建一个事件来等待预热完成
                         warmup_done_event = asyncio.Event()
                         original_callback = self.session.on_response_done
@@ -956,19 +969,22 @@ class LLMSessionManager:
                         
                         await self.session.create_response("", skipped=True)
                         
-                        # 等待预热完成（最多5秒）
+                        # 等待预热完成（最多10秒）
                         try:
-                            await asyncio.wait_for(warmup_done_event.wait(), timeout=5.0)
+                            await asyncio.wait_for(warmup_done_event.wait(), timeout=10.0)
                             warmup_time = time.time() - warmup_start
                             logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️ Session预热超时（5秒），继续执行...")
+                            logger.warning("⚠️ Session预热超时（10秒），继续执行...")
                         
                         # 恢复原始回调
                         self.session.on_response_done = original_callback
                         
                     except Exception as e:
                         logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
+                    finally:
+                        # 确保清除预热标志
+                        self._is_warmup_in_progress = False
                 
                 # 启动成功，重置失败计数器
                 self.session_start_failure_count = 0

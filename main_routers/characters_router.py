@@ -25,7 +25,7 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
-from utils.frontend_utils import find_models, find_model_directory
+from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
@@ -232,14 +232,13 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 else:
                     # 如果在完整列表中找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory(live2d_model_name)
-                    if os.path.exists(model_dir):
+                    if model_dir and os.path.exists(model_dir):
                         # 查找模型配置文件
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
                             
-                            # 使用保存的item_id构建model_path
-                            # 从之前的逻辑中获取saved_item_id
+                            # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
                             saved_item_id = catgirl_data.get('live2d_item_id', '') if 'catgirl_data' in locals() else ''
                             
                             # 如果有保存的item_id，使用它构建路径
@@ -274,7 +273,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 else:
                     # 如果找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory('mao_pro')
-                    if os.path.exists(model_dir):
+                    if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
@@ -303,17 +302,83 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
 
 @router.put('/catgirl/l2d/{name}')
 async def update_catgirl_l2d(name: str, request: Request):
-    """更新指定猫娘的Live2D模型设置"""
+    """更新指定猫娘的模型设置（支持Live2D和VRM）"""
     try:
         data = await request.json()
         live2d_model = data.get('live2d')
+        vrm_model = data.get('vrm')
+        model_type = data.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
         item_id = data.get('item_id')  # 获取可选的item_id
+        vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         
-        if not live2d_model:
-            return JSONResponse(content={
-                'success': False,
-                'error': '未提供Live2D模型名称'
-            })
+        # 根据model_type检查相应的模型字段
+        model_type_str = str(model_type).lower() if model_type else 'live2d'
+        
+        # 【修复】model_type 只允许 {live2d, vrm}，否则 400
+        if model_type_str not in ['live2d', 'vrm']:
+            return JSONResponse(
+                content={
+                    'success': False,
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d 或 vrm'
+                },
+                status_code=400
+            )
+        
+        if model_type_str == 'vrm':
+            if not vrm_model:
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': '未提供VRM模型路径'
+                    },
+                    status_code=400
+                )
+            
+            # 验证 VRM 模型路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
+            vrm_model_str = str(vrm_model).strip()
+            
+            # 检查是否包含 URL 方案
+            if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径不能包含URL方案'
+                    },
+                    status_code=400
+                )
+            
+            # 检查是否包含路径遍历（..）
+            if '..' in vrm_model_str:
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径不能包含路径遍历（..）'
+                    },
+                    status_code=400
+                )
+            
+            # 检查是否以允许的前缀开头
+            allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+            if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'
+                    },
+                    status_code=400
+                )
+            
+            # 使用验证后的值
+            vrm_model = vrm_model_str
+        else:
+            if not live2d_model:
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': '未提供Live2D模型名称'
+                    },
+                    status_code=400
+                )
         
         # 加载当前角色配置
         _config_manager = get_config_manager()
@@ -330,13 +395,73 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 更新Live2D模型设置，同时保存item_id（如果有）
-        characters['猫娘'][name]['live2d'] = live2d_model
-        if item_id:
-            characters['猫娘'][name]['live2d_item_id'] = item_id
-            logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
+        # 切换模型类型时清理"另一套模型字段"，避免配置残留
+        if model_type_str == 'vrm':
+            characters['猫娘'][name].pop('live2d', None)
+            characters['猫娘'][name].pop('live2d_item_id', None)
+            
+            # 更新VRM模型设置
+            characters['猫娘'][name]['vrm'] = vrm_model
+            characters['猫娘'][name]['model_type'] = 'vrm'
+            
+            # 处理 vrm_animation：支持显式清空（传 null 或空字符串）
+            if 'vrm_animation' in data:
+                if vrm_animation is None or vrm_animation == '':
+                    characters['猫娘'][name].pop('vrm_animation', None)
+                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，已清空动作")
+                else:
+                    # 验证 VRM 动画路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
+                    vrm_animation_str = str(vrm_animation).strip()
+                    
+                    # 检查是否包含 URL 方案
+                    if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径不能包含URL方案'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 检查是否包含路径遍历（..）
+                    if '..' in vrm_animation_str:
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径不能包含路径遍历（..）'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 检查是否以允许的前缀开头
+                    allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                    if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 使用验证后的值
+                    characters['猫娘'][name]['vrm_animation'] = vrm_animation_str
+                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation_str}")
+            else:
+                logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，动作字段未变更")
         else:
-            logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
+            characters['猫娘'][name].pop('vrm', None)
+            characters['猫娘'][name].pop('vrm_animation', None)
+            characters['猫娘'][name].pop('lighting', None)  # 清理 VRM 打光配置
+            
+            # 更新Live2D模型设置，同时保存item_id（如果有）
+            characters['猫娘'][name]['live2d'] = live2d_model
+            characters['猫娘'][name]['model_type'] = 'live2d'
+            if item_id:
+                characters['猫娘'][name]['live2d_item_id'] = item_id
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
+            else:
+                logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
         
         # 保存配置
         _config_manager.save_characters(characters)
@@ -344,17 +469,128 @@ async def update_catgirl_l2d(name: str, request: Request):
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
         
+        
+        if model_type_str == 'vrm':
+            message = f'已更新角色 {name} 的VRM模型为 {vrm_model}'
+        else:
+            message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
+        
         return JSONResponse(content={
             'success': True,
-            'message': f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
+            'message': message
         })
         
     except Exception as e:
-        logger.error(f"更新角色Live2D模型失败: {e}")
+        logger.exception("更新角色模型设置失败")
         return JSONResponse(content={
             'success': False,
             'error': str(e)
         })
+
+
+@router.put('/catgirl/{name}/lighting')
+async def update_catgirl_lighting(name: str, request: Request):
+    """更新指定猫娘的VRM打光配置
+    
+    Args:
+        name: 角色名称
+        request: 请求体包含 lighting (dict) 和可选的 apply_runtime (bool)
+                 apply_runtime 也可通过 query param 传递,query param 优先级更高
+    """
+    try:
+        data = await request.json()
+        lighting = data.get('lighting')
+        
+        apply_runtime = data.get('apply_runtime', False)
+        query_params = request.query_params
+        if 'apply_runtime' in query_params:
+            apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
+
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+
+        if '猫娘' not in characters or name not in characters['猫娘']:
+            return JSONResponse(content={
+                'success': False,
+                'error': '角色不存在'
+            }, status_code=404)
+
+        model_type = characters['猫娘'][name].get('model_type', 'live2d')
+        # 统一做 .lower() 处理，避免大小写/空值导致误判
+        model_type_normalized = str(model_type).lower() if model_type else 'live2d'
+        if model_type_normalized != 'vrm':
+            logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
+        
+        from config import get_default_vrm_lighting
+        existing_lighting = characters['猫娘'][name].get('lighting')
+        if isinstance(existing_lighting, dict):
+            base_lighting = existing_lighting
+        else:
+            base_lighting = get_default_vrm_lighting()
+        
+        if not isinstance(lighting, dict):
+            return JSONResponse(content={
+                'success': False,
+                'error': 'lighting 必须是对象'
+            }, status_code=400)
+        
+        lighting = {**base_lighting, **lighting}
+
+        from config import VRM_LIGHTING_RANGES
+        lighting_ranges = VRM_LIGHTING_RANGES
+
+        for key, (min_val, max_val) in lighting_ranges.items():
+            if key not in lighting:
+                return JSONResponse(content={
+                    'success': False,
+                    'error': f'缺少打光参数: {key}'
+                }, status_code=400)
+
+            val = lighting[key]
+            if not isinstance(val, (int, float)) or not (min_val <= val <= max_val):
+                return JSONResponse(content={
+                    'success': False,
+                    'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
+                }, status_code=400)
+
+        
+        characters['猫娘'][name]['lighting'] = {
+            key: float(lighting[key]) for key in lighting_ranges.keys()
+        }
+
+
+
+        logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
+
+        _config_manager.save_characters(characters)
+        
+        if apply_runtime:
+            initialize_character_data = get_initialize_character_data()
+            if initialize_character_data:
+                await initialize_character_data()
+                logger.info(f"已执行完整配置重载（角色 {name} 的打光配置）")
+        else:
+            logger.debug("跳过完整配置重载（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
+
+        if apply_runtime:
+            message = f'已保存角色 {name} 的打光配置并已应用到运行时'
+        else:
+            message = f'已保存角色 {name} 的打光配置到磁盘（需要刷新页面或调用重载才能生效）'
+
+        return JSONResponse(content={
+            'success': True,
+            'message': message,
+            'applied_runtime': apply_runtime,
+            'needs_reload': not apply_runtime
+        })
+
+    except Exception as e:
+        logger.error(f"保存打光配置失败: {e}")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
+
 
 
 @router.put('/catgirl/voice_id/{name}')
@@ -955,6 +1191,87 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         logger.error(f"读取文件到内存失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
     
+    # 检测是否使用本地 TTS（ws/wss 协议）
+    _config_manager = get_config_manager()
+    tts_config = _config_manager.get_model_api_config('tts_custom')
+    base_url = tts_config.get('base_url', '')
+    is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+    
+    if is_local_tts:
+        # ==================== 本地 TTS 注册流程 ====================
+        # 将 ws(s):// 转换为 http(s):// 用于 REST API 调用
+        if base_url.startswith('wss://'):
+            http_base = 'https://' + base_url[6:]
+        else:
+            http_base = 'http://' + base_url[5:]
+        
+        # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
+        # 例如: ws://localhost:50000/v1/audio/speech/stream -> http://localhost:50000
+        if '/v1/' in http_base:
+            http_base = http_base.split('/v1/')[0]
+        
+        register_url = f"{http_base}/v1/speakers/register"
+        logger.info(f"使用本地 TTS 注册: {register_url}")
+        
+        try:
+            file_buffer.seek(0)
+            
+            # 根据用户 demo，API 格式：
+            # POST /v1/speakers/register
+            # multipart/form-data: speaker_id, prompt_text, prompt_audio
+            files = {
+                'prompt_audio': (file.filename, file_buffer, 'audio/wav')
+            }
+            data = {
+                'speaker_id': prefix,
+                'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
+            }
+            
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(register_url, data=data, files=files)
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    voice_id = prefix  # 本地 TTS 使用 speaker_id 作为 voice_id
+                    
+                    # 保存到本地音色库（使用特殊的 key 标识本地 TTS）
+                    voice_data = {
+                        'voice_id': voice_id,
+                        'prefix': prefix,
+                        'is_local': True,
+                        'created_at': datetime.now().isoformat()
+                    }
+                    try:
+                        _config_manager.save_voice_for_current_api(voice_id, voice_data)
+                        logger.info(f"本地 TTS voice_id 已保存: {voice_id}")
+                    except Exception as save_error:
+                        logger.warning(f"保存 voice_id 到音色库失败（本地 TTS 仍可用）: {save_error}")
+                    
+                    return JSONResponse({
+                        'voice_id': voice_id,
+                        'message': result.get('message', '本地音色注册成功'),
+                        'is_local': True
+                    })
+                else:
+                    error_text = resp.text
+                    logger.error(f"本地 TTS 注册失败: {error_text}")
+                    return JSONResponse({
+                        'error': f'本地 TTS 注册失败: {error_text[:200]}'
+                    }, status_code=resp.status_code)
+                    
+        except httpx.ConnectError as e:
+            logger.error(f"无法连接本地 TTS 服务器: {e}")
+            return JSONResponse({
+                'error': f'无法连接本地 TTS 服务器: {http_base}，请确保服务器已启动'
+            }, status_code=503)
+        except Exception as e:
+            logger.error(f"本地 TTS 注册时发生错误: {e}")
+            return JSONResponse({
+                'error': f'本地 TTS 注册失败: {str(e)}'
+            }, status_code=500)
+    
+    # ==================== 阿里云 TTS 注册流程（原有逻辑） ====================
+    
     # 根据参考音频语言计算 language_hints
     # 对于中文 (ch)，language_hints 为空列表
     # 对于其他语言，language_hints 为包含该语言代码的单元素列表
@@ -964,10 +1281,11 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         ref_language = 'ch'
     
     language_hints = [] if ref_language == 'ch' else [ref_language]
-    logger.info(f"参考音频语言: {ref_language}, language_hints: {language_hints}")
+    logger.info(f"参考音频语言（阿里云）: {ref_language}, language_hints: {language_hints}")
 
 
     def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
+
         """
         验证音频文件类型和格式
         返回: (mime_type, error_message)
@@ -1306,8 +1624,24 @@ async def save_catgirl_to_model_folder(request: Request):
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
         
         # 使用find_model_directory函数查找模型的实际文件系统路径
-        from utils.frontend_utils import find_model_directory
         model_folder_path, _ = find_model_directory(model_name)
+        
+        # 检查模型目录是否存在
+        if not model_folder_path:
+            return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
+        
+        # 检查是否是用户导入的模型，只允许写入用户目录的模型，不允许写入 workshop/static
+        config_mgr = get_config_manager()
+        is_user_model = is_user_imported_model(model_folder_path, config_mgr)
+        
+        if not is_user_model:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "success": False,
+                    "error": "只能保存到用户导入的模型目录。请先导入模型到用户模型目录后再保存。"
+                }
+            )
         
         # 确保模型文件夹存在
         if not os.path.exists(model_folder_path):

@@ -277,6 +277,57 @@ async def upload_file_to_oss(policy_data, file_path):
     return f'oss://{key}'
 
 
+def _is_within(base: str, target: str) -> bool:
+    """
+    检查 target 路径是否在 base 路径内（用于路径遍历防护）
+    
+    在 Windows 上，如果 base 和 target 位于不同驱动器，os.path.commonpath 会抛出 ValueError。
+    此函数捕获该异常并返回 False，安全地处理跨驱动器的情况。
+    
+    Args:
+        base: 基础路径（目录）
+        target: 目标路径（要检查的路径）
+        
+    Returns:
+        True 如果 target 在 base 内，False 否则（包括跨驱动器的情况）
+    """
+    try:
+        return os.path.commonpath([target, base]) == base
+    except ValueError:
+        # 跨驱动器或其他无法比较的情况
+        return False
+
+
+def is_user_imported_model(model_path: str, config_manager=None) -> bool:
+    """
+    检查模型路径是否在用户导入的模型目录下
+    
+    用于验证模型是否属于用户导入的模型（而非系统模型或创意工坊模型），
+    以便进行权限检查（如删除、保存配置等操作）。
+    
+    Args:
+        model_path: 模型目录的路径（字符串）
+        config_manager: 配置管理器实例。如果为 None，会从 get_config_manager() 获取
+        
+    Returns:
+        True 如果模型在用户导入目录下，False 否则（包括异常情况）
+    """
+    try:
+        if config_manager is None:
+            from utils.config_manager import get_config_manager
+            config_manager = get_config_manager()
+        
+        config_manager.ensure_live2d_directory()
+        user_live2d_dir = os.path.realpath(str(config_manager.live2d_dir))
+        model_path_real = os.path.realpath(model_path)
+        
+        # 使用 _is_within 来安全地检查路径（处理跨驱动器情况）
+        return _is_within(user_live2d_dir, model_path_real)
+    except Exception:
+        # 任何异常都返回 False，表示不是用户导入的模型
+        return False
+
+
 def find_model_directory(model_name: str):
     """
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
@@ -285,10 +336,15 @@ def find_model_directory(model_name: str):
     import re
     from utils.config_manager import get_config_manager
     
-    # 验证模型名称：只允许字母、数字、下划线、连字符、中文字符、日文字符、韩文字符和空格
+    # 验证模型名称，只允许字母、数字、下划线、中文字符、日文字符、韩文字符、连字符和空格
     # 防止路径遍历攻击
+    if not model_name or not model_name.strip():
+        logging.warning("模型名称为空")
+        return (None, None)
     if not re.match(r'^[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\- ]+$', model_name):
-        logging.warning(f"无效的模型名称: {model_name}")
+        # 使用 repr() 安全地表示模型名称，避免控制字符污染日志
+        model_name_safe = repr(model_name) if len(model_name) <= 100 else repr(model_name[:100]) + '...'
+        logging.warning(f"无效的模型名称: {model_name_safe}")
         return (None, None)
     
     # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
@@ -490,8 +546,9 @@ def find_model_config_file(model_name: str) -> str:
     """
     model_dir, url_prefix = find_model_directory(model_name)
     
-    if not os.path.exists(model_dir):
-        return f"{url_prefix}/{model_name}/{model_name}.model3.json"  # 默认路径
+    if not model_dir or not os.path.exists(model_dir):
+        # 如果找不到模型目录，返回 None 或空字符串，而不是默认路径
+        return None
     
     # 查找.model3.json文件
     for file in os.listdir(model_dir):

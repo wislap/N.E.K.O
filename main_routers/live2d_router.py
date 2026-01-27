@@ -47,9 +47,8 @@ async def get_live2d_models(simple: bool = False):
                 
                 # 遍历所有物品，提取已安装的模型
                 for item in items:
-                    # 直接使用get_subscribed_workshop_items返回的installedFolder
+                    # 直接使用get_subscribed_workshop_items返回的installedFolder；从publishedFileId字段获取物品ID，而不是item_id
                     installed_folder = item.get('installedFolder')
-                    # 从publishedFileId字段获取物品ID，而不是item_id
                     item_id = item.get('publishedFileId')
                     
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
@@ -60,10 +59,9 @@ async def get_live2d_models(simple: bool = False):
                                 
                                 # 避免重复添加
                                 if model_name not in [m['name'] for m in models]:
-                                    # 构建正确的/workshop URL路径，确保没有多余的引号
+                                    # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
                                     path_value = f'/workshop/{item_id}/{filename}'
                                     logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
-                                    # 移除可能的额外引号
                                     path_value = path_value.strip('"')
                                     models.append({
                                         'name': model_name,
@@ -81,10 +79,9 @@ async def get_live2d_models(simple: bool = False):
                                 if os.path.exists(json_file):
                                     # 避免重复添加
                                     if model_name not in [m['name'] for m in models]:
-                                        # 构建正确的/workshop URL路径，确保没有多余的引号
+                                        # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
                                         path_value = f'/workshop/{item_id}/{model_name}/{model_name}.model3.json'
                                         logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
-                                        # 移除可能的额外引号
                                         path_value = path_value.strip('"')
                                         models.append({
                                             'name': model_name,
@@ -376,7 +373,7 @@ def get_model_files(model_name: str):
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         motion_files = []
@@ -425,7 +422,7 @@ def get_model_parameters(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         # 查找.cdi3.json文件
@@ -480,7 +477,7 @@ async def save_model_parameters(model_name: str, request: Request):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
         # 获取请求体中的参数
@@ -509,7 +506,7 @@ def load_model_parameters(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         # 读取parameters.json文件
@@ -543,7 +540,7 @@ def get_model_config_by_id(model_id: str):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -603,7 +600,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -950,7 +947,7 @@ def open_model_directory(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
         
         # 使用os.startfile在Windows上打开目录
