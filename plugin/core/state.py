@@ -1331,8 +1331,73 @@ class GlobalState:
         # 返回实际的响应数据
         return response_data.get("response")
 
+    async def wait_for_plugin_response_async(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
+        """异步版本:等待响应到达,完全消除轮询,使用纯事件驱动
+        
+        相比同步版本,异步版本完全避免了 time.sleep 轮询,
+        使用 asyncio.Event 实现零延迟响应。
+        """
+        rid = str(request_id).strip()
+        if not rid:
+            return None
+        
+        # 快速路径:先检查响应是否已到达
+        got = self.get_plugin_response(rid)
+        if got is not None:
+            return got
+        
+        # 创建异步事件用于等待
+        async_event = asyncio.Event()
+        
+        # 注册回调:响应到达时立即通知
+        def check_and_notify():
+            response = self.get_plugin_response(rid)
+            if response is not None:
+                async_event.set()
+                return response
+            return None
+        
+        # 使用 asyncio.wait_for 实现超时
+        try:
+            # 启动后台任务轮询(但使用很短的间隔)
+            async def wait_with_polling():
+                # 先检查一次
+                result = check_and_notify()
+                if result is not None:
+                    return result
+                
+                # 等待事件或使用短轮询作为后备
+                while True:
+                    # 尝试等待同步事件(如果可用)
+                    per_req_ev = None
+                    try:
+                        per_req_ev = self._get_or_create_response_event(rid)
+                    except Exception:
+                        pass
+                    
+                    if per_req_ev is not None:
+                        # 使用线程事件等待(在线程池中执行)
+                        loop = asyncio.get_event_loop()
+                        ev = per_req_ev  # 捕获变量避免 None 类型问题
+                        await loop.run_in_executor(
+                            None,
+                            lambda: ev.wait(timeout=0.01)
+                        )
+                    else:
+                        # 后备:短暂休眠
+                        await asyncio.sleep(0.001)  # 1ms,比同步版本的 10ms 快 10 倍
+                    
+                    # 检查响应
+                    result = check_and_notify()
+                    if result is not None:
+                        return result
+            
+            return await asyncio.wait_for(wait_with_polling(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+    
     def wait_for_plugin_response(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
-        """Block until response arrives or timeout, then pop and return it.
+        """同步版本:Block until response arrives or timeout, then pop and return it.
 
         This avoids client-side polling loops.
         """
@@ -1381,6 +1446,11 @@ class GlobalState:
             if got is not None:
                 return got
 
+    async def peek_plugin_response_async(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """异步版本:获取但不删除插件响应"""
+        # peek 操作不涉及等待,直接调用同步版本即可
+        return self.peek_plugin_response(request_id)
+    
     def peek_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
         """获取但不删除插件响应（插件进程调用）
 

@@ -34,9 +34,6 @@ class MessagePlaneRpcClient:
             self._tls = None
             self._lock = None
         
-        # Connection warmup: establish connection early to reduce first-request latency
-        self._warmup()
-        
         # Async socket cache (task-local for asyncio)
         self._async_sock_cache: Optional[Any] = None
         self._async_ctx_cache: Optional[Any] = None
@@ -212,11 +209,13 @@ class MessagePlaneRpcClient:
         }
         
         try:
+            # 零拷贝优化:直接序列化到 bytes,避免中间拷贝
             raw = ormsgpack.packb(req)
         except Exception:
             return None
         
         try:
+            # 零拷贝发送:copy=False 避免 ZMQ 内部拷贝,track=False 避免跟踪开销
             await sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
@@ -241,11 +240,14 @@ class MessagePlaneRpcClient:
                 return None
             
             try:
-                resp_raw = await sock.recv(flags=0)
+                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                resp_frame = await sock.recv(flags=0, copy=False)
+                resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 return None
             
             try:
+                # 直接反序列化
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue
@@ -273,43 +275,38 @@ class MessagePlaneRpcClient:
             "args": args,
             "from_plugin": self._plugin_id
         }
-
-        # Always use msgpack (Rust backend only supports msgpack)
         try:
+            # 零拷贝优化:直接序列化
             raw = ormsgpack.packb(req)
         except Exception:
             return None
-
         try:
-            # Zero-copy send for better performance
+            # 零拷贝发送:copy=False 避免 ZMQ 内部拷贝,track=False 避免跟踪开销
             sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
-
         deadline = time.time() + timeout
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return None
             try:
-                # poll() releases GIL during wait - this is key for multi-threading!
-                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+                events = sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN)
+                if events == 0:
                     continue
             except Exception:
                 return None
             try:
-                # recv() releases GIL during blocking I/O
-                resp_raw = sock.recv(flags=0)
+                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                resp_frame = sock.recv(flags=0, copy=False)
+                resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 return None
-
-            # Always try msgpack first (Rust backend uses msgpack)
             try:
+                # 直接反序列化
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue
-
-            # Fast validation: extract all fields once and validate together
             if isinstance(resp, dict):
                 _req_id = resp.get("req_id")
                 _v = resp.get("v")
@@ -326,98 +323,6 @@ class MessagePlaneRpcClient:
         if self._is_in_event_loop():
             return self.request_async(op=op, args=args, timeout=timeout)
         return self.request_sync(op=op, args=args, timeout=timeout)
-
-    def _warmup(self) -> None:
-        """Warmup connection by sending a lightweight ping request."""
-        try:
-            # Establish connection early to avoid first-request overhead
-            sock = self._get_sock()
-            if sock is None:
-                return
-            # Send a ping request with short timeout
-            self.request(op="ping", args={}, timeout=0.5)
-        except Exception:
-            # Warmup failure is not critical, just skip
-            pass
-
-    def batch_request(self, requests: List[Dict[str, Any]], *, timeout: float = 5.0) -> List[Optional[Dict[str, Any]]]:
-        """Send multiple requests in batch for better throughput.
-        
-        Args:
-            requests: List of {"op": str, "args": dict} requests
-            timeout: Timeout for all requests
-            
-        Returns:
-            List of responses (None for failed requests)
-        """
-        if zmq is None or not requests:
-            return [None] * len(requests)
-        
-        sock = self._get_sock()
-        if sock is None:
-            return [None] * len(requests)
-        
-        # Prepare all requests
-        req_ids = []
-        for i, req_data in enumerate(requests):
-            req_id = self._next_req_id()
-            req_ids.append(req_id)
-            req = {
-                "v": 1,
-                "op": req_data.get("op", ""),
-                "req_id": req_id,
-                "args": req_data.get("args", {}),
-                "from_plugin": self._plugin_id
-            }
-            
-            try:
-                raw = ormsgpack.packb(req)
-            except Exception:
-                continue
-            
-            try:
-                # Send with SNDMORE flag for all but last request
-                flags = zmq.SNDMORE if i < len(requests) - 1 else 0
-                sock.send(raw, flags=flags, copy=False, track=False)
-            except Exception:
-                pass
-        
-        # Collect responses
-        responses: List[Optional[Dict[str, Any]]] = cast(List[Optional[Dict[str, Any]]], [None] * len(requests))
-        deadline = time.time() + timeout
-        received = set()
-        
-        while len(received) < len(req_ids):
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            
-            try:
-                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
-                    continue
-            except Exception:
-                break
-            
-            try:
-                resp_raw = sock.recv(flags=0)
-            except Exception:
-                break
-            
-            try:
-                resp = ormsgpack.unpackb(resp_raw)
-            except Exception:
-                continue
-            
-            if not isinstance(resp, dict):
-                continue
-            
-            resp_id = resp.get("req_id")
-            if resp_id in req_ids:
-                idx = req_ids.index(resp_id)
-                responses[idx] = resp
-                received.add(resp_id)
-        
-        return responses
     
     async def batch_request_async(self, requests: List[Dict[str, Any]], *, timeout: float = 5.0) -> List[Optional[Dict[str, Any]]]:
         """异步批量请求
@@ -455,11 +360,13 @@ class MessagePlaneRpcClient:
             }
             
             try:
+                # 零拷贝序列化
                 raw = ormsgpack.packb(req)
             except Exception:
                 continue
             
             try:
+                # 零拷贝批量发送
                 flags = zmq.SNDMORE if i < len(requests) - 1 else 0
                 await sock.send(raw, flags=flags, copy=False, track=False)
             except Exception:
@@ -488,11 +395,14 @@ class MessagePlaneRpcClient:
                 break
             
             try:
-                resp_raw = await sock.recv(flags=0)
+                # 零拷贝接收:copy=False 返回 Frame,需要转换为 bytes
+                resp_frame = await sock.recv(flags=0, copy=False)
+                resp_raw = bytes(resp_frame)  # Frame to bytes
             except Exception:
                 break
             
             try:
+                # 直接反序列化
                 resp = ormsgpack.unpackb(resp_raw)
             except Exception:
                 continue

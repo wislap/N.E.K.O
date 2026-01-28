@@ -2277,6 +2277,33 @@ class BusList(Generic[TRecord]):
 
         return self
 
+    async def reload_with_async(
+        self,
+        ctx: Optional[BusReplayContext] = None,
+        *,
+        inplace: bool = False,
+        incremental: bool = False,
+    ) -> "BusList[TRecord]":
+        """异步版本的 reload_with，使用 asyncio.to_thread 包装同步调用。
+        
+        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
+        
+        Args:
+            ctx: 上下文，提供 ctx.bus.* 客户端
+            inplace: True 时原对象会被更新，False 时返回新列表
+            incremental: True 时使用增量重载
+            
+        Returns:
+            刷新后的 BusList
+        """
+        import asyncio
+        return await asyncio.to_thread(
+            self.reload_with,
+            ctx,
+            inplace=inplace,
+            incremental=incremental,
+        )
+
     @overload
     def watch(
         self,

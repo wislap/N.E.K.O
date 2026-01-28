@@ -954,6 +954,37 @@ class PluginContext:
 
         raise RuntimeError("message_plane is not available for push_message")
 
+    async def push_message_async(
+        self,
+        source: str,
+        message_type: str,
+        description: str = "",
+        priority: int = 0,
+        content: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        unsafe: bool = False,
+        fast_mode: bool = False,
+    ) -> None:
+        """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
+        
+        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
+        """
+        await asyncio.to_thread(
+            self.push_message,
+            source=source,
+            message_type=message_type,
+            description=description,
+            priority=priority,
+            content=content,
+            binary_data=binary_data,
+            binary_url=binary_url,
+            metadata=metadata,
+            unsafe=unsafe,
+            fast_mode=fast_mode,
+        )
+
     def _send_request_and_wait(
         self,
         *,
