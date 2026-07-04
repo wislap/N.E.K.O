@@ -33,10 +33,12 @@ import math
 import uuid
 import asyncio
 import time
+import os
 
 from utils.logger_config import get_module_logger
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from config import TOOL_RECOMMENDER_SERVER_PORT
 
 from .shared_state import (
     get_session_manager, 
@@ -184,6 +186,83 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
         logger.debug(f"WS telemetry handler error (non-critical): {e}")
 
 
+def _tool_recommender_base_url() -> str:
+    explicit = (
+        os.getenv("TOOL_RECOMMENDER_BASE_URL")
+        or os.getenv("NEKO_TOOL_RECOMMENDER_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if explicit:
+        return explicit
+    return f"http://127.0.0.1:{TOOL_RECOMMENDER_SERVER_PORT}"
+
+
+def _trim_str(value, max_len: int = 128) -> str:
+    return str(value or "").strip()[:max_len]
+
+
+async def _forward_tool_recommendation_feedback(message: dict, *, lanlan_name: str) -> None:
+    """Best-effort feedback relay for recommendation bubbles.
+
+    This is deliberately not part of the chat turn path: feedback failures must
+    not block input, output, or agent execution.
+    """
+    try:
+        request_id = _trim_str(message.get("requestId") or message.get("request_id"), 128)
+        inference_id = _trim_str(message.get("inferenceId") or message.get("inference_id"), 128)
+        slate_id = _trim_str(message.get("slateId") or message.get("slate_id"), 128)
+        if not request_id:
+            request_id = inference_id or slate_id
+        if not slate_id:
+            slate_id = inference_id or request_id
+        if not request_id or not slate_id:
+            logger.debug("[ToolRecommender] feedback dropped: missing ids lanlan=%s", lanlan_name)
+            return
+
+        value_raw = _trim_str(message.get("value"), 16)
+        value = value_raw if value_raw in ("up", "down") else None
+        actions = []
+        for item in (message.get("actions") if isinstance(message.get("actions"), list) else [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            tool_id = _trim_str(item.get("toolId") or item.get("tool_id"), 128)
+            direction = _trim_str(item.get("direction"), 16)
+            action_value = _trim_str(item.get("value"), 16)
+            if tool_id and direction in ("enable", "disable") and action_value in ("positive", "negative"):
+                actions.append({
+                    "toolId": tool_id,
+                    "direction": direction,
+                    "value": action_value,
+                })
+
+        payload = {
+            "requestId": request_id,
+            "inferenceId": inference_id or None,
+            "slateId": slate_id,
+            "sessionId": lanlan_name,
+            "turnId": _trim_str(message.get("turnId") or message.get("turn_id"), 128) or None,
+            "value": value,
+            "actions": actions,
+            "metadata": {
+                "interaction": _trim_str(message.get("interaction"), 64),
+                "source": "chat_recommendation_bubble",
+            },
+        }
+        import httpx
+        timeout = httpx.Timeout(1.0, connect=0.2)
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            response = await client.post(f"{_tool_recommender_base_url()}/v1/feedback", json=payload)
+            response.raise_for_status()
+        logger.debug(
+            "[ToolRecommender] feedback relayed: request_id=%s slate_id=%s interaction=%s",
+            request_id,
+            slate_id,
+            payload["metadata"]["interaction"],
+        )
+    except Exception as e:
+        logger.debug("[ToolRecommender] feedback relay failed (non-critical): %s", e)
+
+
 @router.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
@@ -278,6 +357,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
             if action == "telemetry":
                 _handle_ws_telemetry(message, lanlan_name=lanlan_name)
+                continue
+
+            if action == "tool_recommendation_feedback":
+                _fire_task(_forward_tool_recommendation_feedback(message, lanlan_name=lanlan_name))
                 continue
 
             if action == "goodbye_state":

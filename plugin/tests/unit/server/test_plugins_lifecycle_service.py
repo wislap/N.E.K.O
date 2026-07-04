@@ -80,6 +80,193 @@ class _CaptureLogger:
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_enable_plugin_delegates_to_extension_enable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "extension"})
+
+    async def _enable_extension(plugin_id: str) -> dict[str, object]:
+        calls.append(plugin_id)
+        return {"success": True, "ext_id": plugin_id}
+
+    monkeypatch.setattr(service, "enable_extension", _enable_extension)
+
+    result = await service.enable_plugin("ext_demo")
+
+    assert result == {"success": True, "ext_id": "ext_demo"}
+    assert calls == ["ext_demo"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_enable_plugin_persists_override_and_starts_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "plugin"})
+    monkeypatch.setattr(module, "get_runtime_override", lambda plugin_id: None)
+    monkeypatch.setattr(module, "set_runtime_override", lambda plugin_id, enabled: calls.append(("set", plugin_id, enabled)))
+    monkeypatch.setattr(module, "clear_runtime_override", lambda plugin_id: calls.append(("clear", plugin_id)))
+
+    async def _start_plugin(
+        plugin_id: str,
+        restore_state: bool = False,
+        *,
+        refresh_registry: bool = True,
+        persist_user_intent: bool = False,
+    ) -> dict[str, object]:
+        calls.append(("start", plugin_id, persist_user_intent))
+        return {"success": True, "plugin_id": plugin_id}
+
+    monkeypatch.setattr(service, "start_plugin", _start_plugin)
+
+    result = await service.enable_plugin("demo")
+
+    assert result == {"success": True, "plugin_id": "demo"}
+    assert calls == [
+        ("set", "demo", True),
+        ("start", "demo", True),
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_enable_plugin_restores_absent_override_when_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "plugin"})
+    monkeypatch.setattr(module, "get_runtime_override", lambda plugin_id: None)
+    monkeypatch.setattr(module, "set_runtime_override", lambda plugin_id, enabled: calls.append(("set", plugin_id, enabled)))
+    monkeypatch.setattr(module, "clear_runtime_override", lambda plugin_id: calls.append(("clear", plugin_id)))
+
+    async def _start_plugin(*_args, **_kwargs) -> dict[str, object]:
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(service, "start_plugin", _start_plugin)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await service.enable_plugin("demo")
+
+    assert calls == [
+        ("set", "demo", True),
+        ("clear", "demo"),
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_enable_plugin_restores_previous_override_when_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "plugin"})
+    monkeypatch.setattr(module, "get_runtime_override", lambda plugin_id: False)
+    monkeypatch.setattr(module, "set_runtime_override", lambda plugin_id, enabled: calls.append(("set", plugin_id, enabled)))
+    monkeypatch.setattr(module, "clear_runtime_override", lambda plugin_id: calls.append(("clear", plugin_id)))
+
+    async def _start_plugin(*_args, **_kwargs) -> dict[str, object]:
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(service, "start_plugin", _start_plugin)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await service.enable_plugin("demo")
+
+    assert calls == [
+        ("set", "demo", True),
+        ("set", "demo", False),
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_disable_plugin_delegates_to_extension_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "extension"})
+
+    async def _disable_extension(plugin_id: str) -> dict[str, object]:
+        calls.append(plugin_id)
+        return {"success": True, "ext_id": plugin_id}
+
+    monkeypatch.setattr(service, "disable_extension", _disable_extension)
+
+    result = await service.disable_plugin("ext_demo")
+
+    assert result == {"success": True, "ext_id": "ext_demo"}
+    assert calls == ["ext_demo"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_disable_plugin_stopped_persists_disabled_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "plugin"})
+    monkeypatch.setattr(module, "_get_plugin_host_sync", lambda plugin_id: None)
+    monkeypatch.setattr(module, "_set_plugin_runtime_enabled_sync", lambda plugin_id, enabled: calls.append(("runtime", plugin_id, enabled)))
+    monkeypatch.setattr(module, "set_runtime_override", lambda plugin_id, enabled: calls.append(("set", plugin_id, enabled)))
+    monkeypatch.setattr(module, "_emit_lifecycle_event", lambda **kwargs: calls.append(("event", kwargs)))
+
+    result = await service.disable_plugin("demo")
+
+    assert result == {
+        "success": True,
+        "plugin_id": "demo",
+        "message": "Plugin disabled successfully",
+    }
+    assert calls == [
+        ("runtime", "demo", False),
+        ("set", "demo", False),
+        ("event", {"event_type": "plugin_disabled", "plugin_id": "demo"}),
+    ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_disable_plugin_running_stops_with_persisted_user_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = module.PluginLifecycleService()
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(module, "_get_plugin_meta_sync", lambda plugin_id: {"type": "plugin"})
+    monkeypatch.setattr(module, "_get_plugin_host_sync", lambda plugin_id: object())
+
+    async def _stop_plugin(plugin_id: str, *, persist_user_intent: bool = False) -> dict[str, object]:
+        calls.append(("stop", plugin_id, persist_user_intent))
+        return {"success": True, "plugin_id": plugin_id, "message": "Plugin stopped successfully"}
+
+    monkeypatch.setattr(service, "stop_plugin", _stop_plugin)
+
+    result = await service.disable_plugin("demo")
+
+    assert result == {
+        "success": True,
+        "plugin_id": "demo",
+        "message": "Plugin disabled successfully",
+    }
+    assert calls == [("stop", "demo", True)]
+
+
+@pytest.mark.plugin_unit
 def test_get_plugin_config_path_returns_existing_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / "plugins"
     config_file = root / "demo" / "plugin.toml"

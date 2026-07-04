@@ -1223,6 +1223,173 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   filter: brightness(1.04);
 }
 
+.tool-action-recommendation {
+  width: min(100%, 420px);
+  display: grid;
+  gap: 9px;
+}
+
+.tool-action-recommendation-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  color: #233147;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.42;
+}
+
+.tool-action-recommendation-status {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #53657e;
+  background: rgba(104, 127, 165, 0.13);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.tool-action-recommendation-list {
+  display: grid;
+  gap: 5px;
+}
+
+.tool-action-recommendation-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border: 1px solid rgba(123, 139, 166, 0.15);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.86);
+}
+
+.tool-action-recommendation-tool,
+.tool-action-recommendation-source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-action-recommendation-tool {
+  color: #26364d;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.tool-action-recommendation-direction {
+  justify-self: start;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.tool-action-recommendation-direction.is-enable {
+  color: #1e6843;
+  background: rgba(48, 161, 100, 0.14);
+}
+
+.tool-action-recommendation-direction.is-disable {
+  color: #9f3030;
+  background: rgba(223, 91, 91, 0.13);
+}
+
+.tool-action-recommendation-source {
+  color: #65758d;
+  font-size: 0.76rem;
+}
+
+.tool-action-recommendation-row-feedback,
+.tool-action-recommendation-footer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-action-recommendation-mini-button,
+.tool-action-recommendation-icon-button,
+.tool-action-recommendation-button {
+  border: 0;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, filter 120ms ease;
+}
+
+.tool-action-recommendation-mini-button {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #53657e;
+  background: rgba(104, 127, 165, 0.12);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.tool-action-recommendation-mini-button.is-selected {
+  color: #1f4f9a;
+  background: rgba(70, 129, 227, 0.18);
+}
+
+.tool-action-recommendation-empty {
+  padding: 8px 9px;
+  border-radius: 8px;
+  color: #607086;
+  background: rgba(104, 127, 165, 0.1);
+  font-size: 0.8rem;
+}
+
+.tool-action-recommendation-footer {
+  flex-wrap: wrap;
+}
+
+.tool-action-recommendation-button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: #29405f;
+  background: rgba(104, 127, 165, 0.14);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.tool-action-recommendation-button.is-primary {
+  color: #fff;
+  background: linear-gradient(135deg, #2f68df 0%, #4a89ff 100%);
+}
+
+.tool-action-recommendation-icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  color: #53657e;
+  background: rgba(104, 127, 165, 0.12);
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.tool-action-recommendation-icon-button.is-selected {
+  background: rgba(70, 129, 227, 0.18);
+}
+
+.tool-action-recommendation-button:disabled,
+.tool-action-recommendation-mini-button:disabled,
+.tool-action-recommendation-icon-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.tool-action-recommendation-button:hover:not(:disabled),
+.tool-action-recommendation-mini-button:hover:not(:disabled),
+.tool-action-recommendation-icon-button:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+
 .message-delivery {
   padding: 2px 6px;
   border-radius: 999px;
@@ -5579,6 +5746,52 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .message-action-button.variant-danger {
   color: #e07070;
   background: rgba(223, 91, 91, 0.15);
+}
+
+[data-theme="dark"] .tool-action-recommendation-summary {
+  color: #e8eaed;
+}
+
+[data-theme="dark"] .tool-action-recommendation-status,
+[data-theme="dark"] .tool-action-recommendation-button,
+[data-theme="dark"] .tool-action-recommendation-mini-button,
+[data-theme="dark"] .tool-action-recommendation-icon-button {
+  color: #b8c4d8;
+  background: rgba(100, 120, 160, 0.18);
+}
+
+[data-theme="dark"] .tool-action-recommendation-row {
+  border-color: rgba(170, 190, 225, 0.12);
+  background: rgba(38, 42, 58, 0.82);
+}
+
+[data-theme="dark"] .tool-action-recommendation-tool {
+  color: #e2e7f1;
+}
+
+[data-theme="dark"] .tool-action-recommendation-source {
+  color: #9aa8bd;
+}
+
+[data-theme="dark"] .tool-action-recommendation-direction.is-enable {
+  color: #76d59f;
+  background: rgba(48, 161, 100, 0.17);
+}
+
+[data-theme="dark"] .tool-action-recommendation-direction.is-disable {
+  color: #ee8b8b;
+  background: rgba(223, 91, 91, 0.16);
+}
+
+[data-theme="dark"] .tool-action-recommendation-mini-button.is-selected,
+[data-theme="dark"] .tool-action-recommendation-icon-button.is-selected {
+  color: #d6e5ff;
+  background: rgba(88, 145, 235, 0.26);
+}
+
+[data-theme="dark"] .tool-action-recommendation-empty {
+  color: #aab5c8;
+  background: rgba(100, 120, 160, 0.14);
 }
 
 /* --- 消息发送状态 --- */

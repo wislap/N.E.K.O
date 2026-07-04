@@ -52,6 +52,37 @@ const buttonGroupBlockSchema = z.object({
   buttons: z.array(messageActionSchema),
 });
 
+const toolActionRecommendationStatusSchema = z.enum([
+  'pending',
+  'applying',
+  'applied',
+  'dismissed',
+  'failed',
+  'stale',
+]);
+
+const toolActionRecommendationActionSchema = z.object({
+  toolId: z.string().min(1),
+  toolName: z.string().min(1),
+  direction: z.enum(['enable', 'disable']),
+  source: z.string().min(1),
+  preferenceFeedback: z.enum(['positive', 'negative']).nullable().optional(),
+  disabled: z.boolean().optional(),
+  status: z.enum(['pending', 'applied', 'skipped', 'failed']).optional(),
+});
+
+const toolActionRecommendationBlockSchema = z.object({
+  type: z.literal('tool-action-recommendation'),
+  schemaVersion: z.literal(1),
+  requestId: z.string().min(1).optional(),
+  recommendationId: z.string().min(1),
+  slateId: z.string().min(1),
+  summary: z.string().min(1),
+  status: toolActionRecommendationStatusSchema.optional(),
+  actions: z.array(toolActionRecommendationActionSchema),
+  feedback: z.enum(['up', 'down']).nullable().optional(),
+});
+
 const composerAttachmentSchema = z.object({
   id: z.string().min(1),
   url: z.string().min(1),
@@ -213,6 +244,7 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   statusBlockSchema,
   buttonGroupBlockSchema,
   topicHintBlockSchema,
+  toolActionRecommendationBlockSchema,
 ]);
 
 const turnIdSchema = z.preprocess((value) => {
@@ -372,6 +404,7 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type TopicHintBlock = z.infer<typeof topicHintBlockSchema>;
+export type ToolActionRecommendationBlock = z.infer<typeof toolActionRecommendationBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;

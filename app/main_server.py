@@ -719,6 +719,63 @@ async def _handle_agent_event(event: dict):
                 await _broadcast_to_all_connected(quota_payload)
             return
 
+        if event_type == "tool_recommendation_result":
+            mgr = _get_session_manager(lanlan)
+            if not mgr:
+                logger.info("[EventBus] tool_recommendation_result dropped: no session_manager for lanlan=%s", lanlan)
+                return
+            ws = getattr(mgr, "websocket", None)
+            if not _is_websocket_connected(ws):
+                logger.info("[EventBus] tool_recommendation_result dropped: websocket not connected for lanlan=%s", lanlan)
+                return
+            result = event.get("result") if isinstance(event.get("result"), dict) else {}
+            actions_raw = result.get("actions") if isinstance(result.get("actions"), list) else []
+            actions = []
+            for item in actions_raw[:8]:
+                if not isinstance(item, dict):
+                    continue
+                tool_id = str(item.get("toolId") or item.get("tool_id") or "").strip()
+                tool_name = str(item.get("toolName") or item.get("tool_name") or tool_id).strip()
+                direction = str(item.get("direction") or "").strip()
+                if not tool_id or not tool_name or direction not in ("enable", "disable"):
+                    continue
+                actions.append({
+                    "toolId": tool_id,
+                    "toolName": tool_name,
+                    "direction": direction,
+                    "source": str(item.get("source") or "Stage2"),
+                })
+            request_id = str(result.get("requestId") or result.get("request_id") or event.get("request_id") or "").strip()
+            inference_id = str(result.get("inferenceId") or result.get("inference_id") or request_id or "").strip()
+            slate_id = str(result.get("slateId") or result.get("slate_id") or inference_id or "slate").strip()
+            if not inference_id:
+                inference_id = f"tool-rec-{int(time.time() * 1000)}"
+            if not request_id:
+                request_id = inference_id
+            message = {
+                "id": f"tool-rec-{inference_id}",
+                "role": "assistant",
+                "author": getattr(mgr, "lanlan_name", None) or lanlan or "Neko",
+                "time": datetime.now(timezone.utc).astimezone().strftime("%H:%M"),
+                "turnId": str(event.get("conversation_id") or result.get("turnId") or result.get("turn_id") or "") or None,
+                "blocks": [{
+                    "type": "tool-action-recommendation",
+                    "schemaVersion": 1,
+                    "requestId": request_id,
+                    "recommendationId": inference_id,
+                    "slateId": slate_id,
+                    "summary": str(result.get("summary") or "建议调整工具开关"),
+                    "status": "pending",
+                    "actions": actions,
+                    "feedback": None,
+                }],
+            }
+            try:
+                await ws.send_json({"type": "tool_recommendation", "message": message})
+            except Exception as exc:
+                logger.debug("[EventBus] tool_recommendation_result send failed: %s", exc)
+            return
+
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
         mgr = _get_session_manager(lanlan)
         if not mgr and event_type == "task_update":
@@ -1727,6 +1784,7 @@ from main_routers.pngtuber_router import router as pngtuber_router # noqa
 from main_routers.storage_location_router import router as storage_location_router # noqa
 from main_routers.system_router import router as system_router # noqa
 from main_routers.tool_router import router as tool_router # noqa
+from main_routers.tool_recommendation_router import router as tool_recommendation_router # noqa
 from main_routers.vrm_router import router as vrm_router # noqa
 from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
@@ -1862,6 +1920,7 @@ app.include_router(agent_router)
 app.include_router(avatar_drop_router)
 app.include_router(system_router)
 app.include_router(tool_router)
+app.include_router(tool_recommendation_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(icebreaker_router)

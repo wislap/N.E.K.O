@@ -42,6 +42,7 @@ from plugin.server.application.plugins.registry_service import PluginRegistrySer
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     clear_runtime_override,
+    get_runtime_override,
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
@@ -567,6 +568,42 @@ async def _start_host_with_timeout(
 
 
 class PluginLifecycleService:
+    async def enable_plugin(self, plugin_id: str) -> dict[str, object]:
+        plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        if isinstance(plugin_meta, Mapping) and plugin_meta.get("type") == "extension":
+            return await self.enable_extension(plugin_id)
+
+        previous_override = await asyncio.to_thread(get_runtime_override, plugin_id)
+        await asyncio.to_thread(set_runtime_override, plugin_id, True)
+        try:
+            return await self.start_plugin(plugin_id, persist_user_intent=True)
+        except Exception:
+            if previous_override is None:
+                await asyncio.to_thread(clear_runtime_override, plugin_id)
+            else:
+                await asyncio.to_thread(set_runtime_override, plugin_id, previous_override)
+            raise
+
+    async def disable_plugin(self, plugin_id: str) -> dict[str, object]:
+        plugin_meta = await asyncio.to_thread(_get_plugin_meta_sync, plugin_id)
+        if isinstance(plugin_meta, Mapping) and plugin_meta.get("type") == "extension":
+            return await self.disable_extension(plugin_id)
+
+        host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
+        if host_obj is None:
+            await asyncio.to_thread(_set_plugin_runtime_enabled_sync, plugin_id, False)
+            await asyncio.to_thread(set_runtime_override, plugin_id, False)
+            _emit_lifecycle_event(event_type="plugin_disabled", plugin_id=plugin_id)
+            return {
+                "success": True,
+                "plugin_id": plugin_id,
+                "message": "Plugin disabled successfully",
+            }
+
+        result = await self.stop_plugin(plugin_id, persist_user_intent=True)
+        result["message"] = "Plugin disabled successfully"
+        return result
+
     async def start_plugin(
         self,
         plugin_id: str,

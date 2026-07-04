@@ -1,4 +1,5 @@
 import SmartTextBlock from './SmartTextBlock';
+import ToolActionRecommendationBlock from './ToolActionRecommendationBlock';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -94,6 +95,16 @@ export default function MessageBlockView({
           </button>
         ))}
       </div>
+    );
+  }
+
+  if (block.type === 'tool-action-recommendation') {
+    return (
+      <ToolActionRecommendationBlock
+        block={block}
+        message={message}
+        onAction={onAction}
+      />
     );
   }
 

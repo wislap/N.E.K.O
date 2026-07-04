@@ -330,7 +330,7 @@ from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 import config as config_module
-from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_RECOMMENDER_SERVER_PORT, TOOL_SERVER_PORT
 from utils.port_utils import (
     probe_neko_health,
     acquire_startup_lock,
@@ -386,6 +386,7 @@ DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
     "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
     "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+    "TOOL_RECOMMENDER_SERVER_PORT": TOOL_RECOMMENDER_SERVER_PORT,
 }
 INTERNAL_DEFAULT_PORTS = {
     "USER_PLUGIN_SERVER_PORT": 48916,
@@ -396,11 +397,12 @@ INTERNAL_DEFAULT_PORTS = {
     "ZMQ_ANALYZE_PUSH_PORT": 48963,
 }
 # 该区间保留给 N.E.K.O 已知默认端口，避免 fallback 与伴生服务冲突。
-AVOID_FALLBACK_PORTS = set(range(48911, 48919)) | {48961, 48962, 48963}
+AVOID_FALLBACK_PORTS = set(range(48911, 48920)) | {48961, 48962, 48963}
 
 # 模块名到端口键的映射（用于判断已有 N.E.K.O 实例是否占用对应端口）
 MODULE_TO_PORT_KEY: dict[str, str] = {
     "memory_server": "MEMORY_SERVER_PORT",
+    "tool_recommender_service": "TOOL_RECOMMENDER_SERVER_PORT",
     "agent_server": "TOOL_SERVER_PORT",
     "main_server": "MAIN_SERVER_PORT",
 }
@@ -408,6 +410,7 @@ SHUTDOWN_MODULE_ORDER = (
     "main_server",
     "memory_server",
     "agent_server",
+    "tool_recommender_service",
 )
 
 
@@ -444,18 +447,20 @@ def _reload_runtime_config_from_env() -> None:
     the negotiated ``NEKO_*`` environment variables gives each server process a
     fresh source of truth before importing its heavy application modules.
     """
-    global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+    global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_RECOMMENDER_SERVER_PORT, TOOL_SERVER_PORT
 
     reloaded = importlib.reload(config_module)
     INSTANCE_ID = str(reloaded.INSTANCE_ID)
     MAIN_SERVER_PORT = int(reloaded.MAIN_SERVER_PORT)
     MEMORY_SERVER_PORT = int(reloaded.MEMORY_SERVER_PORT)
     TOOL_SERVER_PORT = int(reloaded.TOOL_SERVER_PORT)
+    TOOL_RECOMMENDER_SERVER_PORT = int(reloaded.TOOL_RECOMMENDER_SERVER_PORT)
     _sync_runtime_config_globals(
         {
             "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
             "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
             "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+            "TOOL_RECOMMENDER_SERVER_PORT": TOOL_RECOMMENDER_SERVER_PORT,
         },
         {
             "USER_PLUGIN_SERVER_PORT": int(reloaded.USER_PLUGIN_SERVER_PORT),
@@ -897,6 +902,15 @@ SERVERS = [
         'graceful_shutdown_timeout': 12,
     },
     {
+        'name': 'Tool Recommender Service',
+        'module': 'tool_recommender_service',
+        'port': TOOL_RECOMMENDER_SERVER_PORT,
+        'process': None,
+        'ready_event': None,
+        'shutdown_complete_event': None,
+        'graceful_shutdown_timeout': 6,
+    },
+    {
         'name': 'Main Server',
         'module': 'main_server',
         'port': MAIN_SERVER_PORT,
@@ -920,12 +934,12 @@ SERVERS = [
 
 
 # ===== 合并进程模式 =====
-# 打包时三个 FastAPI 服务跑在同一个进程里，共享 Python 运行时，
+# 打包时多个 FastAPI 服务跑在同一个进程里，共享 Python 运行时，
 # 省掉 2 份 CPython + uvicorn + 共享库的重复加载（约 150-200 MB）。
 # 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
 
 def run_merged_servers() -> int:
-    """Single-process merged mode: 3 uvicorn.Server instances share one asyncio event loop."""
+    """Single-process merged mode: uvicorn.Server instances share one asyncio event loop."""
     import asyncio
     import uvicorn
 
@@ -954,6 +968,8 @@ def run_merged_servers() -> int:
     # 分步 import（控制峰值内存 & 提供进度反馈）
     print("[Merged] Importing memory_server...", flush=True)
     from app import memory_server
+    print("[Merged] Importing tool_recommender_service...", flush=True)
+    from tool_recommender_service.server import app as tool_recommender_app
     print("[Merged] Importing agent_server...", flush=True)
     from app import agent_server
     print("[Merged] Importing main_server...", flush=True)
@@ -961,6 +977,7 @@ def run_merged_servers() -> int:
 
     _apps = [
         (memory_server.app, MEMORY_SERVER_PORT, "Memory"),
+        (tool_recommender_app, TOOL_RECOMMENDER_SERVER_PORT, "ToolRecommender"),
         (agent_server.app,  TOOL_SERVER_PORT,   "Agent"),
         (main_server.app,   MAIN_SERVER_PORT,   "Main"),
     ]
@@ -974,7 +991,7 @@ def run_merged_servers() -> int:
         servers.append(uvicorn.Server(cfg))
 
     # ── 信号处理 ──
-    # 3 个 uvicorn.Server 各自 install_signal_handlers() 会互相覆盖
+    # 多个 uvicorn.Server 各自 install_signal_handlers() 会互相覆盖
     # （最后一个赢），导致 Ctrl+C 只通知 1 个退出，其余卡死。
     # 禁用各自的处理器，统一安装一个全局处理器。
     for s in servers:
@@ -1168,6 +1185,66 @@ def run_memory_server(
         
     except Exception as e:
         print(f"Memory Server error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if shutdown_complete_event is not None:
+            shutdown_complete_event.set()
+
+def run_tool_recommender_service(
+    ready_event: Event,
+    import_event: Event | None = None,
+    shutdown_event: Event | None = None,
+    shutdown_complete_event: Event | None = None,
+):
+    """Run the Tool Recommender Service."""
+    try:
+        _detach_child_process_session()
+        _reload_runtime_config_from_env()
+        if IS_FROZEN:
+            if hasattr(sys, '_MEIPASS'):
+                os.chdir(sys._MEIPASS)
+            else:
+                os.chdir(os.path.dirname(os.path.abspath(__file__)))
+            try:
+                import typeguard
+                def dummy_typechecked(func=None, **kwargs):
+                    return func if func else (lambda f: f)
+                typeguard.typechecked = dummy_typechecked
+                if hasattr(typeguard, '_decorators'):
+                    typeguard._decorators.typechecked = dummy_typechecked
+            except Exception:
+                pass
+
+        from tool_recommender_service.server import app as recommender_app
+        import uvicorn
+        if import_event:
+            import_event.set()
+
+        print(f"[Tool Recommender Service] Starting on port {TOOL_RECOMMENDER_SERVER_PORT}")
+        ready_event.set()
+
+        config = uvicorn.Config(
+            app=recommender_app,
+            host="127.0.0.1",
+            port=TOOL_RECOMMENDER_SERVER_PORT,
+            log_level="error",
+            loop="asyncio",
+            reload=False,
+        )
+        server = uvicorn.Server(config)
+
+        if shutdown_event is not None:
+            def _watch_shutdown() -> None:
+                shutdown_event.wait()
+                print("[Tool Recommender Service] Shutdown requested by launcher", flush=True)
+                server.should_exit = True
+
+            threading.Thread(target=_watch_shutdown, name="tool-recommender-shutdown-watch", daemon=True).start()
+
+        server.run()
+    except Exception as e:
+        print(f"Tool Recommender Service error: {e}")
         import traceback
         traceback.print_exc()
     finally:
@@ -1570,6 +1647,8 @@ def apply_port_strategy() -> bool | str:
     for server in SERVERS:
         if server["module"] == "memory_server":
             server["port"] = MEMORY_SERVER_PORT
+        elif server["module"] == "tool_recommender_service":
+            server["port"] = TOOL_RECOMMENDER_SERVER_PORT
         elif server["module"] == "agent_server":
             server["port"] = TOOL_SERVER_PORT
         elif server["module"] == "main_server":
@@ -1664,6 +1743,8 @@ def start_server(server: Dict) -> bool:
         # 根据模块名选择启动函数
         if server['module'] == 'memory_server':
             target_func = run_memory_server
+        elif server['module'] == 'tool_recommender_service':
+            target_func = run_tool_recommender_service
         elif server['module'] == 'agent_server':
             target_func = run_agent_server
         elif server['module'] == 'main_server':

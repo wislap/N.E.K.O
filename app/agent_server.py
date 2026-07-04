@@ -54,6 +54,7 @@ logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from config import (
     TOOL_SERVER_PORT,
+    TOOL_RECOMMENDER_SERVER_PORT,
     USER_PLUGIN_SERVER_PORT,
     OPENFANG_BASE_URL,
     TASK_DETAIL_MAX_TOKENS,
@@ -160,6 +161,7 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
+    latest_tool_recommendation_request: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
@@ -179,6 +181,8 @@ _plugin_name_cache: Dict[str, str] = {}
 _plugin_name_cache_time: float = 0.0
 _plugin_name_cache_lock = asyncio.Lock()
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # 缓存 30 秒
+PLUGIN_RECOMMENDER_SNAPSHOT_LIMIT: int = 24
+PLUGIN_RECOMMENDER_ENTRY_LIMIT: int = 8
 TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # 已完成任务保留 5 分钟
 DEFERRED_TASK_TIMEOUT: float = 3600.0  # deferred 任务超时 1 小时
 OPENCLAW_ENABLE_CHECK_ATTEMPTS: int = 24
@@ -1733,6 +1737,239 @@ def _user_plugins_enabled() -> bool:
     return bool((Modules.agent_flags or {}).get("user_plugin_enabled", False))
 
 
+def _tool_recommender_enabled() -> bool:
+    raw = (
+        os.getenv("TOOL_RECOMMENDER_ENABLED")
+        or os.getenv("NEKO_TOOL_RECOMMENDER_ENABLED")
+        or ""
+    ).strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _tool_recommender_base_url() -> str:
+    explicit = (
+        os.getenv("TOOL_RECOMMENDER_BASE_URL")
+        or os.getenv("NEKO_TOOL_RECOMMENDER_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if explicit:
+        return explicit
+    return f"http://127.0.0.1:{TOOL_RECOMMENDER_SERVER_PORT}"
+
+
+def _short_text(value: Any, limit: int = 260) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _plugin_status_enabled(status: str) -> bool:
+    return status in {"running", "injected", "ready"}
+
+
+def _sanitize_plugin_entries(entries: Any) -> list[dict[str, str]]:
+    if not isinstance(entries, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in entries[:PLUGIN_RECOMMENDER_ENTRY_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        entry_id = _short_text(item.get("id") or item.get("entryId"), 96)
+        if not entry_id:
+            continue
+        out.append({
+            "entryId": entry_id,
+            "name": _short_text(item.get("name") or entry_id, 120),
+            "description": _short_text(item.get("description"), 240),
+        })
+    return out
+
+
+def _plugin_capability_summary(plugin: dict[str, Any], entries: list[dict[str, str]]) -> str:
+    description = _short_text(
+        plugin.get("short_description") or plugin.get("description") or "",
+        220,
+    )
+    if description:
+        return description
+    if entries:
+        names = ", ".join(entry.get("name") or entry.get("entryId") or "" for entry in entries[:4])
+        names = names.strip(", ")
+        if names:
+            return f"Plugin entries: {names}"
+    return "User plugin capability."
+
+
+async def _fetch_user_plugin_snapshot(global_enabled: bool) -> list[dict[str, Any]]:
+    plugins: list[Any] = []
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(0.8, connect=0.2), proxy=None, trust_env=False) as client:
+            resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_plugins = data.get("plugins") if isinstance(data, dict) else None
+                if isinstance(raw_plugins, list):
+                    plugins = raw_plugins
+    except Exception as exc:
+        logger.debug("[ToolRecommender] plugin snapshot HTTP fetch failed: %s", exc)
+
+    if not plugins:
+        try:
+            from plugin.server.application.plugins.query_service import PluginQueryService
+            data = await PluginQueryService().list_plugins()
+            raw_plugins = data.get("plugins") if isinstance(data, dict) else None
+            if isinstance(raw_plugins, list):
+                plugins = raw_plugins
+        except Exception as exc:
+            logger.debug("[ToolRecommender] plugin snapshot query_service fallback failed: %s", exc)
+
+    if not plugins:
+        try:
+            from plugin.core.state import state
+            with state.acquire_plugins_read_lock():
+                for plugin_id, meta in (state.plugins or {}).items():
+                    if isinstance(meta, dict):
+                        plugin_item = dict(meta)
+                        plugin_item.setdefault("id", plugin_id)
+                        plugins.append(plugin_item)
+        except Exception as exc:
+            logger.debug("[ToolRecommender] plugin snapshot state fallback failed: %s", exc)
+
+    snapshot: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for plugin in plugins[:PLUGIN_RECOMMENDER_SNAPSHOT_LIMIT]:
+        if not isinstance(plugin, dict):
+            continue
+        plugin_id = _short_text(plugin.get("id") or plugin.get("plugin_id"), 128)
+        if not plugin_id or plugin_id in seen:
+            continue
+        seen.add(plugin_id)
+        status = _short_text(plugin.get("status"), 64) or "unknown"
+        entries = _sanitize_plugin_entries(plugin.get("entries"))
+        snapshot.append({
+            "toolId": f"plugin:{plugin_id}",
+            "name": _short_text(plugin.get("name") or plugin_id, 120),
+            "enabled": bool(global_enabled and _plugin_status_enabled(status)),
+            "kind": "plugin",
+            "status": status,
+            "capabilitySummary": _plugin_capability_summary(plugin, entries),
+            "entries": entries,
+        })
+    return snapshot
+
+
+async def _build_tool_recommender_snapshot() -> list[dict[str, Any]]:
+    flags = Modules.agent_flags or {}
+    user_plugin_enabled = bool(flags.get("user_plugin_enabled"))
+    snapshot = [
+        {
+            "toolId": "agent_master",
+            "name": "Agent",
+            "enabled": bool(Modules.analyzer_enabled),
+            "kind": "agent_feature",
+            "status": "enabled" if Modules.analyzer_enabled else "disabled",
+            "capabilitySummary": "Master agent switch for proactive analysis and tool planning.",
+        },
+        {
+            "toolId": "computer_use_enabled",
+            "name": "Computer Use",
+            "enabled": bool(flags.get("computer_use_enabled")),
+            "kind": "agent_feature",
+            "status": "enabled" if flags.get("computer_use_enabled") else "disabled",
+            "capabilitySummary": "Operate the local desktop when explicit execution is needed.",
+        },
+        {
+            "toolId": "browser_use_enabled",
+            "name": "Browser Use",
+            "enabled": bool(flags.get("browser_use_enabled")),
+            "kind": "agent_feature",
+            "status": "enabled" if flags.get("browser_use_enabled") else "disabled",
+            "capabilitySummary": "Use a browser for web tasks and page interaction.",
+        },
+        {
+            "toolId": "user_plugin_enabled",
+            "name": "User Plugins",
+            "enabled": user_plugin_enabled,
+            "kind": "plugin_group",
+            "status": "enabled" if user_plugin_enabled else "disabled",
+            "capabilitySummary": "Use installed user plugins and plugin entries.",
+        },
+        {
+            "toolId": "openclaw_enabled",
+            "name": "OpenClaw",
+            "enabled": bool(flags.get("openclaw_enabled")),
+            "kind": "agent_feature",
+            "status": "enabled" if flags.get("openclaw_enabled") else "disabled",
+            "capabilitySummary": "Route supported external app tasks to OpenClaw.",
+        },
+        {
+            "toolId": "openfang_enabled",
+            "name": "OpenFang",
+            "enabled": bool(flags.get("openfang_enabled")),
+            "kind": "agent_feature",
+            "status": "enabled" if flags.get("openfang_enabled") else "disabled",
+            "capabilitySummary": "Use OpenFang desktop backend when available.",
+        },
+    ]
+    snapshot.extend(await _fetch_user_plugin_snapshot(user_plugin_enabled))
+    return snapshot
+
+
+async def _background_tool_recommend(
+    messages: list[dict[str, Any]],
+    lanlan_name: Optional[str],
+    *,
+    conversation_id: Optional[str] = None,
+    trigger: str = "analyze_request",
+) -> None:
+    if not _tool_recommender_enabled():
+        return
+    lanlan_key = _normalize_lanlan_key(lanlan_name)
+    request_id = f"tool-rec-{uuid.uuid4().hex}"
+    Modules.latest_tool_recommendation_request[lanlan_key] = request_id
+    payload = {
+        "requestId": request_id,
+        "sessionId": lanlan_key,
+        "turnId": conversation_id or "",
+        "trigger": trigger,
+        "recentMessages": [
+            {
+                "role": str(m.get("role") or ""),
+                "text": str(m.get("text") or m.get("content") or ""),
+            }
+            for m in (messages or [])[-8:]
+            if isinstance(m, dict) and m.get("role")
+        ],
+        "pluginSnapshot": await _build_tool_recommender_snapshot(),
+        "policyMode": "suggest_only",
+    }
+    try:
+        timeout = httpx.Timeout(1.0, connect=0.2)
+        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            response = await client.post(f"{_tool_recommender_base_url()}/v1/recommend", json=payload)
+            response.raise_for_status()
+            result = response.json()
+    except Exception as exc:
+        logger.debug("[ToolRecommender] recommend skipped: request_id=%s error=%s", request_id, exc)
+        return
+    if Modules.latest_tool_recommendation_request.get(lanlan_key) != request_id:
+        logger.debug("[ToolRecommender] stale result dropped: request_id=%s lanlan=%s", request_id, lanlan_name)
+        return
+    if not isinstance(result, dict):
+        return
+    actions = result.get("actions")
+    if not isinstance(actions, list):
+        return
+    await _emit_main_event(
+        "tool_recommendation_result",
+        lanlan_name,
+        result=result,
+        request_id=request_id,
+        conversation_id=conversation_id,
+    )
+
+
 def _voice_transcript_plugin_gate_reason() -> str:
     if not _agent_master_enabled():
         return "agent_disabled"
@@ -1836,6 +2073,12 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             _create_tracked_task(_background_analyze_and_plan(
                 messages, lanlan_name, conversation_id=conversation_id,
                 external_intent=external_intent,
+            ))
+            _create_tracked_task(_background_tool_recommend(
+                messages,
+                lanlan_name,
+                conversation_id=conversation_id,
+                trigger=str(event.get("trigger") or "analyze_request"),
             ))
 
 

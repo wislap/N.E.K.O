@@ -48,6 +48,23 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[
         raise_http_from_domain(error, logger=logger)
 
 
+@router.post("/plugin/{plugin_id}/enable")
+async def enable_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+    try:
+        await ensure_plugin_messaging_started()
+        return await lifecycle_service.enable_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugin/{plugin_id}/disable")
+async def disable_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
+    try:
+        return await lifecycle_service.disable_plugin(plugin_id)
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
 @router.post("/plugin/{plugin_id}/refresh")
 async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:

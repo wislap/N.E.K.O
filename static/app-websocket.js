@@ -29,8 +29,14 @@
     const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
     const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
     const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
+    const TOOL_RECOMMENDATION_FLUSH_DELAY_MS = 450;
+    const TOOL_RECOMMENDATION_RETRY_DELAY_MS = 250;
+    const TOOL_RECOMMENDATION_MAX_WAIT_MS = 10000;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
+    let _pendingToolRecommendationMessages = [];
+    let _toolRecommendationFlushTimer = 0;
+    let _toolRecommendationLastAssistantTurnEndAt = 0;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
     let _musicPlayUrlCoordChannel = null;
@@ -740,6 +746,88 @@
         return true;
     }
 
+    function hasPendingRealisticAssistantOutput() {
+        return !!(
+            (Array.isArray(window._realisticGeminiQueue) && window._realisticGeminiQueue.length > 0) ||
+            window._isProcessingRealisticQueue ||
+            (typeof window._realisticGeminiBuffer === 'string' && window._realisticGeminiBuffer.trim())
+        );
+    }
+
+    function isAssistantOutputActiveForToolRecommendation() {
+        var assistantTextActive = !!(
+            S.assistantTurnAwaitingBubble ||
+            S.pendingTextTurnSubmitAt ||
+            (S.assistantTurnId && !_toolRecommendationLastAssistantTurnEndAt)
+        );
+        return !!(
+            assistantTextActive ||
+            hasPendingRealisticAssistantOutput()
+        );
+    }
+
+    function markAssistantTurnEndedForToolRecommendations() {
+        _toolRecommendationLastAssistantTurnEndAt = Date.now();
+    }
+
+    function appendToolRecommendationMessage(message) {
+        var toolRecHost = window.reactChatWindowHost;
+        if (
+            toolRecHost &&
+            typeof toolRecHost.appendMessage === 'function' &&
+            message
+        ) {
+            toolRecHost.appendMessage(message);
+            return true;
+        }
+        return false;
+    }
+
+    function flushPendingToolRecommendations(options) {
+        options = options || {};
+        if (_toolRecommendationFlushTimer) {
+            clearTimeout(_toolRecommendationFlushTimer);
+            _toolRecommendationFlushTimer = 0;
+        }
+        if (!_pendingToolRecommendationMessages.length) return;
+
+        var now = Date.now();
+        var oldest = _pendingToolRecommendationMessages[0];
+        var waitedMs = oldest && oldest.enqueuedAt ? now - oldest.enqueuedAt : 0;
+        if (
+            !options.force &&
+            isAssistantOutputActiveForToolRecommendation() &&
+            waitedMs < TOOL_RECOMMENDATION_MAX_WAIT_MS
+        ) {
+            scheduleToolRecommendationFlush(TOOL_RECOMMENDATION_RETRY_DELAY_MS);
+            return;
+        }
+
+        var pending = _pendingToolRecommendationMessages.slice();
+        _pendingToolRecommendationMessages = [];
+        for (var i = 0; i < pending.length; i += 1) {
+            appendToolRecommendationMessage(pending[i].message);
+        }
+    }
+
+    function scheduleToolRecommendationFlush(delayMs) {
+        if (_toolRecommendationFlushTimer) {
+            clearTimeout(_toolRecommendationFlushTimer);
+        }
+        _toolRecommendationFlushTimer = setTimeout(function () {
+            flushPendingToolRecommendations();
+        }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    function enqueueToolRecommendation(message) {
+        if (!message) return;
+        _pendingToolRecommendationMessages.push({
+            message: message,
+            enqueuedAt: Date.now()
+        });
+        scheduleToolRecommendationFlush(TOOL_RECOMMENDATION_FLUSH_DELAY_MS);
+    }
+
     function websocketTraceEnabled() {
         return window.NEKO_DEBUG_BUBBLE_LIFECYCLE === true;
     }
@@ -1008,6 +1096,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        _toolRecommendationLastAssistantTurnEndAt = 0;
         window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
@@ -2507,6 +2596,14 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
+                // -------- tool_recommendation --------
+                } else if (response.type === 'tool_recommendation') {
+                    try {
+                        enqueueToolRecommendation(response.message);
+                    } catch (e) {
+                        console.warn('[App] 处理 tool_recommendation 失败:', e);
+                    }
+
                 // -------- capture_bridge_request (galgame OCR window capture) --------
                 } else if (response.type === 'capture_bridge_request') {
                     (async function () {
@@ -2708,6 +2805,8 @@
                     // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
                     // "skipping proactive chat schedule"），防 proactive 自触发。
                     finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
+                    markAssistantTurnEndedForToolRecommendations();
+                    scheduleToolRecommendationFlush(TOOL_RECOMMENDATION_FLUSH_DELAY_MS);
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -2753,6 +2852,8 @@
                     if (!isNewUserIcebreakerMirrorTurnEnd(response)) {
                         finalizeAssistantTurn(assistantTurnId);
                     }
+                    markAssistantTurnEndedForToolRecommendations();
+                    scheduleToolRecommendationFlush(TOOL_RECOMMENDATION_FLUSH_DELAY_MS);
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
@@ -3327,6 +3428,211 @@
     mod.connectWebSocket = connectWebSocket;
     mod.ensureAssistantTurnStarted = ensureAssistantTurnStarted;
     mod.clearPendingAssistantTurnStart = clearPendingAssistantTurnStart;
+
+    function getToolRecommendationBlock(message) {
+        var blocks = message && Array.isArray(message.blocks) ? message.blocks : [];
+        for (var i = 0; i < blocks.length; i += 1) {
+            if (blocks[i] && blocks[i].type === 'tool-action-recommendation') {
+                return blocks[i];
+            }
+        }
+        return null;
+    }
+
+    function buildToolRecommendationFeedback(detail) {
+        var message = detail && detail.message ? detail.message : null;
+        var action = detail && detail.action ? detail.action : null;
+        var actionName = action && typeof action.action === 'string' ? action.action : '';
+        if (actionName.indexOf('tool-recommendation.') !== 0) return null;
+
+        var block = getToolRecommendationBlock(message);
+        var payload = action && action.payload && typeof action.payload === 'object' ? action.payload : {};
+        var actions = [];
+        if (actionName === 'tool-recommendation.action-feedback') {
+            if (payload.toolId && payload.direction && payload.value) {
+                actions.push({
+                    toolId: String(payload.toolId),
+                    direction: String(payload.direction),
+                    value: String(payload.value)
+                });
+            }
+        } else if (Array.isArray(payload.actions)) {
+            for (var i = 0; i < payload.actions.length && i < 8; i += 1) {
+                var item = payload.actions[i];
+                if (!item || typeof item !== 'object') continue;
+                actions.push({
+                    toolId: String(item.toolId || ''),
+                    direction: String(item.direction || ''),
+                    value: 'positive'
+                });
+            }
+        }
+
+        return {
+            action: 'tool_recommendation_feedback',
+            requestId: String(payload.requestId || (block && block.requestId) || payload.recommendationId || ''),
+            inferenceId: String(payload.recommendationId || (block && block.recommendationId) || ''),
+            slateId: String(payload.slateId || (block && block.slateId) || ''),
+            turnId: String((message && message.turnId) || ''),
+            interaction: actionName,
+            value: (payload.value === 'up' || payload.value === 'down') ? payload.value : null,
+            actions: actions
+        };
+    }
+
+    function updateToolRecommendationMessage(detail) {
+        try {
+            var host = window.reactChatWindowHost;
+            var message = detail && detail.message ? detail.message : null;
+            var action = detail && detail.action ? detail.action : null;
+            if (!host || typeof host.updateMessage !== 'function' || !message || !action) return;
+            var actionName = typeof action.action === 'string' ? action.action : '';
+            if (actionName.indexOf('tool-recommendation.') !== 0) return;
+            var payload = action.payload && typeof action.payload === 'object' ? action.payload : {};
+            var changed = false;
+            var nextBlocks = (Array.isArray(message.blocks) ? message.blocks : []).map(function (block) {
+                if (!block || block.type !== 'tool-action-recommendation') return block;
+                var nextBlock = Object.assign({}, block);
+                if (actionName === 'tool-recommendation.feedback' && (payload.value === 'up' || payload.value === 'down')) {
+                    nextBlock.feedback = payload.value;
+                    changed = true;
+                } else if (actionName === 'tool-recommendation.action-feedback' && payload.toolId && payload.direction && payload.value) {
+                    nextBlock.actions = (Array.isArray(block.actions) ? block.actions : []).map(function (item) {
+                        if (!item || item.toolId !== payload.toolId || item.direction !== payload.direction) return item;
+                        changed = true;
+                        return Object.assign({}, item, { preferenceFeedback: payload.value });
+                    });
+                } else if (actionName === 'tool-recommendation.apply') {
+                    nextBlock.status = 'applying';
+                    changed = true;
+                } else if (actionName === 'tool-recommendation.dismiss') {
+                    nextBlock.status = 'dismissed';
+                    changed = true;
+                }
+                return nextBlock;
+            });
+            if (changed) {
+                host.updateMessage(message.id, { blocks: nextBlocks });
+            }
+        } catch (e) {
+            console.warn('[ToolRecommender] update recommendation bubble failed:', e);
+        }
+    }
+
+    function setToolRecommendationApplyStatus(detail, status, results) {
+        try {
+            var host = window.reactChatWindowHost;
+            var message = detail && detail.message ? detail.message : null;
+            if (!host || typeof host.updateMessage !== 'function' || !message || !status) return;
+            var resultMap = Object.create(null);
+            if (Array.isArray(results)) {
+                for (var i = 0; i < results.length; i += 1) {
+                    var result = results[i];
+                    if (!result || typeof result !== 'object') continue;
+                    var key = String(result.toolId || '') + '\u0000' + String(result.direction || '');
+                    resultMap[key] = result;
+                }
+            }
+            var nextBlocks = (Array.isArray(message.blocks) ? message.blocks : []).map(function (block) {
+                if (!block || block.type !== 'tool-action-recommendation') return block;
+                var nextBlock = Object.assign({}, block, { status: status });
+                if (Array.isArray(block.actions) && Array.isArray(results)) {
+                    nextBlock.actions = block.actions.map(function (item) {
+                        if (!item || typeof item !== 'object') return item;
+                        var resultKey = String(item.toolId || '') + '\u0000' + String(item.direction || '');
+                        var resultItem = resultMap[resultKey];
+                        if (!resultItem) return item;
+                        return Object.assign({}, item, {
+                            status: resultItem.success === true ? 'applied' : 'failed'
+                        });
+                    });
+                }
+                return nextBlock;
+            });
+            host.updateMessage(message.id, { blocks: nextBlocks });
+        } catch (e) {
+            console.warn('[ToolRecommender] set apply status failed:', e);
+        }
+    }
+
+    function buildToolRecommendationApplyPayload(detail, feedback) {
+        var message = detail && detail.message ? detail.message : null;
+        var action = detail && detail.action ? detail.action : null;
+        var block = getToolRecommendationBlock(message);
+        var payload = action && action.payload && typeof action.payload === 'object' ? action.payload : {};
+        var sourceActions = Array.isArray(payload.actions)
+            ? payload.actions
+            : (block && Array.isArray(block.actions) ? block.actions : []);
+        var actions = [];
+        for (var i = 0; i < sourceActions.length && i < 12; i += 1) {
+            var item = sourceActions[i];
+            if (!item || typeof item !== 'object') continue;
+            var toolId = String(item.toolId || '').trim();
+            var direction = String(item.direction || '').trim();
+            if (!toolId || (direction !== 'enable' && direction !== 'disable')) continue;
+            actions.push({
+                toolId: toolId,
+                toolName: String(item.toolName || toolId).slice(0, 160),
+                direction: direction
+            });
+        }
+        return {
+            requestId: String((feedback && feedback.requestId) || ''),
+            recommendationId: String((feedback && feedback.inferenceId) || ''),
+            slateId: String((feedback && feedback.slateId) || ''),
+            turnId: String((feedback && feedback.turnId) || ''),
+            lanlanName: String((window.lanlan_config && window.lanlan_config.lanlan_name) || ''),
+            actions: actions
+        };
+    }
+
+    async function applyToolRecommendation(detail, feedback) {
+        var payload = buildToolRecommendationApplyPayload(detail, feedback);
+        if (!payload.actions.length) {
+            setToolRecommendationApplyStatus(detail, 'failed', []);
+            return;
+        }
+        try {
+            var response = await fetch('/api/tool-recommendations/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            var data = null;
+            try {
+                data = await response.json();
+            } catch (_) {
+                data = null;
+            }
+            if (!response.ok || !data || data.success !== true) {
+                setToolRecommendationApplyStatus(
+                    detail,
+                    'failed',
+                    data && Array.isArray(data.results) ? data.results : []
+                );
+                return;
+            }
+            setToolRecommendationApplyStatus(detail, 'applied', Array.isArray(data.results) ? data.results : []);
+        } catch (e) {
+            console.warn('[ToolRecommender] apply recommendation failed:', e);
+            setToolRecommendationApplyStatus(detail, 'failed', []);
+        }
+    }
+
+    function handleToolRecommendationActionEvent(event) {
+        var detail = event && event.detail ? event.detail : null;
+        var feedback = buildToolRecommendationFeedback(detail);
+        if (!feedback) return;
+        var action = detail && detail.action ? detail.action : null;
+        var actionName = action && typeof action.action === 'string' ? action.action : '';
+        updateToolRecommendationMessage(detail);
+        mod.send(feedback);
+        if (actionName === 'tool-recommendation.apply') {
+            applyToolRecommendation(detail, feedback);
+        }
+    }
+
+    window.addEventListener('react-chat-window:action', handleToolRecommendationActionEvent);
 
     // ========================  Exported methods  ========================
 
