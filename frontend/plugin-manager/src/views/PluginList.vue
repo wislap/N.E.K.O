@@ -253,6 +253,7 @@
               :icon="section.icon"
               :items="section.items"
               :animate-initial="false"
+              :motion-mode="filterText.trim() ? 'quiet' : 'normal'"
               :layout-mode="layoutMode"
               :multi-select-enabled="multiSelectEnabled"
               :selected-plugin-ids="selectedPluginIds"
