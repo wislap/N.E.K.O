@@ -1,4 +1,4 @@
-"""Stage the versioned Python tooling resources next to the desktop backend."""
+"""Stage the versioned Python tooling resources in the desktop backend."""
 
 from __future__ import annotations
 
@@ -10,13 +10,24 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def stage(destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=False)
+    if destination.exists():
+        raise FileExistsError(f"Plugin tools already exist: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".plugin-tools-", dir=destination.parent) as staging:
+        resources = Path(staging) / destination.name
+        resources.mkdir()
+        _build_resources(resources)
+        resources.rename(destination)
+
+
+def _build_resources(destination: Path) -> None:
     subprocess.run(
         ["uv", "build", "--wheel", "--python", sys.executable, "--out-dir", str(destination)],
         cwd=ROOT,
@@ -52,5 +63,16 @@ def stage(destination: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("destination", type=Path)
-    stage(parser.parse_args().destination.resolve())
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("directory", nargs="?", type=Path, help="Tool resource directory")
+    destination.add_argument("--backend", type=Path, help="Path to the packaged backend executable")
+    args = parser.parse_args()
+    if args.backend:
+        if not args.backend.is_file():
+            parser.error(f"Backend executable not found: {args.backend}")
+        sys.path.insert(0, str(ROOT))
+        from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
+
+        stage(plugin_tool_resources_dir(args.backend))
+    else:
+        stage(args.directory.resolve())

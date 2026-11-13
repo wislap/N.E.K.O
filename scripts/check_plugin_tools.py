@@ -12,6 +12,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import tarfile
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -399,16 +400,19 @@ def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str,
     """Launch the actual desktop backend and exercise the embedded plugin server."""
     import httpx
 
-    from scripts.runtime_memory_baseline import _capture_process_tree, _terminate_process_trees
-
-    port_keys = (
-        "MAIN_SERVER_PORT", "MEMORY_SERVER_PORT", "TOOL_SERVER_PORT",
+    from scripts.runtime_memory_baseline import (
+        _capture_process_tree,
+        _port_released,
+        _terminate_process_trees,
     )
+    from utils.port_utils import set_port_probe_reuse
+
+    port_keys = ("MAIN_SERVER_PORT", "MEMORY_SERVER_PORT", "TOOL_SERVER_PORT")
     with ExitStack() as sockets:
         ports = {}
         for key in port_keys:
             bound = sockets.enter_context(socket.socket())
-            bound.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            set_port_probe_reuse(bound)
             bound.bind(("127.0.0.1", 0))
             ports[key] = bound.getsockname()[1]
     runtime = root / "runtime"
@@ -424,13 +428,15 @@ def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str,
         "GH_CONFIG_DIR": str(profile / "github-cli"),
         "NEKO_TEST_GH_LOG": str(gh_log), "NEKO_TEST_GH_AUTH": "1",
         "LOCALAPPDATA": str(profile), "APPDATA": str(profile), "USERPROFILE": str(profile),
+        "HOME": str(profile), "XDG_CONFIG_HOME": str(profile / ".config"),
+        "XDG_DATA_HOME": str(profile / ".local/share"), "XDG_CACHE_HOME": str(profile / ".cache"),
         "NEKO_USER_DATA_DIR": str(profile), "NEKO_RUNTIME_STATE_DIR": str(runtime),
         "NEKO_STORAGE_SELECTED_ROOT": str(storage), "NEKO_STORAGE_ANCHOR_ROOT": str(storage),
         "NEKO_RUNTIME_SHUTDOWN_TOKEN": token, "NEKO_DISABLE_AGENT_AUTO_RESTORE": "1",
     }
     log_path = root / "desktop.log"
     main_url = f"http://127.0.0.1:{ports['MAIN_SERVER_PORT']}"
-    plugin_port = None
+    launched_ports = set(ports.values())
     print(
         f"Starting {backend} at {main_url} (shutdown through /api/runtime/shutdown)",
         flush=True,
@@ -438,7 +444,8 @@ def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str,
     with log_path.open("wb") as output, httpx.Client(trust_env=False, timeout=5) as client:
         process = subprocess.Popen(
             [str(backend)], cwd=backend.parent, env=child_env, stdin=subprocess.DEVNULL,
-            stdout=output, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=output, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         try:
             deadline = monotonic() + 180
@@ -448,9 +455,11 @@ def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str,
                     record = json.loads(record_path.read_text(encoding="utf-8"))
                     if record["pid"] != process.pid:
                         raise RuntimeError("The isolated launcher record belongs to another process")
+                    launched_ports.update(record.get("ports", {}).values())
+                    launched_ports.update(record.get("internal_ports", {}).values())
                     if record["state"] == "ready":
-                        if record["ports"]["MAIN_SERVER_PORT"] != ports["MAIN_SERVER_PORT"]:
-                            raise RuntimeError("The launcher changed the reserved Main server port")
+                        if record["ports"] != ports:
+                            raise RuntimeError("The launcher changed the requested server ports")
                         plugin_port = record["internal_ports"]["USER_PLUGIN_SERVER_PORT"]
                         break
                 if process.poll() is not None or monotonic() >= deadline:
@@ -517,77 +526,125 @@ def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str,
             process.wait(timeout=5)
             if remaining:
                 raise RuntimeError(f"Packaged desktop left test processes running: {remaining}")
-            launched_ports = list(ports.values())
-            if plugin_port is not None:
-                launched_ports.append(plugin_port)
-            for port in launched_ports:
-                with socket.socket() as probe:
-                    probe.settimeout(0.1)
-                    if probe.connect_ex(("127.0.0.1", port)) == 0:
-                        raise RuntimeError(f"The packaged backend port {port} is still listening")
+            busy_ports = sorted(port for port in launched_ports if not _port_released(port))
+            if busy_ports:
+                raise RuntimeError(f"The packaged backend did not release ports: {busy_ports}")
 
 
-def check(backend: Path, expected_commit: str | None = None, *, desktop_runtime: bool = False) -> None:
+def check(
+    backend: Path, expected_commit: str | None = None, *,
+    desktop_runtime: bool = False, resources_only: bool = False,
+) -> None:
     with TemporaryDirectory(prefix="neko plugin tools ") as directory:
         root = Path(directory)
         state = root / "state"
         state.mkdir()
-        os.environ["NEKO_STORAGE_SELECTED_ROOT"] = str(state)
-        os.environ["NEKO_STORAGE_ANCHOR_ROOT"] = str(state)
-        from plugin.server.application import plugin_tool_environment
-        from plugin.server.application.plugin_project_commands import check_child_env
+        with patch.dict(os.environ, {
+            "NEKO_STORAGE_SELECTED_ROOT": str(state),
+            "NEKO_STORAGE_ANCHOR_ROOT": str(state),
+        }):
+            from plugin.server.application import plugin_tool_environment
+            from plugin.server.application.plugin_project_commands import check_child_env
 
-        git_env = {
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_ALLOW_PROTOCOL": "file",
-        }
-        worker_env = {**check_child_env(), **git_env}
+            worker_env = {
+                **check_child_env(),
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_ALLOW_PROTOCOL": "file",
+            }
+            try:
+                resources = plugin_tool_environment.tool_resources(backend)
+                if expected_commit is not None and resources.commit != expected_commit:
+                    raise RuntimeError(f"Plugin tools {resources.commit} do not match checkout {expected_commit}")
+                plugin_tool_environment.verify_tool_resources(resources)
+                asyncio.run(_check_backend_commit(backend, root, resources.commit, worker_env))
+                if resources_only:
+                    print(f"Packaged plugin tools match backend commit {resources.commit}")
+                    return
+                gh_bin = _install_github_cli_fixture(root)
+                if desktop_runtime:
+                    _check_desktop_runtime(backend, root / "desktop", gh_bin, resources.commit, worker_env)
+                asyncio.run(_check_workbench_routes(backend, root, gh_bin, resources.commit, worker_env))
+            finally:
+                # Windows needs the plugin log closed before deleting the test root.
+                logging.shutdown()
 
-        with patch.object(sys, "executable", str(backend)):
-            resources = plugin_tool_environment.tool_resources()
-            if expected_commit is not None and resources.commit != expected_commit:
-                raise RuntimeError(f"Plugin tools {resources.commit} do not match checkout {expected_commit}")
-        try:
-            asyncio.run(_check_backend_commit(backend, root, resources.commit, worker_env))
-            gh_bin = _install_github_cli_fixture(root)
-            if desktop_runtime:
-                _check_desktop_runtime(backend, root / "desktop", gh_bin, resources.commit, worker_env)
-            asyncio.run(_check_workbench_routes(backend, root, gh_bin, resources.commit, worker_env))
-        finally:
-            # The in-process routes open the plugin log under the test root.
-            # Windows needs its handle closed before TemporaryDirectory cleans up.
-            logging.shutdown()
+
+def _extract_windows_backend(archive: Path, destination: Path) -> Path:
+    prefix = "resources/bin/"
+    executable = f"{prefix}projectneko_server.exe"
+    with ZipFile(archive) as bundle:
+        names = bundle.namelist()
+        missing = {"N.E.K.O.exe", executable}.difference(names)
+        if missing:
+            raise RuntimeError(f"Desktop ZIP is missing: {', '.join(sorted(missing))}")
+        # Keep the backend layout and test independently of the build tree.
+        bundle.extractall(destination, members=(name for name in names if name.startswith(prefix)))
+    return destination / executable
 
 
 @contextmanager
-def _backend_from_zip(archive: Path):
+def _packaged_backend(artifact: Path):
+    if not artifact.is_file():
+        raise RuntimeError(f"Packaged artifact not found: {artifact}")
+    suffix = artifact.suffix.casefold()
+    is_tar = artifact.name.endswith(".tar.gz")
+    if suffix not in {".zip", ".appimage"} and not is_tar:
+        yield artifact
+        return
+
     with TemporaryDirectory(prefix="neko extracted desktop ") as directory:
         destination = Path(directory)
-        prefix = "resources/bin/"
-        with ZipFile(archive) as bundle:
-            names = bundle.namelist()
-            backend_files = [name for name in names if name.startswith(prefix)]
-            required = {"N.E.K.O.exe", f"{prefix}projectneko_server.exe", f"{prefix}plugin-tools/manifest.json"}
-            missing = required.difference(names)
-            if missing:
-                raise RuntimeError(f"Desktop ZIP is missing: {', '.join(sorted(missing))}")
-            # Extract the backend, keeping its relative layout and testing a
-            # destination containing spaces independently of the build tree.
-            bundle.extractall(destination, members=backend_files)
-        yield destination / prefix / "projectneko_server.exe"
+        if suffix == ".zip":
+            backend = _extract_windows_backend(artifact, destination)
+        elif is_tar:
+            if sys.platform == "darwin":
+                destination /= "N.E.K.O.app"
+                destination.mkdir()
+            with tarfile.open(artifact, "r:gz") as bundle:
+                bundle.extractall(destination, filter="data")
+            if sys.platform == "darwin":
+                desktop = destination / "Contents/MacOS/N.E.K.O"
+                backend_app = destination / "Contents/Resources/bin/projectneko_server.app"
+                backend = backend_app / "Contents/MacOS/projectneko_server"
+                # The outer app may be unsigned in nightly builds. The inner
+                # Nuitka app is signed even when Electron signing is disabled.
+                signed_apps = [backend_app]
+                if (destination / "Contents/_CodeSignature/CodeResources").is_file():
+                    signed_apps.append(destination)
+                for app in signed_apps:
+                    subprocess.run(
+                        ["codesign", "--verify", "--deep", "--strict", str(app)],
+                        check=True, timeout=120,
+                    )
+            else:
+                desktop = destination / "n.e.k.o"
+                backend = destination / "resources/bin/projectneko_server"
+            if not desktop.is_file():
+                raise RuntimeError(f"Portable archive is missing the desktop executable: {desktop}")
+        else:
+            subprocess.run(
+                [str(artifact), "--appimage-extract"], cwd=destination,
+                check=True, timeout=300, stdout=subprocess.DEVNULL,
+            )
+            backend = destination / "squashfs-root/resources/bin/projectneko_server"
+        if not backend.is_file():
+            raise RuntimeError(f"Desktop artifact is missing the backend: {backend}")
+        yield backend
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("artifact", type=Path, help="Frozen backend executable or Windows desktop ZIP")
+    parser.add_argument("artifact", type=Path, help="Frozen backend executable, Portable ZIP/tar.gz, or Linux AppImage")
     parser.add_argument("--expected-commit")
-    parser.add_argument("--check-desktop-runtime", action="store_true", help="Start the complete desktop backend")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-desktop-runtime", action="store_true", help="Start the complete desktop backend")
+    mode.add_argument("--resources-only", action="store_true", help="Verify the resources and the backend build commit")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
     artifact = args.artifact.resolve()
-    if artifact.suffix.casefold() == ".zip":
-        with _backend_from_zip(artifact) as backend:
-            check(backend, args.expected_commit, desktop_runtime=args.check_desktop_runtime)
-    else:
-        check(artifact, args.expected_commit, desktop_runtime=args.check_desktop_runtime)
+    with _packaged_backend(artifact) as backend:
+        check(
+            backend, args.expected_commit,
+            desktop_runtime=args.check_desktop_runtime, resources_only=args.resources_only,
+        )

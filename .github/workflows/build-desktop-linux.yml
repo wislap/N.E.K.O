@@ -140,7 +140,7 @@ jobs:
       - name: Prepare filtered built-in plugins for Nuitka
         shell: bash
         run: |
-          .venv/bin/python scripts/prepare_nuitka_plugins.py prepare
+          .venv/bin/python scripts/prepare_nuitka_plugins.py prepare --build-commit
 
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
@@ -426,6 +426,9 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Stage plugin workbench tools
+        run: .venv/bin/python scripts/build_plugin_tools.py --backend dist/Xiao8/projectneko_server
+
       # --- Verify bundled embedding + tiktoken assets ---
       # memory/embeddings.py treats every onnx_data sidecar plus both fp32
       # and int8 variants as required at session-load time; tiktoken
@@ -518,13 +521,16 @@ jobs:
           .venv/bin/python scripts/check_dist_arch.py dist/Xiao8 \
             --expect-arch x64 --expect-platform linux
 
+      - name: Pack Python backend
+        run: tar -C dist/Xiao8 -czf dist/python-backend.tar.gz .
+
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/Xiao8/
+          path: dist/python-backend.tar.gz
           retention-days: 7
-          compression-level: 6
+          compression-level: 0
 
   # ──────────────────────────────────────────────
   # Step 2: Build Electron desktop app (Linux only)
@@ -560,11 +566,25 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron-app/package-lock.json
 
+      - name: Check out workbench acceptance tests
+        uses: actions/checkout@v4
+        with:
+          path: backend-source
+          persist-credentials: false
+
+      - name: Install uv for workbench acceptance
+        uses: astral-sh/setup-uv@v4
+
       - name: Download Python backend artifact
         uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.python_artifact }}
           path: electron-app/bin
+
+      - name: Unpack Python backend
+        run: |
+          tar -xzf electron-app/bin/python-backend.tar.gz -C electron-app/bin
+          rm -f electron-app/bin/python-backend.tar.gz
 
       - name: Make server binary executable
         run: chmod +x electron-app/bin/projectneko_server
@@ -633,6 +653,17 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify plugin workbench in the Linux AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(electron-app/dist/*.AppImage)
+          [[ ${#appimages[@]} -eq 1 ]] || { echo "Expected one Linux AppImage"; exit 1; }
+          uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools-smoke \
+            python backend-source/scripts/check_plugin_tools.py "${appimages[0]}" \
+              --expected-commit "$GITHUB_SHA" --check-desktop-runtime
 
       - name: List build output
         working-directory: electron-app/dist

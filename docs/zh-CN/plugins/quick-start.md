@@ -9,7 +9,7 @@
 3. 在自己的编辑器中修改文件后点击「重载」。开启热重载时，正在运行的项目会在源码变化后自动重载；源码无法加载时保留正在运行的旧实例。
 4. 在插件 CLI 的构建入口选择该项目即可打包 `.neko-plugin`，停止状态也能打包。
 
-Windows 打包版的「发布」页也支持创建 GitHub 仓库、本地预检和发布。安装 Git、GitHub CLI（`gh`）和 `uv`，使用 `gh auth login` 登录后即可自动建仓。提交并推送插件源码后，首次运行本地预检或 GitHub 发布时，工作台会联网准备与安装包对应的 Python 工具环境。GitHub Actions 生成正式 Release，Market 负责核验和审核。「仅通知 Market」可以用于已有的合格 GitHub Release。
+随包提供插件工具的桌面版可在「发布」页创建 GitHub 仓库、运行本地预检和发布。安装 Git、GitHub CLI（`gh`）和 `uv`，使用 `gh auth login` 登录后即可自动建仓。提交并推送插件源码后，首次运行本地预检或 GitHub 发布时，工作台会联网准备与安装包对应的 Python 工具环境。GitHub Actions 生成正式 Release，Market 负责核验和审核。「仅通知 Market」可以用于已有的合格 GitHub Release。
 
 项目目录名必须与插件 ID 一致，入口包名必须匹配目录名；插件 ID 不能与已安装插件或其他项目重复。依赖继续采用现有声明和 `vendor/` 规则，不会自动安装。
 

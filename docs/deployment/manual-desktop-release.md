@@ -19,14 +19,21 @@ it in the adjacent `N.E.K.O.-PC/bin` directory (`projectneko_server.exe` on
 Windows, `projectneko_server` on macOS/Linux). The script packages that backend
 with the locally available Electron signing identity.
 
-For Windows, prepare the Nuitka launcher with
+Prepare the Nuitka launcher with
 `uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit` before
-compiling it. Run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
-from the same N.E.K.O. checkout. The release check compares the commit reported
-by the executable with the commit in the tooling manifest.
-Before signing, the release script starts the backend extracted from the Windows
-ZIP in a temporary profile. It loads the plugin manager and uses its HTTP
-endpoints to create a project and run precheck. The acceptance test also exercises
+compiling it. From the same N.E.K.O. checkout, run
+`uv run python scripts/build_plugin_tools.py --backend <backend-executable>`
+using the same Python used for the Nuitka build. On macOS, pass the executable
+at `projectneko_server.app/Contents/MacOS/projectneko_server` and stage the tools
+before signing the backend bundle. Keep both the bundle and its outer
+`bin/projectneko_server` launcher when copying the backend to N.E.K.O.-PC.
+
+Before signing the Portable manifests, the release script checks the tool
+resources and the executable's build commit, then starts the backend extracted
+from the full Portable ZIP or tar.gz in a temporary profile. It loads the plugin
+manager and uses its HTTP endpoints to create a project and run precheck.
+On Linux it also checks the resources and build commit inside the AppImage.
+The acceptance test exercises
 repository setup and all three publication modes using an isolated
 GitHub CLI fixture, a temporary Git repository, and local GitHub and Market test
 APIs. It checks that a Market notification can be canceled and retried, and that

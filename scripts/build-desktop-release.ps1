@@ -96,7 +96,7 @@ function Get-BackendPath {
     param([Parameter(Mandatory = $true)] [string]$BuildPlatform)
     switch ($BuildPlatform) {
         'windows' { return Join-Path $ElectronPath 'bin/projectneko_server.exe' }
-        'macos' { return Join-Path $ElectronPath 'bin/projectneko_server' }
+        'macos' { return Join-Path $ElectronPath 'bin/projectneko_server.app/Contents/MacOS/projectneko_server' }
         'linux' { return Join-Path $ElectronPath 'bin/projectneko_server' }
     }
 }
@@ -175,30 +175,14 @@ $backendPath = Get-BackendPath -BuildPlatform $buildPlatform
 if (-not (Test-Path -LiteralPath $backendPath -PathType Leaf)) {
     throw "Backend artifact is missing: $backendPath. Build the matching local Nuitka backend and place it in N.E.K.O.-PC/bin first."
 }
-if ($buildPlatform -eq 'windows') {
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        throw 'uv is required for the Windows plugin workbench acceptance check.'
-    }
-    $backendSource = Split-Path -Parent $PSScriptRoot
-    $sourceCommit = (Invoke-Checked git '-C' $backendSource 'rev-parse' 'HEAD').Trim()
-    $toolManifest = Join-Path (Split-Path -Parent $backendPath) 'plugin-tools/manifest.json'
-    if (-not (Test-Path -LiteralPath $toolManifest -PathType Leaf)) {
-        throw 'Windows plugin tooling is missing. Run scripts/build_plugin_tools.py from the matching N.E.K.O. checkout.'
-    }
-    $toolResources = Get-Content -Raw -LiteralPath $toolManifest | ConvertFrom-Json
-    if ($toolResources.commit -ne $sourceCommit) {
-        throw 'Windows plugin tooling was built from a different N.E.K.O. commit.'
-    }
-    $toolResources.sha256.PSObject.Properties | ForEach-Object {
-        $resource = Join-Path (Split-Path -Parent $toolManifest) $_.Name
-        if ((Get-FileHash -LiteralPath $resource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.Value) {
-            throw "Windows plugin tooling failed integrity verification: $($_.Name)"
-        }
-    }
-}
 if (-not (Test-Path -LiteralPath (Join-Path $ElectronPath 'package.json') -PathType Leaf)) {
     throw "Electron project package.json is missing under $ElectronPath."
 }
+$backendSource = Split-Path -Parent $PSScriptRoot
+$sourceCommit = (Invoke-Checked git '-C' $backendSource 'rev-parse' 'HEAD').Trim()
+$checkPluginTools = @('run', '--project', $backendSource, '--python', '3.11', '--locked', '--only-group',
+    'plugin-tools-smoke', 'python', (Join-Path $PSScriptRoot 'check_plugin_tools.py'), '--expected-commit', $sourceCommit)
+Invoke-Checked uv @checkPluginTools '--resources-only' $backendPath
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     throw 'Node.js is required.'
 }
@@ -289,13 +273,9 @@ try {
     }
     Invoke-Checked node @updateArgs
 
-    if ($buildPlatform -eq 'windows') {
-        $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_win.zip"
-        $checkArgs = @('run', '--project', $backendSource, '--locked', '--only-group', 'plugin-tools-smoke',
-            'python', (Join-Path $PSScriptRoot 'check_plugin_tools.py'), $archive,
-            '--expected-commit', $sourceCommit, '--check-desktop-runtime')
-        Invoke-Checked uv @checkArgs
-    }
+    $archiveExtension = if ($buildPlatform -eq 'windows') { 'zip' } else { 'tar.gz' }
+    $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_$($target.Key).$archiveExtension"
+    Invoke-Checked uv @checkPluginTools '--check-desktop-runtime' $archive
 
     if ($buildPlatform -eq 'linux') {
         $appImages = @(Get-ChildItem -LiteralPath (Join-Path $ElectronPath 'dist') -Filter '*.AppImage' -File)
@@ -308,6 +288,7 @@ try {
             $appImageArgs += @('--previous', $previousAppImageManifest[0].FullName)
         }
         Invoke-Checked node @appImageArgs
+        Invoke-Checked uv @checkPluginTools '--resources-only' $appImages[0].FullName
     }
 
     Sign-PortableManifests -Directory $portableUpdateDirectory
@@ -328,7 +309,7 @@ try {
         platform = $buildPlatform
         architecture = $Architecture
         portableTarget = $target.Key
-        backend = "bin/$([System.IO.Path]::GetFileName($backendPath))"
+        backend = [System.IO.Path]::GetRelativePath($ElectronPath, $backendPath).Replace('\', '/')
         previousReleaseTag = $PreviousReleaseTag
         generatedAt = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json -Depth 3

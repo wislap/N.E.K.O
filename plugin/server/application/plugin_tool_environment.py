@@ -16,6 +16,7 @@ from pathlib import Path
 import portalocker
 
 from plugin import settings
+from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
 from plugin.server.application.plugin_project_commands import check_child_env, run_cli
 from utils.file_utils import atomic_write_text
 
@@ -62,8 +63,8 @@ class ToolResources:
             return False
 
 
-def tool_resources() -> ToolResources:
-    root = Path(sys.executable).resolve().parent / "plugin-tools"
+def tool_resources(backend: Path | None = None) -> ToolResources:
+    root = plugin_tool_resources_dir(backend or Path(sys.executable))
     try:
         contents = (root / "manifest.json").read_bytes()
         manifest = json.loads(contents)
@@ -100,7 +101,7 @@ def packaged_workflow_ref() -> str:
         return MARKET_ACTIONS_NEKO_REF
 
 
-def _verify_resources(resources: ToolResources) -> None:
+def verify_tool_resources(resources: ToolResources) -> None:
     for name, expected in resources.hashes.items():
         try:
             with (resources.root / name).open("rb") as stream:
@@ -115,7 +116,7 @@ async def _prepare(resources: ToolResources, env: dict[str, str]) -> None:
     uv = shutil.which("uv")
     if uv is None or shutil.which("uvx") is None:
         raise ToolEnvironmentError("Install uv and uvx to prepare the plugin tool environment")
-    await asyncio.to_thread(_verify_resources, resources)
+    await asyncio.to_thread(verify_tool_resources, resources)
     root = resources.environment_root
     # uv must use a version-matched interpreter even on machines with another
     # Python installed. Keep its download and install state outside the bundle.

@@ -11,8 +11,9 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 
 运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录。Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
 
-Windows 构建需在编译前运行 `uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit`，将 Git 提交写入后端。随后从同一份 N.E.K.O. 源码运行 `uv run python scripts/build_plugin_tools.py <PC 仓库目录>/bin/plugin-tools`。验收会核对后端报告的提交和工具清单中的提交。
-签名前，发布脚本会从生成的 Windows ZIP 解压后端，在临时用户目录中启动，加载插件管理页面，并通过实际 HTTP 接口新建项目和预检。验收还会使用隔离的 GitHub CLI 测试程序、临时 Git 仓库和本机的 GitHub、Market 测试接口，检查建仓、三种发布模式、Market 通知取消与重试，以及清除内存中的任务后能否读取回执。
+编译前运行 `uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit`，将 Git 提交写入后端。随后使用构建 Nuitka 的同一 Python 环境，从同一份 N.E.K.O. 源码执行 `uv run python scripts/build_plugin_tools.py --backend <后端可执行文件>`。macOS 传入 `projectneko_server.app/Contents/MacOS/projectneko_server`，并在签名之前生成工具资源。将后端复制到 N.E.K.O.-PC 时，同时保留该 `.app` 和外层的 `bin/projectneko_server` 启动脚本。
+
+为 Portable manifest 签名前，发布脚本会校验工具资源与后端提交，从完整的 Portable ZIP 或 tar.gz 解压后端，在临时用户目录中启动，加载插件管理页面，并通过实际 HTTP 接口新建项目和预检。Linux 还会校验 AppImage 内的资源及后端提交。验收使用隔离的 GitHub CLI 测试程序、临时 Git 仓库和本机的 GitHub、Market 测试接口，检查建仓、三种发布模式、Market 通知取消与重试，以及清除内存中的任务后能否读取回执。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `
