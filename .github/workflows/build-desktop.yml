@@ -1351,7 +1351,7 @@ jobs:
         run: |
           $archives = @(Get-ChildItem -LiteralPath electron-app/dist/portable-update -File -Filter '*_win.zip')
           if ($archives.Count -ne 1) { throw 'Expected one full Windows desktop ZIP' }
-          uv run --project backend-source --locked --only-group plugin-tools `
+          uv run --project backend-source --locked --only-group plugin-tools-smoke `
             python backend-source/scripts/check_plugin_tools.py $archives[0].FullName --expected-commit '${{ github.sha }}'
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 

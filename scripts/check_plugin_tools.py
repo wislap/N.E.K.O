@@ -5,15 +5,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
+from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from shlex import quote
 from tempfile import TemporaryDirectory
 from threading import Thread
+from time import monotonic
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -21,9 +24,7 @@ from zipfile import ZipFile
 _RELEASE_ASSET = "packaged-probe-v0.1.0.neko-plugin"
 
 
-def _run_worker(
-    backend: Path, directory: Path, *args: str, environment: dict[str, str],
-) -> subprocess.CompletedProcess[str]:
+def _worker_environment(directory: Path, environment: dict[str, str]) -> dict[str, str]:
     env = dict(environment)
     env.update(
         GH_CONFIG_DIR=str(directory / "gh-config"),
@@ -33,28 +34,17 @@ def _run_worker(
     )
     for proxy in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         env[proxy] = "http://127.0.0.1:1"
+    return env
+
+
+def _run_worker(
+    backend: Path, directory: Path, *args: str, environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(backend), "--neko-plugin-project-worker", *args], cwd=directory,
         timeout=30, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=env,
+        env=_worker_environment(directory, environment),
     )
-
-
-def _records(result: subprocess.CompletedProcess[str], key: str) -> list[object]:
-    prefix = "{" + json.dumps(key) + ":"
-    return [
-        json.loads(line)[key]
-        for line in result.stdout.splitlines()
-        if line.startswith(prefix)
-    ]
-
-
-def _check_repo_worker(backend: Path, root: Path, project: Path, repository: str, env: dict[str, str]) -> None:
-    # Validate the idempotent success response without creating a remote repo.
-    subprocess.run(["git", "remote", "add", "origin", repository], cwd=project, env=env, check=True)
-    creation = _run_worker(backend, root, "create-repo", str(project), environment=env)
-    if creation.returncode or _records(creation, "repository_url") != [repository]:
-        raise RuntimeError(f"Packaged repository worker failed:\n{creation.stdout}\n{creation.stderr}")
 
 
 @contextmanager
@@ -78,9 +68,8 @@ def _reply(handler: BaseHTTPRequestHandler, status: int, payload: object) -> Non
     handler.wfile.write(response)
 
 
-def _check_market_worker(backend: Path, root: Path, repository: str, environment: dict[str, str]) -> None:
-    release_url = f"{repository}/releases/tag/v0.1.0"
-    asset = _RELEASE_ASSET
+@contextmanager
+def _market_api():
     requests = []
 
     class MarketHandler(BaseHTTPRequestHandler):
@@ -91,20 +80,11 @@ def _check_market_worker(backend: Path, root: Path, repository: str, environment
 
     with _loopback_api(MarketHandler) as port:
         print(f"Checking the Market worker against localhost:{port}", flush=True)
-        result = _run_worker(
-            backend, root, "market", release_url, "0", "--asset-name", asset,
-            "--endpoint", f"http://127.0.0.1:{port}/api/v1/release-publications",
-            environment=environment,
-        )
-    expected = {"release_url": release_url, "asset_name": asset}
-    if result.returncode or requests != [("/api/v1/release-publications", expected)]:
-        raise RuntimeError(f"Packaged Market worker failed:\n{result.stdout}\n{result.stderr}")
-    receipt = {"status": "verifying", "candidate_id": None, "request_id": 17, "version": None}
-    if _records(result, "publication") != [receipt]:
-        raise RuntimeError(f"Packaged Market worker did not report the verification receipt:\n{result.stdout}")
+        yield f"http://127.0.0.1:{port}", requests
 
 
-def _check_github_worker(backend: Path, root: Path, project: Path, repository: str, env: dict[str, str]) -> None:
+@contextmanager
+def _github_api(root: Path, project: Path, repository: str, env: dict[str, str]):
     def git(directory: Path, *args: str, environment: dict[str, str] = env) -> str:
         return subprocess.check_output(
             ["git", *args], cwd=directory, env=environment, text=True, encoding="utf-8", errors="replace",
@@ -145,7 +125,17 @@ def _check_github_worker(backend: Path, root: Path, project: Path, repository: s
                 _reply(self, 403, {"message": "Unexpected GitHub credentials"})
             elif self.path == repo_path:
                 _reply(self, 200, {"private": False})
-            elif self.path == f"{repo_path}/releases/tags/{tag}":
+            elif self.path in {f"{repo_path}/releases/tags/{tag}", f"{repo_path}/git/ref/tags/{tag}"}:
+                tagged = subprocess.run(
+                    ["git", "rev-parse", "--verify", f"refs/tags/{tag}"],
+                    cwd=remote, env=env, capture_output=True, text=True,
+                )
+                if tagged.returncode:
+                    _reply(self, 404, {})
+                    return
+                if self.path.startswith(f"{repo_path}/git/"):
+                    _reply(self, 200, {"object": {"type": "commit", "sha": tagged.stdout.strip()}})
+                    return
                 _reply(self, 200, {
                     "html_url": release_url,
                     "assets": [
@@ -160,26 +150,135 @@ def _check_github_worker(backend: Path, root: Path, project: Path, repository: s
             else:
                 _reply(self, 404, {})
 
-    expected = {"release_url": release_url, "asset_name": asset_name}
-    expected_requests = [
-        repo_path, f"{repo_path}/releases/tags/{tag}",
-        f"{repo_path}/actions/workflows/release.yml/runs?head_sha={head}",
-    ]
     with _loopback_api(GithubHandler) as port:
         print(f"Checking the GitHub worker against localhost:{port}", flush=True)
-        # The second attempt resumes an already-pushed tag after a restart
-        # without modifying the local repository or its remote tag.
-        for _ in range(2):
-            requests.clear()
-            result = _run_worker(
-                backend, root, "github", str(project), "packaged_probe", github_repo, tag, head, "0",
-                "--loopback-api", str(port), environment=github_env,
+        yield port, github_env, head, requests
+    if git(remote, "rev-parse", f"refs/tags/{tag}") != head:
+        raise RuntimeError("Packaged GitHub worker did not push the expected tag")
+
+
+async def _check_workbench_routes(
+    backend: Path, root: Path, project: Path, repository: str, env: dict[str, str],
+) -> None:
+    import httpx
+    from fastapi import FastAPI
+
+    from plugin import settings
+    from plugin.server.application import plugin_project_commands, plugin_projects
+    from plugin.server.application import plugin_publish_status, plugin_publish_tasks, plugin_repo_tasks
+    from plugin.server.infrastructure import authoring_project_store
+    from plugin.server.routes.plugin_projects import router
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    def payload(response: httpx.Response, status: int) -> dict:
+        if response.status_code != status:
+            raise RuntimeError(f"{response.request.url.path}: {response.status_code} {response.text}")
+        return response.json()
+
+    application = FastAPI()
+    application.include_router(router)
+    record = authoring_project_store.add_record(project)
+    path = f"/plugin-projects/{record.project_id}"
+    network_env = _worker_environment(root, env)
+    with ExitStack() as patches:
+        for service in (plugin_projects, plugin_publish_tasks):
+            patches.enter_context(patch.object(service, "source_repo_root", return_value=None))
+        patches.enter_context(patch.object(sys, "executable", str(backend)))
+        patches.enter_context(patch.object(sys, "frozen", True, create=True))
+        patches.enter_context(patch.object(
+            plugin_repo_tasks, "run_cli", partial(plugin_project_commands.run_cli, env=network_env),
+        ))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://127.0.0.1",
+        ) as client:
+            # Use the real local-request guard, project registry and worker runner.
+            manual = payload(await client.post(f"{path}/create-repo", json={}), 200)
+            if manual.get("status") != "manual":
+                raise RuntimeError(f"Unexpected packaged repository fallback: {manual}")
+            await asyncio.to_thread(
+                subprocess.run, ["git", "remote", "add", "origin", repository], cwd=project, env=env, check=True,
             )
-            if result.returncode or _records(result, "release_url") != [release_url]:
-                raise RuntimeError(f"Packaged GitHub release worker failed:\n{result.stdout}\n{result.stderr}")
-            release = next(json.loads(line) for line in result.stdout.splitlines() if line.startswith('{"release_url":'))
-            if release != expected or requests != expected_requests or git(remote, "rev-parse", f"refs/tags/{tag}") != head:
-                raise RuntimeError("Packaged GitHub worker did not publish the expected tag and Release")
+            created = payload(await client.post(f"{path}/create-repo", json={}), 201)
+            if created.get("repository_url") != repository:
+                raise RuntimeError(f"Unexpected packaged repository result: {created}")
+            target = root / "packages"
+            with patch.object(plugin_projects, "TemporaryDirectory", return_value=nullcontext(str(target))):
+                report = payload(await client.post(f"{path}/precheck"), 200)
+            if not report["passed"] or "tests=passed" not in report["stages"][-1]["output"]:
+                raise RuntimeError(f"Packaged HTTP precheck did not pass: {report}")
+            with ZipFile(target / "packaged_probe.neko-plugin") as package:
+                if not any(name.endswith("/plugin.meta.json") for name in package.namelist()):
+                    raise RuntimeError("Plugin tools did not generate packaged metadata")
+            stale = await asyncio.to_thread(
+                _run_worker, backend, root, "github", str(project), "packaged_probe",
+                repository.removeprefix("https://github.com/"), "v0.1.0", "0" * 40, "0", environment=env,
+            )
+            if stale.returncode != 1 or "changed during release checks" not in stale.stdout:
+                raise RuntimeError(f"Packaged GitHub worker failed to reject stale HEAD:\n{stale.stdout}\n{stale.stderr}")
+
+            with _github_api(root, project, repository, env) as (port, github_env, head, github_requests):
+                with _market_api() as (market_url, market_requests), ExitStack() as publish_patches:
+                    github_url = f"http://127.0.0.1:{port}"
+                    command = plugin_project_commands.project_worker_command
+
+                    def worker_command(*args: str) -> list[str]:
+                        if args[0] == "github":
+                            args = (*args, "--loopback-api", str(port))
+                        return command(*args)
+
+                    publish_patches.enter_context(patch.object(plugin_publish_tasks, "project_worker_command", worker_command))
+                    publish_patches.enter_context(patch.object(
+                        plugin_publish_tasks, "start_cli",
+                        partial(plugin_project_commands.start_cli, env=_worker_environment(root, github_env)),
+                    ))
+                    publish_patches.enter_context(patch.object(plugin_publish_status, "_GITHUB_API", github_url))
+                    publish_patches.enter_context(patch.object(plugin_publish_status, "github_headers", return_value={}))
+                    publish_patches.enter_context(patch.object(settings, "MARKET_API_URL", market_url))
+                    tag = "v0.1.0"
+                    release_url = f"{repository}/releases/tag/{tag}"
+                    identity = {"repository": repository.removeprefix("https://github.com/"), "head": head, "tag": tag}
+                    try:
+                        for mode in ("github", "market_notify", "github_and_market"):
+                            started = payload(await client.post(f"{path}/publish", json={**identity, "mode": mode}), 202)
+                            deadline = monotonic() + 120
+                            while True:
+                                task = payload(await client.get(f"{path}/publish-task"), 200)
+                                if task["status"] not in {"queued", "running"}:
+                                    break
+                                if monotonic() >= deadline:
+                                    raise RuntimeError(f"Packaged {mode} did not finish: {task}")
+                                await asyncio.sleep(0.5)
+                            # Terminal status becomes visible before the worker
+                            # completes persistence and releases the project.
+                            worker = plugin_publish_tasks._workers.get(started["task_id"])
+                            if worker is not None:
+                                await worker
+                            if (
+                                task["task_id"] != started["task_id"]
+                                or task["status"] != "succeeded"
+                                or task["release_url"] != release_url
+                            ):
+                                raise RuntimeError(f"Packaged {mode} did not publish the expected Release: {task}")
+                            expected_receipt = None if mode == "github" else 17
+                            expected_status = None if mode == "github" else "verifying"
+                            if task["market_request_id"] != expected_receipt or task["market_status"] != expected_status:
+                                raise RuntimeError(f"Unexpected Market receipt for {mode}: {task}")
+                            print(f"Packaged workbench publication passed: {mode}", flush=True)
+                        with patch.dict(plugin_publish_tasks._latest, clear=True):
+                            saved = payload(await client.get(f"{path}/publish-task"), 200)
+                        if saved != {**task, "log": []}:
+                            raise RuntimeError(f"Unexpected persisted publication receipt: {saved}")
+                    finally:
+                        await plugin_publish_tasks.shutdown_publications()
+                    expected_request = ("/api/v1/release-publications", {
+                        "release_url": release_url, "asset_name": _RELEASE_ASSET,
+                    })
+                    if market_requests != [expected_request, expected_request]:
+                        raise RuntimeError(f"Unexpected Market requests: {market_requests}")
+                    if not any("/actions/workflows/release.yml/runs?" in path for path in github_requests):
+                        raise RuntimeError("The workbench did not verify the GitHub Actions release run")
+    print("Packaged workbench HTTP routes passed precheck and all three publication modes")
 
 
 def check(backend: Path, expected_commit: str | None = None) -> None:
@@ -228,49 +327,18 @@ def check(backend: Path, expected_commit: str | None = None) -> None:
              "commit", "-m", "Plugin tools smoke fixture"],
             cwd=project, env=worker_env, check=True,
         )
-        # An isolated gh config exercises the manual path without a remote write.
-        manual = _run_worker(backend, root, "create-repo", str(project), environment=worker_env)
-        if manual.returncode != 3 or "[MANUAL]" not in manual.stdout:
-            raise RuntimeError(f"Packaged repository fallback failed:\n{manual.stdout}\n{manual.stderr}")
         repository = "https://github.com/example/n.e.k.o_plugin_packaged_probe"
-        _check_repo_worker(backend, root, project, repository, worker_env)
-        _check_market_worker(backend, root, repository, worker_env)
 
         with patch.object(sys, "executable", str(backend)):
             resources = plugin_tool_environment.tool_resources()
             if expected_commit is not None and resources.commit != expected_commit:
                 raise RuntimeError("Plugin tool version differs from the backend build")
-            tools = asyncio.run(plugin_tool_environment.resolve_tool_environment(None))
-        target = root / "packages"
-        check_env = {**tools.env, **git_env}
-        result = subprocess.run(
-            tools.command("precheck", str(project), "--target-dir", str(target), "--json"),
-            cwd=tools.cwd, env=check_env, timeout=600, capture_output=True, text=True, encoding="utf-8",
-        )
-        if result.returncode:
-            raise RuntimeError(f"Plugin tools precheck failed:\n{result.stdout}\n{result.stderr}")
-        report = json.loads(result.stdout.splitlines()[-1])
-        if not report["passed"] or "tests=passed" not in report["stages"][-1]["output"]:
-            raise RuntimeError(f"Plugin tools did not run the plugin tests: {report}")
-        with ZipFile(target / "packaged_probe.neko-plugin") as package:
-            if not any(name.endswith("/plugin.meta.json") for name in package.namelist()):
-                raise RuntimeError("Plugin tools did not generate packaged metadata")
-        release_check = subprocess.run(
-            tools.command("publish", "github", str(project), "--check-only"),
-            cwd=tools.cwd, env=check_env, timeout=600, capture_output=True, text=True, encoding="utf-8",
-        )
-        if release_check.returncode:
-            raise RuntimeError(f"Packaged GitHub release checks failed:\n{release_check.stdout}\n{release_check.stderr}")
-        stale = _run_worker(
-            backend, root, "github", str(project), "packaged_probe", repository.removeprefix("https://github.com/"),
-            "v0.1.0", "0" * 40, "0", environment=worker_env,
-        )
-        if stale.returncode != 1 or "changed during release checks" not in stale.stdout:
-            raise RuntimeError(f"Packaged GitHub worker failed to reject stale HEAD:\n{stale.stdout}\n{stale.stderr}")
-        if subprocess.check_output(["git", "tag", "--list"], cwd=project, env=worker_env, text=True).strip():
-            raise RuntimeError("Release checks created a tag")
-        _check_github_worker(backend, root, project, repository, worker_env)
-        print("Packaged repository worker, isolated precheck, GitHub release, and Market notification passed")
+        try:
+            asyncio.run(_check_workbench_routes(backend, root, project, repository, worker_env))
+        finally:
+            # The in-process routes open the plugin log under the test root.
+            # Windows needs its handle closed before TemporaryDirectory cleans up.
+            logging.shutdown()
 
 
 @contextmanager

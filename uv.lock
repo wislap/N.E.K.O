@@ -1772,6 +1772,25 @@ plugin-tools = [
     { name = "toml" },
     { name = "tomli-w" },
 ]
+plugin-tools-smoke = [
+    { name = "fastapi" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "orjson" },
+    { name = "ormsgpack" },
+    { name = "packaging" },
+    { name = "portalocker" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-randomly" },
+    { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "pyzmq" },
+    { name = "tiktoken" },
+    { name = "toml" },
+    { name = "tomli-w" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1870,6 +1889,25 @@ plugin-tools = [
     { name = "pytest-asyncio" },
     { name = "pytest-randomly" },
     { name = "python-dotenv" },
+    { name = "pyzmq" },
+    { name = "tiktoken" },
+    { name = "toml" },
+    { name = "tomli-w" },
+]
+plugin-tools-smoke = [
+    { name = "fastapi" },
+    { name = "httpx", extras = ["socks"] },
+    { name = "orjson" },
+    { name = "ormsgpack" },
+    { name = "packaging" },
+    { name = "portalocker" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-randomly" },
+    { name = "python-dotenv" },
+    { name = "python-multipart" },
     { name = "pyzmq" },
     { name = "tiktoken" },
     { name = "toml" },

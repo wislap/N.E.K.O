@@ -288,7 +288,7 @@ try {
 
     if ($buildPlatform -eq 'windows') {
         $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_win.zip"
-        $checkArgs = @('run', '--project', $backendSource, '--locked', '--only-group', 'plugin-tools',
+        $checkArgs = @('run', '--project', $backendSource, '--locked', '--only-group', 'plugin-tools-smoke',
             'python', (Join-Path $PSScriptRoot 'check_plugin_tools.py'), $archive, '--expected-commit', $sourceCommit)
         Invoke-Checked uv @checkArgs
     }
