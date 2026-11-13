@@ -43,7 +43,7 @@ from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.utils.asyncio_utils import await_cancellation_safe
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 
 logger = get_logger("server.application.plugin_publish_tasks")
 
@@ -58,6 +58,7 @@ _RELEASE_WORKFLOW = ".github/workflows/release.yml"
 # Lines the CLI starts itself; anything else after ``[FAIL]`` continues it.
 _MARKER_PATTERN = re.compile(r"^\[[^\]]+\]")
 _CAUSE_PATTERN = re.compile(r"^\s*(fatal:|error:|! \[)", re.IGNORECASE)
+PublishStage = Literal["checks", "github", "market"]
 
 
 @dataclass
@@ -154,7 +155,7 @@ def _release_blockers(local: LocalStatus) -> list[str]:
     if workflow != ActionFileStatus.CURRENT:
         reasons.append(
             f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            f"run neko-plugin setup-repo {local.source_dir} --upgrade-github-actions"
+            "apply the workflow update in the plugin workbench"
         )
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(
@@ -322,10 +323,15 @@ def latest_publish_task(project_id: str) -> dict[str, object]:
 
     if any(record.project_id == project_id for record in list_records()):
         try:
-            saved = json.loads(_publication_path(project_id).read_bytes())
-            if saved.get("project_id") == project_id and saved.get("status") in _TERMINAL_STATUSES:
+            saved = read_json_tolerating_replace(_publication_path(project_id))
+            if (
+                isinstance(saved, dict)
+                and saved.get("project_id") == project_id
+                and isinstance(status := saved.get("status"), str)
+                and status in _TERMINAL_STATUSES
+            ):
                 return saved
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError):
             pass
     raise project_error(Code.PUBLISH_TASK_NOT_FOUND, f"no publish task for project {project_id}", 404)
 
@@ -472,10 +478,12 @@ def _failure_message(task: _Task, returncode: int | None) -> str:
     return message[:_LOG_LINE_CHARS]
 
 
-async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
+async def _timeout_message(gate: _Gate, budget: float, stage: PublishStage) -> str:
     message = f"publish timed out after {budget:.0f} seconds"
-    if task.mode == "market_notify":
-        return message
+    if stage == "checks":
+        return f"{message} during local release checks"
+    if stage == "market":
+        return f"{message} while notifying the Market; refresh the Market status before retrying"
     remote = await read_remote_github(
         gate.repository, gate.head, gate.tag, gate.plugin_id, fresh=True
     )
@@ -513,6 +521,7 @@ async def _publish(
     spawn_error = ""
     timeout_message = ""
     stage_budget = budget
+    stage: PublishStage = "checks"
     try:
         if task.mode != "market_notify":
             with _lock:
@@ -542,6 +551,7 @@ async def _publish(
             stage_budget = max(release_deadline - time.monotonic(), _MIN_RELEASE_WAIT_SECONDS)
             release_wait = max(stage_budget - min(30, stage_budget / 2), 1)
             assert gate.head is not None
+            stage = "github"
             returncode, output = await _run_stage(
                 task,
                 project_worker_command("github", str(gate.source_dir), gate.plugin_id,
@@ -564,6 +574,7 @@ async def _publish(
                 asyncio.to_thread(_save_task, task, interrupted=True)
             ))
             stage_budget = market_wait + 30
+            stage = "market"
             args = [
                 "market", task.release_url, str(market_wait), "--endpoint",
                 f"{settings.MARKET_API_URL.rstrip('/')}/api/v1/release-publications",
@@ -580,7 +591,7 @@ async def _publish(
             else:
                 spawn_error = output or ("Market worker returned no publication result" if returncode == 0 else "")
     except TimeoutError:
-        timeout_message = await _timeout_message(task, gate, stage_budget)
+        timeout_message = await _timeout_message(gate, stage_budget, stage)
     except (ToolEnvironmentError, OSError, ValueError, KeyError, TypeError) as exc:
         spawn_error = str(exc)
     except asyncio.CancelledError:

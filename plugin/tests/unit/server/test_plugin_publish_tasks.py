@@ -492,7 +492,7 @@ async def test_publish_status_route_rejects_an_unknown_mode(app, tmp_path):
 
 async def test_publish_times_out_and_terminates_the_cli(app, tmp_path, monkeypatch, no_psutil):
     record = store.add_record(tmp_path)
-    _ready_gate(monkeypatch, tmp_path)
+    reads = _ready_gate(monkeypatch, tmp_path, remote={"tag": "at_head"})
     monkeypatch.setenv("NEKO_PLUGIN_PUBLISH_BUDGET", "1")
     fake = _blocking_process()
     monkeypatch.setattr(tasks.subprocess, "Popen", fake)
@@ -503,7 +503,8 @@ async def test_publish_times_out_and_terminates_the_cli(app, tmp_path, monkeypat
     assert started.status_code == 202
     finished = await _wait_terminal(record.project_id)
     assert finished["status"] == "failed"
-    assert "timed out" in finished["message"]
+    assert finished["message"] == "publish timed out after 1 seconds during local release checks"
+    assert [fresh for _, fresh in reads] == [False]
 
 
 async def test_task_lookup_for_a_project_that_never_published(app, tmp_path):
@@ -545,7 +546,7 @@ def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github_and_market")
     assert "release.yml is UPGRADE" in caught.value.message
-    assert "--upgrade-github-actions" in caught.value.message
+    assert "apply the workflow update in the plugin workbench" in caught.value.message
 
 
 @pytest.mark.parametrize(
@@ -683,12 +684,16 @@ async def test_failure_message_carries_the_git_cause_line(app, tmp_path, monkeyp
 
 
 async def test_timeout_after_the_tag_was_pushed_says_the_release_may_follow(
-    app, tmp_path, monkeypatch, no_psutil
+    app, tmp_path, monkeypatch
 ):
     record = store.add_record(tmp_path)
     reads = _ready_gate(monkeypatch, tmp_path)
-    monkeypatch.setenv("NEKO_PLUGIN_PUBLISH_BUDGET", "1")
-    monkeypatch.setattr(tasks.subprocess, "Popen", _blocking_process())
+    async def run_stage(_task, argv, *_args):
+        if "--check-only" in argv:
+            return 0, ""
+        raise TimeoutError
+
+    monkeypatch.setattr(tasks, "_run_stage", run_stage)
     async with client(app) as http:
         await http.post(f"/plugin-projects/{record.project_id}/publish", json={"mode": "github"})
 
@@ -702,6 +707,29 @@ async def test_timeout_after_the_tag_was_pushed_says_the_release_may_follow(
     assert "after tag v0.1.0 was pushed" in finished["message"]
     assert "Notify the Market once it appears" in finished["message"]
     assert reads[-1][1] is True
+
+
+async def test_market_timeout_after_github_release_preserves_release_url(app, tmp_path, monkeypatch):
+    record = store.add_record(tmp_path)
+    reads = _ready_gate(monkeypatch, tmp_path)
+    release_url = "https://github.com/owner/repo/releases/tag/v0.1.0"
+
+    async def run_stage(_task, argv, *_args):
+        if "--check-only" in argv:
+            return 0, ""
+        if argv[3] == "github":
+            return 0, json.dumps({"release_url": release_url, "asset_name": "demo.neko-plugin"})
+        assert argv[3] == "market"
+        raise TimeoutError
+
+    monkeypatch.setattr(tasks, "_run_stage", run_stage)
+    async with client(app) as http:
+        await http.post(f"/plugin-projects/{record.project_id}/publish", json={"mode": "github_and_market"})
+    finished = await _wait_terminal(record.project_id)
+    assert finished["status"] == "failed"
+    assert finished["release_url"] == release_url
+    assert "while notifying the Market" in finished["message"]
+    assert [fresh for _, fresh in reads] == [False]
 
 
 async def test_publish_waits_for_a_precheck_of_the_same_project(

@@ -507,7 +507,8 @@ def check_github_release(
 
 
 def publish_github_release(
-    plugin_dir: Path, *, plugin_id: str, repository: str, tag: str, head: str, timeout: float
+    plugin_dir: Path, *, plugin_id: str, repository: str, tag: str, head: str, timeout: float,
+    api_url: str = _GITHUB_API_URL,
 ) -> GitHubRelease:
     """Revalidate the checked source before writing the remote tag."""
     source = load_plugin_source(plugin_dir)
@@ -521,8 +522,10 @@ def publish_github_release(
     ):
         raise RuntimeError("The plugin source, version or GitHub repository changed during release checks")
     _ensure_head_pushed(plugin_dir, head=head)
-    headers = _github_headers()
-    _ensure_public_repository(repository, headers=headers)
+    # The workbench acceptance test uses a loopback API. GitHub credentials
+    # belong only to the real GitHub endpoint.
+    headers = _github_headers() if api_url == _GITHUB_API_URL else {}
+    _ensure_public_repository(repository, headers=headers, api_url=api_url)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
     release = _wait_for_release(
         repository,
@@ -531,6 +534,7 @@ def publish_github_release(
         head=head,
         headers=headers,
         timeout=timeout,
+        api_url=api_url,
     )
     if _remote_tag_commit(plugin_dir, tag) != head:
         raise RuntimeError(f"Remote tag {tag} changed while waiting for its Release")
@@ -893,12 +897,14 @@ def _github_get(
         time.sleep(wait)
 
 
-def _ensure_public_repository(repository: str, *, headers: dict[str, str]) -> None:
+def _ensure_public_repository(
+    repository: str, *, headers: dict[str, str], api_url: str = _GITHUB_API_URL,
+) -> None:
     """Refuse before tagging when the Market could not read the repository."""
     with httpx.Client(timeout=30.0) as client:
         response = _github_get(
             client,
-            f"{_GITHUB_API_URL}/repos/{repository}",
+            f"{api_url}/repos/{repository}",
             headers=headers,
             deadline=time.monotonic(),
         )
@@ -940,6 +946,7 @@ def _release_run(
     head: str,
     headers: dict[str, str],
     deadline: float,
+    api_url: str = _GITHUB_API_URL,
 ) -> dict | None:
     """The newest release workflow run for ``tag`` at ``head``, or None when there is none yet.
 
@@ -948,7 +955,7 @@ def _release_run(
     """
     response = _github_get(
         client,
-        f"{_GITHUB_API_URL}/repos/{repository}/actions/workflows/release.yml/runs"
+        f"{api_url}/repos/{repository}/actions/workflows/release.yml/runs"
         f"?head_sha={head}",
         headers=headers,
         deadline=deadline,
@@ -986,6 +993,7 @@ def _wait_for_release(
     head: str,
     headers: dict[str, str],
     timeout: float,
+    api_url: str = _GITHUB_API_URL,
 ) -> GitHubRelease:
     print(
         "[WAIT] "
@@ -996,8 +1004,8 @@ def _wait_for_release(
         ),
         flush=True,
     )
-    api_url = (
-        f"{_GITHUB_API_URL}/repos/{repository}/releases/tags/"
+    release_api_url = (
+        f"{api_url}/repos/{repository}/releases/tags/"
         f"{quote(tag, safe='')}"
     )
     deadline = time.monotonic() + max(timeout, 0)
@@ -1005,7 +1013,7 @@ def _wait_for_release(
     with httpx.Client(timeout=30.0) as client:
         while True:
             asset_name = None
-            response = _github_get(client, api_url, headers=headers, deadline=deadline)
+            response = _github_get(client, release_api_url, headers=headers, deadline=deadline)
             if response.status_code == 200:
                 payload = response.json()
                 if not isinstance(payload, dict):
@@ -1041,6 +1049,7 @@ def _wait_for_release(
                 head=head,
                 headers=headers,
                 deadline=deadline,
+                api_url=api_url,
             )
             _raise_if_release_run_failed(run, tag=tag)
             # The Market refuses a release whose workflow run has not
