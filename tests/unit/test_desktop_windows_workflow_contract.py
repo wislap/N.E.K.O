@@ -349,6 +349,19 @@ def test_local_release_build_clears_stale_electron_dist_output() -> None:
     )
 
 
+def test_windows_zip_runs_the_desktop_runtime_check_before_release() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    steps = _steps_by_name(workflow, "build-electron")
+    acceptance = steps["Verify plugin workbench in the Windows desktop ZIP"]
+    assert acceptance["if"] == "runner.os == 'Windows'"
+    assert "--check-desktop-runtime" in acceptance["run"]
+
+    script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+    assert script.index("'--check-desktop-runtime'") < script.index(
+        "Sign-PortableManifests -Directory $portableUpdateDirectory"
+    )
+
+
 def test_local_release_build_falls_back_when_previous_manifest_is_absent() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 

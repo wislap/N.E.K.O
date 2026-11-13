@@ -7,15 +7,19 @@ import asyncio
 import json
 import logging
 import os
+import re
+import secrets
+import socket
 import subprocess
 import sys
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from shlex import quote
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from time import monotonic, sleep
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -391,7 +395,139 @@ def _commit_fixture(project: Path, env: dict[str, str]) -> None:
     )
 
 
-def check(backend: Path, expected_commit: str | None = None) -> None:
+def _check_desktop_runtime(backend: Path, root: Path, gh_bin: Path, commit: str, env: dict[str, str]) -> None:
+    """Launch the actual desktop backend and exercise the embedded plugin server."""
+    import httpx
+
+    from scripts.runtime_memory_baseline import _capture_process_tree, _terminate_process_trees
+
+    port_keys = (
+        "MAIN_SERVER_PORT", "MEMORY_SERVER_PORT", "TOOL_SERVER_PORT",
+    )
+    with ExitStack() as sockets:
+        ports = {}
+        for key in port_keys:
+            bound = sockets.enter_context(socket.socket())
+            bound.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            bound.bind(("127.0.0.1", 0))
+            ports[key] = bound.getsockname()[1]
+    runtime = root / "runtime"
+    storage = root / "storage"
+    profile = root / "profile"
+    for directory in (runtime, storage, profile):
+        directory.mkdir(parents=True)
+    token = secrets.token_urlsafe(32)
+    gh_log = root / "github-cli.log"
+    child_env = {
+        **env, **{f"NEKO_{key}": str(port) for key, port in ports.items()},
+        "PATH": str(gh_bin) + os.pathsep + env["PATH"],
+        "GH_CONFIG_DIR": str(profile / "github-cli"),
+        "NEKO_TEST_GH_LOG": str(gh_log), "NEKO_TEST_GH_AUTH": "1",
+        "LOCALAPPDATA": str(profile), "APPDATA": str(profile), "USERPROFILE": str(profile),
+        "NEKO_USER_DATA_DIR": str(profile), "NEKO_RUNTIME_STATE_DIR": str(runtime),
+        "NEKO_STORAGE_SELECTED_ROOT": str(storage), "NEKO_STORAGE_ANCHOR_ROOT": str(storage),
+        "NEKO_RUNTIME_SHUTDOWN_TOKEN": token, "NEKO_DISABLE_AGENT_AUTO_RESTORE": "1",
+    }
+    log_path = root / "desktop.log"
+    main_url = f"http://127.0.0.1:{ports['MAIN_SERVER_PORT']}"
+    plugin_port = None
+    print(
+        f"Starting {backend} at {main_url} (shutdown through /api/runtime/shutdown)",
+        flush=True,
+    )
+    with log_path.open("wb") as output, httpx.Client(trust_env=False, timeout=5) as client:
+        process = subprocess.Popen(
+            [str(backend)], cwd=backend.parent, env=child_env, stdin=subprocess.DEVNULL,
+            stdout=output, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            deadline = monotonic() + 180
+            record_path = runtime / "launcher.json"
+            while True:
+                with suppress(FileNotFoundError, PermissionError):
+                    record = json.loads(record_path.read_text(encoding="utf-8"))
+                    if record["pid"] != process.pid:
+                        raise RuntimeError("The isolated launcher record belongs to another process")
+                    if record["state"] == "ready":
+                        if record["ports"]["MAIN_SERVER_PORT"] != ports["MAIN_SERVER_PORT"]:
+                            raise RuntimeError("The launcher changed the reserved Main server port")
+                        plugin_port = record["internal_ports"]["USER_PLUGIN_SERVER_PORT"]
+                        break
+                if process.poll() is not None or monotonic() >= deadline:
+                    raise RuntimeError(f"The packaged desktop backend did not become ready (exit {process.poll()})")
+                sleep(0.25)
+
+            plugin_url = f"http://127.0.0.1:{plugin_port}"
+            print(f"Packaged plugin server ready at {plugin_url}", flush=True)
+            page = client.get(f"{plugin_url}/ui/")
+            page.raise_for_status()
+            asset = re.search(r'<script\b[^>]*\bsrc="(/ui/assets/[^"?#]+\.js)"', page.text)
+            if asset is None:
+                raise RuntimeError("The packaged plugin manager page has no JavaScript bundle")
+            client.get(f"{plugin_url}{asset[1]}").raise_for_status()
+
+            csrf = client.get(f"{plugin_url}/security/csrf-token", headers={"Origin": plugin_url})
+            csrf.raise_for_status()
+            headers = {"Origin": plugin_url, "X-CSRF-Token": csrf.json()["csrf_token"]}
+            scaffold = client.post(f"{plugin_url}/plugin-projects/create", headers=headers, json={
+                "parent_dir": str(root), "plugin_id": "packaged_probe", "name": "Packaged Probe",
+            })
+            scaffold.raise_for_status()
+            project = scaffold.json()
+            path = f"{plugin_url}/plugin-projects/{project['project_id']}"
+            tools = client.get(f"{path}/toolchain")
+            tools.raise_for_status()
+            state = tools.json()
+            if (
+                state.get("source_checkout") is not False
+                or state.get("check_commit") != commit
+                or state.get("check_environment") != "setup"
+            ):
+                raise RuntimeError(f"Unexpected tool environment in packaged runtime: {state}")
+
+            _commit_fixture(Path(project["project_dir"]), env)
+            repository = client.post(f"{path}/create-repo", headers=headers, json={}, timeout=190)
+            if repository.status_code != 201 or repository.json().get("repository_url") != f"https://github.com/{_REPOSITORY}":
+                raise RuntimeError(f"Packaged runtime did not create the test repository: {repository.text}")
+            if f"repo create {_REPOSITORY} --public --source . --remote origin" not in gh_log.read_text(encoding="utf-8").splitlines():
+                raise RuntimeError("The packaged runtime did not use the isolated GitHub CLI")
+            report = client.post(f"{path}/precheck", headers=headers, timeout=1200)
+            report.raise_for_status()
+            result = report.json()
+            if not result["passed"] or "tests=passed" not in result["stages"][-1]["output"]:
+                raise RuntimeError(f"Packaged runtime precheck did not pass: {result}")
+            ready = client.get(f"{path}/toolchain")
+            ready.raise_for_status()
+            if ready.json().get("check_environment") != "ready":
+                raise RuntimeError(f"Packaged runtime tool environment was not ready after precheck: {ready.text}")
+            print("Packaged desktop served the plugin manager and completed repository setup and precheck over HTTP", flush=True)
+        except Exception:
+            print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]), file=sys.stderr)
+            raise
+        finally:
+            tree = _capture_process_tree(process.pid)
+            if process.poll() is None:
+                with suppress(httpx.HTTPError, subprocess.TimeoutExpired):
+                    response = client.post(f"{main_url}/api/runtime/shutdown", headers={
+                        "X-Neko-Runtime-Shutdown-Token": token,
+                    })
+                    response.raise_for_status()
+                    process.wait(timeout=30)
+            _, remaining = _terminate_process_trees([process], tree)
+            process.wait(timeout=5)
+            if remaining:
+                raise RuntimeError(f"Packaged desktop left test processes running: {remaining}")
+            launched_ports = list(ports.values())
+            if plugin_port is not None:
+                launched_ports.append(plugin_port)
+            for port in launched_ports:
+                with socket.socket() as probe:
+                    probe.settimeout(0.1)
+                    if probe.connect_ex(("127.0.0.1", port)) == 0:
+                        raise RuntimeError(f"The packaged backend port {port} is still listening")
+
+
+def check(backend: Path, expected_commit: str | None = None, *, desktop_runtime: bool = False) -> None:
     with TemporaryDirectory(prefix="neko plugin tools ") as directory:
         root = Path(directory)
         state = root / "state"
@@ -415,6 +551,8 @@ def check(backend: Path, expected_commit: str | None = None) -> None:
         try:
             asyncio.run(_check_backend_commit(backend, root, resources.commit, worker_env))
             gh_bin = _install_github_cli_fixture(root)
+            if desktop_runtime:
+                _check_desktop_runtime(backend, root / "desktop", gh_bin, resources.commit, worker_env)
             asyncio.run(_check_workbench_routes(backend, root, gh_bin, resources.commit, worker_env))
         finally:
             # The in-process routes open the plugin log under the test root.
@@ -444,11 +582,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path, help="Frozen backend executable or Windows desktop ZIP")
     parser.add_argument("--expected-commit")
+    parser.add_argument("--check-desktop-runtime", action="store_true", help="Start the complete desktop backend")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
     artifact = args.artifact.resolve()
     if artifact.suffix.casefold() == ".zip":
         with _backend_from_zip(artifact) as backend:
-            check(backend, args.expected_commit)
+            check(backend, args.expected_commit, desktop_runtime=args.check_desktop_runtime)
     else:
-        check(artifact, args.expected_commit)
+        check(artifact, args.expected_commit, desktop_runtime=args.check_desktop_runtime)

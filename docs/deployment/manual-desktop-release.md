@@ -24,9 +24,10 @@ For Windows, prepare the Nuitka launcher with
 compiling it. Run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
 from the same N.E.K.O. checkout. The release check compares the commit reported
 by the executable with the commit in the tooling manifest.
-Before signing, the release script extracts the generated Windows ZIP and checks
-the workbench HTTP endpoints for project creation, repository setup, plugin
-precheck, and all three publication modes. The acceptance test uses an isolated
+Before signing, the release script starts the backend extracted from the Windows
+ZIP in a temporary profile. It loads the plugin manager and uses its HTTP
+endpoints to create a project and run precheck. The acceptance test also exercises
+repository setup and all three publication modes using an isolated
 GitHub CLI fixture, a temporary Git repository, and local GitHub and Market test
 APIs. It checks that a Market notification can be canceled and retried, and that
 the resulting receipt remains available after the in-memory task is cleared.
