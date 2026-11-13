@@ -22,10 +22,11 @@ with the locally available Electron signing identity.
 For Windows, run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
 from the same N.E.K.O. checkout used to build the backend.
 Before signing, the release script extracts the generated Windows ZIP and checks
-the workbench HTTP endpoints for repository setup, plugin precheck, and all three
-publication modes. The acceptance test runs the packaged worker against a
-temporary Git repository and local GitHub and Market test APIs. It also checks
-that the Market receipt remains available after the in-memory task is cleared.
+the workbench HTTP endpoints for project creation, repository setup, plugin
+precheck, and all three publication modes. The acceptance test uses an isolated
+GitHub CLI fixture, a temporary Git repository, and local GitHub and Market test
+APIs. It checks that a Market notification can be canceled and retried, and that
+the resulting receipt remains available after the in-memory task is cleared.
 
 The publishing script also reuses the trusted manifest verifier from the sibling
 `N.E.K.O.-Launcher/src/portable-manifest.js` checkout. If the Launcher repository is stored

@@ -12,7 +12,7 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录。Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
 
 Windows 构建还需从构建后端所用的同一份 N.E.K.O. 源码运行 `uv run python scripts/build_plugin_tools.py <PC 仓库目录>/bin/plugin-tools`。
-签名前，发布脚本会从生成的 Windows ZIP 解压后端，通过工作台 HTTP 接口验证建仓、插件预检和三种发布模式。验收使用打包后的工作进程、临时 Git 仓库以及本机的 GitHub 和 Market 测试 API，并确认清除内存中的任务后仍能读取 Market 回执。
+签名前，发布脚本会从生成的 Windows ZIP 解压后端，通过工作台 HTTP 接口验证新建项目、建仓、插件预检和三种发布模式。验收使用隔离的 GitHub CLI 测试程序、临时 Git 仓库以及本机的 GitHub 和 Market 测试 API，并检查 Market 通知的取消与重试，以及清除内存中的任务后能否读取回执。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `
