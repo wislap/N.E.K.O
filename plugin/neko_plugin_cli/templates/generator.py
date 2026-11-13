@@ -38,6 +38,7 @@ class PluginSpec:
     author_name: str = ""
     author_email: str = ""
     entry_point_override: str = ""
+    workflow_ref: str = MARKET_ACTIONS_NEKO_REF
 
     # Features
     features: list[str] = field(default_factory=list)
@@ -813,11 +814,11 @@ permissions:
 
 jobs:
   verify:
-    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/plugin-market-verify.yml@{MARKET_ACTIONS_NEKO_REF}
+    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/plugin-market-verify.yml@{spec.workflow_ref}
     with:
       plugin-id: {spec.plugin_id}
       neko-repository: {MARKET_ACTIONS_NEKO_REPOSITORY}
-      neko-ref: {MARKET_ACTIONS_NEKO_REF}
+      neko-ref: {spec.workflow_ref}
 '''
 
 
@@ -837,11 +838,11 @@ permissions:
 
 jobs:
   release:
-    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/plugin-market-release.yml@{MARKET_ACTIONS_NEKO_REF}
+    uses: {MARKET_ACTIONS_NEKO_REPOSITORY}/.github/workflows/plugin-market-release.yml@{spec.workflow_ref}
     with:
       plugin-id: {spec.plugin_id}
       neko-repository: {MARKET_ACTIONS_NEKO_REPOSITORY}
-      neko-ref: {MARKET_ACTIONS_NEKO_REF}
+      neko-ref: {spec.workflow_ref}
 '''
 
 

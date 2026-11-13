@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -134,6 +135,31 @@ def _scripted_process(lines, returncode=0):
     return FakePopen
 
 
+def _successful_stages(*logs, status="published", candidate=None, receipt=None, returncode=0):
+    calls = []
+
+    def start(argv, **kwargs):
+        calls.append(list(argv))
+        if "--check-only" in argv:
+            lines = ["[1/4] syncing"]
+            code = 0
+        elif argv[3] == "github":
+            lines = [json.dumps({
+                "release_url": "https://github.com/owner/repo/releases/tag/v0.1.0",
+                "asset_name": "demo.neko-plugin",
+            })]
+            code = 0
+        else:
+            lines = [json.dumps({"publication": {
+                "status": status, "candidate_id": candidate, "request_id": receipt,
+            }}), *logs]
+            code = returncode
+        return _scripted_process(lines, code)(argv, **kwargs)
+
+    start.calls = calls
+    return start
+
+
 def _blocking_process():
     class FakePopen:
         def __init__(self, argv, **_kwargs):
@@ -221,7 +247,7 @@ async def test_canceling_the_worker_before_stream_start_prevents_cli_spawn(tmp_p
     monkeypatch.setattr(tasks, "_stream", delayed)
     monkeypatch.setattr(tasks, "_terminate", terminate)
     commands.claim_project(task.project_id, "publish")
-    worker = asyncio.create_task(tasks._run_task(task, ["ignored"], gate, 30))
+    worker = asyncio.create_task(tasks._publish(task, gate, tmp_path, 30, 0, None))
     assert await asyncio.to_thread(entered.wait, 5)
     worker.cancel()
     await asyncio.wait_for(terminated.wait(), 5)
@@ -235,8 +261,9 @@ async def test_canceling_the_worker_before_stream_start_prevents_cli_spawn(tmp_p
     assert task.project_id not in commands._busy
 
 
-async def test_publish_needs_a_source_checkout(app, tmp_path, monkeypatch):
+async def test_github_publish_requires_packaged_tools_when_frozen(app, tmp_path, monkeypatch):
     record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path)
     monkeypatch.setattr(tasks, "source_repo_root", lambda: None)
     async with client(app) as http:
         response = await http.post(
@@ -244,6 +271,18 @@ async def test_publish_needs_a_source_checkout(app, tmp_path, monkeypatch):
         )
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "PUBLISH_UNAVAILABLE"
+
+
+async def test_publish_refuses_a_stale_confirmation(app, tmp_path, monkeypatch):
+    record = store.add_record(tmp_path)
+    _ready_gate(monkeypatch, tmp_path)
+    async with client(app) as http:
+        response = await http.post(
+            f"/plugin-projects/{record.project_id}/publish",
+            json={"mode": "github", "head": "b" * 40, "tag": "v0.1.0", "repository": "owner/repo"},
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PUBLISH_NOT_READY"
 
 
 async def test_publish_refuses_a_project_that_fails_the_local_gate(app, tmp_path, monkeypatch):
@@ -262,13 +301,7 @@ async def test_publish_refuses_a_project_that_fails_the_local_gate(app, tmp_path
 async def test_publish_runs_the_cli_and_tracks_the_task(app, tmp_path, monkeypatch, no_psutil):
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
-    fake = _scripted_process(
-        [
-            "[1/4] syncing",
-            "[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0",
-            "[OK] Market published v0.1.0",
-        ]
-    )
+    fake = _successful_stages("[OK] Market published v0.1.0")
     monkeypatch.setattr(tasks.subprocess, "Popen", fake)
     async with client(app) as http:
         started = await http.post(
@@ -289,7 +322,9 @@ async def test_publish_runs_the_cli_and_tracks_the_task(app, tmp_path, monkeypat
     argv = fake.calls[0]
     assert argv[1:4] == ["-m", "plugin.neko_plugin_cli.cli", "publish"]
     assert str(record.source_dir) in argv
-    assert "market" not in argv[4:]
+    assert "--check-only" in argv
+    assert fake.calls[1][3] == "github"
+    assert fake.calls[2][3] == "market"
 
 
 async def test_publish_failure_reports_the_last_fail_line(app, tmp_path, monkeypatch, no_psutil):
@@ -342,7 +377,8 @@ async def test_market_notify_verifies_the_release_before_asking(
 ):
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
-    fake = _scripted_process(["[OK] Market published v0.1.0"])
+    monkeypatch.setattr(tasks, "source_repo_root", lambda: None)
+    fake = _successful_stages("[OK] Market published v0.1.0")
     monkeypatch.setattr(tasks.subprocess, "Popen", fake)
 
     async def remote_missing(*_args, fresh=False):
@@ -363,7 +399,10 @@ async def test_market_notify_verifies_the_release_before_asking(
     async def remote_published(*_args, fresh=False):
         return {
             **_REMOTE,
-            "release": {"state": "published", "missing_assets": [], 'workflow': 'success', 'ready': True},
+            "release": {
+                "state": "published", "missing_assets": [], "workflow": "success",
+                "ready": True, "asset_name": "custom.neko-plugin",
+            },
             "tag": "at_head",
         }
 
@@ -375,30 +414,33 @@ async def test_market_notify_verifies_the_release_before_asking(
         assert response.status_code == 202
     finished = await _wait_terminal(record.project_id)
     assert finished["status"] == "succeeded"
-    assert fake.calls[0][-4:] == [
+    assert fake.calls[0][-7:] == [
         "market",
         "https://github.com/owner/repo/releases/tag/v0.1.0",
-        "--market-wait",
-        "1800",
+        "1800.0",
+        "--endpoint",
+        f"{settings.MARKET_API_URL.rstrip('/')}/api/v1/release-publications",
+        "--asset-name",
+        "custom.neko-plugin",
     ]
 
 
 @pytest.mark.parametrize(
-    ("lines", "returncode", "status", "market_status", "candidate"),
+    ("market_status", "candidate", "receipt", "returncode", "status"),
     [
-        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None),
-        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17),
-        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] done"], 0, "succeeded", None, None),
+        ("published", None, None, 0, "succeeded"),
+        ("pending_review", 17, None, 0, "succeeded"),
+        ("rejected", 9, None, 1, "failed"),
+        ("verifying", None, 14, 0, "succeeded"),
     ],
 )
-async def test_the_task_reports_the_market_status_line(
-    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate
+async def test_the_task_reports_structured_market_status(
+    app, tmp_path, monkeypatch, no_psutil, market_status, candidate, receipt, returncode, status
 ):
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
-    monkeypatch.setattr(tasks.subprocess, "Popen", _scripted_process(lines, returncode))
+    fake = _successful_stages(status=market_status, candidate=candidate, receipt=receipt, returncode=returncode)
+    monkeypatch.setattr(tasks.subprocess, "Popen", fake)
     async with client(app) as http:
         await http.post(
             f"/plugin-projects/{record.project_id}/publish", json={"mode": "github_and_market"}
@@ -408,8 +450,16 @@ async def test_the_task_reports_the_market_status_line(
     assert latest["status"] == status
     assert latest["market_status"] == market_status
     assert latest["market_candidate_id"] == candidate
-    if any("https://github.com/owner/repo/releases/tag/v0.1.0" in line for line in lines):
-        assert latest["release_url"] == "https://github.com/owner/repo/releases/tag/v0.1.0"
+    assert latest["market_request_id"] == receipt
+    assert latest["release_url"] == "https://github.com/owner/repo/releases/tag/v0.1.0"
+    await asyncio.gather(*tasks._workers.values())
+    with tasks._lock:
+        tasks._latest.clear()
+        tasks._tasks.clear()
+    saved = tasks.latest_publish_task(record.project_id)
+    assert saved["market_status"] == market_status
+    assert saved["market_request_id"] == receipt
+    assert saved["log"] == []
     if returncode:
         # A rejection keeps the existing failure message; there is no [FAIL] line here.
         assert latest["message"] == "publish exited with code 1"
@@ -582,14 +632,13 @@ async def test_github_publish_gives_the_cli_a_release_wait_inside_the_server_bud
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
     monkeypatch.setenv("NEKO_PLUGIN_PUBLISH_BUDGET", "1000")
-    fake = _scripted_process(["[OK] done"])
+    fake = _successful_stages()
     monkeypatch.setattr(tasks.subprocess, "Popen", fake)
     async with client(app) as http:
         await http.post(f"/plugin-projects/{record.project_id}/publish", json={"mode": "github"})
     await _wait_terminal(record.project_id)
-    argv = fake.calls[0]
-    assert argv[argv.index("--timeout") + 1] == "700"
-    assert "--market-wait" not in argv
+    assert len(fake.calls) == 2
+    assert 900 < float(fake.calls[1][-1]) < 1000
 
 
 async def test_publish_to_the_market_gives_the_cli_its_market_wait(
@@ -598,15 +647,15 @@ async def test_publish_to_the_market_gives_the_cli_its_market_wait(
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
     monkeypatch.setenv("NEKO_PLUGIN_MARKET_WAIT", "600")
-    fake = _scripted_process(["[MARKET] status=published", "[OK] done"])
+    fake = _successful_stages()
     monkeypatch.setattr(tasks.subprocess, "Popen", fake)
     async with client(app) as http:
         await http.post(
             f"/plugin-projects/{record.project_id}/publish", json={"mode": "github_and_market"}
         )
     await _wait_terminal(record.project_id)
-    argv = fake.calls[0]
-    assert argv[argv.index("--market-wait") + 1] == "600"
+    assert fake.calls[2][5] == "600.0"
+    assert fake.calls[2][-2:] == ["--asset-name", "demo.neko-plugin"]
 
 
 async def test_failure_message_carries_the_git_cause_line(app, tmp_path, monkeypatch, no_psutil):

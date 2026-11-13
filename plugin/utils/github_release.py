@@ -49,19 +49,26 @@ def release_asset_is_downloadable(asset: object) -> bool:
     )
 
 
-def missing_release_assets(payload: object, plugin_id: str) -> list[str]:
+def release_assets(payload: object, plugin_id: str) -> tuple[str | None, list[str]]:
+    """Select the standard workflow's package and report missing release files."""
     assets = payload.get("assets") if isinstance(payload, dict) else None
     ready = {
         asset.get("name")
         for asset in (assets if isinstance(assets, list) else [])
-        if release_asset_is_downloadable(asset)
+        if release_asset_is_downloadable(asset) and isinstance(asset.get("name"), str)
     }
-    expected = (
-        f"{plugin_id}.neko-plugin",
-        f"{plugin_id}{RELEASE_CHECK_SUFFIX}",
-        MARKET_EVIDENCE_NAME,
-    )
-    return [name for name in expected if name not in ready]
+    expected = (f"{plugin_id}{RELEASE_CHECK_SUFFIX}", MARKET_EVIDENCE_NAME)
+    missing = [name for name in expected if name not in ready]
+    packages = sorted(name for name in ready if name.lower().endswith(".neko-plugin"))
+    if len(packages) == 1:
+        return packages[0], missing
+    if packages:
+        return None, [*missing, "a single plugin package (multiple packages found)"]
+    return None, [f"{plugin_id}.neko-plugin", *missing]
+
+
+def missing_release_assets(payload: object, plugin_id: str) -> list[str]:
+    return release_assets(payload, plugin_id)[1]
 
 
 def release_ready(missing_assets: list[str], workflow: WorkflowState) -> bool:

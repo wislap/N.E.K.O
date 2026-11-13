@@ -15,7 +15,6 @@ from pathlib import Path, PurePosixPath
 from .. import core
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
-from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
 from ..repo_state import committed_file_sizes, git_output, worktree_dirty_paths
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 from .validate_cmd import validate_plugin_dir
@@ -532,12 +531,15 @@ def _run_tests(plugin_dir: Path, *, plugin_id: str, defaults: CliDefaults, skip_
         return "not-found"
     command = [sys.executable, "-m", "pytest"]
     env: dict[str, str] | None = None
-    pytest_ini = defaults.repo_root / "pytest.ini"
+    pytest_ini = Path(os.environ.get("NEKO_PLUGIN_TEST_CONFIG", defaults.repo_root / "pytest.ini"))
     if pytest_ini.is_file():
         # CI runs the tests from plugin/plugins/<id> of a N.E.K.O checkout, where
         # pytest picks up that checkout's pytest.ini; use the same configuration.
-        command += ["-c", str(pytest_ini), "--rootdir", str(defaults.repo_root)]
+        test_root = plugin_dir if "NEKO_PLUGIN_TEST_CONFIG" in os.environ else defaults.repo_root
+        command += ["-c", str(pytest_ini), "--rootdir", str(test_root)]
     if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
+        from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
+
         # Out of tree: import plugin.plugins.<id> from here instead of a mount.
         command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]
         env = {

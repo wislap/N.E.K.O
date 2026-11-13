@@ -9,7 +9,9 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 
 在每个目标平台主机上各执行一次 `scripts/build-desktop-release.ps1`。该脚本会为 Portable manifest 签名，将产物暂存到 `release-assets/<version>/`，但不会创建标签、GitHub Release、上传文件或请求更新服务。
 
-运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录：Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
+运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录。Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
+
+Windows 构建还需从构建后端所用的同一份 N.E.K.O. 源码运行 `uv run python scripts/build_plugin_tools.py <PC 仓库目录>/bin/plugin-tools`。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `
@@ -37,12 +39,12 @@ macOS 需在每个架构的主机上执行，并显式指定架构：
 $env:NEKO_UPDATE_ADMIN_TOKEN = '<secret>'
 .\scripts\publish-desktop-release-assets.ps1 `
   -Tag 'v0.8.4' `
-  -ManifestVerifierPath 'D:\src\N.E.K.O.-PC\src\main\portable-update.js' `
+  -ManifestVerifierPath 'D:\src\N.E.K.O.-Launcher\src\portable-manifest.js' `
   -OssReleaseRoot 'oss://<local-bucket>/releases' `
   -CdnBaseUrl 'https://download.project-neko.cn' `
   -ServiceUrl 'https://update.project-neko.cn'
 ```
 
-此发布脚本仅支持稳定版。它默认复用相邻 `N.E.K.O.-PC/src/main/portable-update.js` 中受信任的 manifest 校验器；仅当 PC 仓库不在相邻位置时，才像上例一样向 `publish-desktop-release-assets.ps1` 传入 `-ManifestVerifierPath`。它直接上传已暂存的构建产物，不会从 GitHub 下载它们。上传前会校验暂存文件名与已发布 Release 完全一致，并确认每个 Portable manifest 都有对应 `.sig` 文件。不可变 OSS 对象绝不覆盖：只有对象 SHA-256 与暂存资产相同，才允许重复执行。
+此发布脚本仅支持稳定版。它默认复用相邻 `N.E.K.O.-Launcher/src/portable-manifest.js` 中受信任的 manifest 校验器；仅当 Launcher 仓库不在相邻位置时，才像上例一样向 `publish-desktop-release-assets.ps1` 传入 `-ManifestVerifierPath`。它直接上传已暂存的构建产物，不会从 GitHub 下载它们。上传前会校验暂存文件名与已发布 Release 完全一致，并确认每个 Portable manifest 都有对应 `.sig` 文件。不可变 OSS 对象绝不覆盖：只有对象 SHA-256 与暂存资产相同，才允许重复执行。
 
 在登记 `aliyun` 镜像前，脚本会从 CDN 下载每一份资产，并与暂存资产比较 SHA-256。OSS 凭证、Endpoint 和 Bucket 名仅保存在本地 `ossutil` 配置中，绝不能写入 GitHub Actions、仓库变量或仓库文件。

@@ -12,10 +12,10 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import authoring_project_store as store
 
 
-def test_unknown_project_is_reported_as_not_found(monkeypatch):
+async def test_unknown_project_is_reported_as_not_found(monkeypatch):
     monkeypatch.setattr(store, "list_records", lambda: [])
     with pytest.raises(ServerDomainError) as caught:
-        asyncio.run(publish_status.get_publish_status("missing"))
+        await publish_status.get_publish_status("missing")
     assert caught.value.status_code == 404
     assert caught.value.code == "PROJECT_NOT_FOUND"
 

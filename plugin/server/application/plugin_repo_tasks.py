@@ -15,16 +15,19 @@ Outcomes mirror the CLI's exit codes:
 
 from __future__ import annotations
 
+import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Literal
 
 from plugin.logging_config import get_logger
-from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
-from plugin.server.application.plugin_project_commands import project_operation, run_cli
-from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_project_commands import (
+    project_operation,
+    project_worker_command,
+    project_worker_directory,
+    run_cli,
+)
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
@@ -53,22 +56,14 @@ def _clip(text: str) -> list[str]:
 
 
 async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
-    root = source_repo_root()
-    if root is None:
-        raise project_error(
-            Code.REPO_CREATE_UNAVAILABLE,
-            "Creating a repository needs a source checkout; it is unavailable in a packaged build.",
-            503,
-        )
-    # Fail fast with a clear local code if the project cannot even be read.
-    load_plugin_source(source_dir)
-
-    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "create-repo", str(source_dir)]
+    argv = project_worker_command("create-repo", str(source_dir))
     if private:
         argv.append("--private")
     budget = env_seconds("NEKO_PLUGIN_REPO_CREATE_BUDGET", 180.0)
     try:
-        completed = await run_cli(argv, cwd=root, timeout=budget, merge_stderr=True)
+        completed = await run_cli(
+            argv, cwd=project_worker_directory(), timeout=budget, merge_stderr=True
+        )
     except subprocess.TimeoutExpired as exc:
         raise project_error(
             Code.REPO_CREATE_FAILED,
@@ -80,14 +75,21 @@ async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
             Code.REPO_CREATE_FAILED, f"create-repo command could not start: {exc}", 500
         ) from exc
 
-    log = _clip(completed.stdout or "")
+    output = completed.stdout or ""
+    lines = output.splitlines()
+    repository_url = ""
+    if completed.returncode == 0 and lines and lines[-1].startswith('{"repository_url":'):
+        try:
+            repository_url = json.loads(lines.pop())["repository_url"]
+        except (ValueError, TypeError, KeyError) as exc:
+            raise project_error(Code.REPO_CREATE_FAILED, "Invalid repository worker result", 500) from exc
+    log = _clip("\n".join(lines))
     if completed.returncode == 0:
         status: RepoCreateStatus = "created"
     elif completed.returncode == _MANUAL_FALLBACK_EXIT:
         status = "manual"
     else:
         status = "failed"
-    repository_url = _first_https_github_url(log)
     logger.info(
         "repo create finished: project_dir={} status={} rc={}",
         source_dir,
@@ -100,15 +102,6 @@ async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
         "log": log,
         "finished_at": time.time(),
     }
-
-
-def _first_https_github_url(log: list[str]) -> str:
-    marker = "https://github.com/"
-    for line in log:
-        index = line.find(marker)
-        if index != -1:
-            return line[index:].split()[0].rstrip(".,")
-    return ""
 
 
 async def create_repository(project_id: str, *, private: bool = False) -> dict[str, object]:

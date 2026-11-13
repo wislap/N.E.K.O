@@ -19,8 +19,11 @@ it in the adjacent `N.E.K.O.-PC/bin` directory (`projectneko_server.exe` on
 Windows, `projectneko_server` on macOS/Linux). The script packages that backend
 with the locally available Electron signing identity.
 
+For Windows, run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
+from the same N.E.K.O. checkout used to build the backend.
+
 The publishing script also reuses the trusted manifest verifier from the sibling
-`N.E.K.O.-PC/src/main/portable-update.js` checkout. If the PC repository is stored
+`N.E.K.O.-Launcher/src/portable-manifest.js` checkout. If the Launcher repository is stored
 elsewhere, pass its full path with `-ManifestVerifierPath`.
 
 ```powershell

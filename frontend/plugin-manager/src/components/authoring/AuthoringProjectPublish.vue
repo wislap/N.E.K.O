@@ -55,6 +55,15 @@
         </header>
         <AuthoringPublishGuide page-id="toolchain" :params="guideParams" :open="guideOpen('toolchain')" />
         <AuthoringPublishToolchain :page="flow.toolchain" :error="toolchainError" />
+        <p v-if="toolchain?.check_commit" class="authoring-muted">
+          {{ t('authoring.checkEnvironmentVersion', { commit: toolchain.check_commit.slice(0, 12) }) }}
+        </p>
+        <p v-if="toolchain?.check_environment === 'setup'" class="authoring-muted">
+          {{ t('authoring.checkEnvironmentSetup') }}
+        </p>
+        <p v-else-if="toolchain?.check_environment === 'unavailable'" class="authoring-muted">
+          {{ t('authoring.checkEnvironmentUnavailable') }}
+        </p>
       </section>
       <section
         v-for="(step, index) in flow.steps"
@@ -87,6 +96,9 @@
           </el-button>
         </p>
         <p v-if="step.detail" class="authoring-muted authoring-small">{{ text(step.detail) }}</p>
+        <p v-if="step.id === 'release' && status.remote?.release.builder_commit" class="authoring-muted">
+          {{ t('authoring.releaseBuilderVersion', { commit: status.remote.release.builder_commit.slice(0, 12) }) }}
+        </p>
         <el-alert
           v-if="step.warning"
           :title="text(step.warning)"
@@ -106,7 +118,13 @@
           :notes="flow.notes"
           @created="load({ fresh: true })"
         />
-        <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
+        <AuthoringProjectPrecheck
+          v-else-if="step.id === 'verify'"
+          :project-id="projectId"
+          :environment="toolchain?.check_environment"
+          :uv-installed="toolchain?.uv.installed"
+          @finished="loadToolchain"
+        />
         <AuthoringProjectSubmission
           :key="status.repository.github_repository ?? ''"
           v-else-if="step.id === 'submission'"
@@ -185,15 +203,17 @@ import {
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
   getPluginToolchain,
+  isMarketPublicationStatus,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
+  type MarketPublicationStatus,
   type PublishStatus,
   type PublishTask,
   type Toolchain,
 } from '@/api/pluginProjects'
-import type { SubmissionPanelState } from '@/api/marketSubmissions'
+import { listMarketPublicationReceipts, type SubmissionPanelState } from '@/api/marketSubmissions'
 import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
@@ -262,6 +282,7 @@ const submissionState = ref<SubmissionPanelState>({
 const submissionPanel = ref<InstanceType<typeof AuthoringProjectSubmission>[]>([])
 /** Whether the Market lists this Release; read from the Market, not from the task. */
 const marketListed = ref<boolean | null>(null)
+const marketReceipt = ref<MarketPublicationStatus | null>(null)
 let marketReads = 0
 let disposed = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -276,6 +297,7 @@ const flow = computed(() =>
         submission: submissionState.value,
         task: task.value,
         marketListed: marketListed.value,
+        marketReceipt: marketReceipt.value,
         toolchain: toolchain.value,
       })
     : null
@@ -394,21 +416,32 @@ async function load(options: { fresh?: boolean } = {}) {
 async function loadMarketListing() {
   const read = ++marketReads
   marketListed.value = null
+  marketReceipt.value = null
   const pluginId = submissionState.value.marketPluginId
   const tag = status.value?.repository.tag
   if (pluginId === null || !tag) {
     marketListed.value = null
     return
   }
+  const repository = status.value?.repository.github_repository
+  const releaseUrl = repository && `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`
+  const requestId = task.value?.release_url === releaseUrl ? task.value?.market_request_id : null
+  const receiptsRequest = releaseUrl
+    ? listMarketPublicationReceipts(pluginId, requestId ?? undefined).catch(() => [])
+    : []
   const versions = await fetchMarketPluginVersions(pluginId)
   if (disposed || read !== marketReads) return
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
+  const receipts = await receiptsRequest
+  if (disposed || read !== marketReads) return
+  const receipt = Array.isArray(receipts) && receipts.find(item =>
+    item.release_url.toLowerCase() === releaseUrl?.toLowerCase()
+  )
+  if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }
 // The submission panel finds the approved plugin after the status is read.
-watch(
-  () => submissionState.value.marketPluginId,
-  () => void loadMarketListing()
-)
+watch([() => submissionState.value.marketPluginId, () => task.value?.market_request_id],
+  () => void loadMarketListing())
 
 function applyTask(next: PublishTask) {
   task.value = next
@@ -471,7 +504,7 @@ async function pollTask() {
   if (disposed) return
   applyTask(next)
   // The run just ended; reconcile the read-only status against GitHub once.
-  if (!publishTaskActive(next)) await load({ fresh: true })
+  if (!publishTaskActive(next)) await Promise.all([load({ fresh: true }), loadToolchain()])
 }
 
 /** The one Refresh: tools, GitHub (past the server cache), the task and the Market submission. */
@@ -567,10 +600,12 @@ async function run(mode: PublishMode) {
 }
 
 async function confirmPublish(mode: PublishMode) {
-  const tag = status.value?.repository.tag ?? ''
+  const repository = status.value?.repository
+  if (!repository) return
+  const target = { head: repository.head, tag: repository.tag, repository: repository.github_repository }
   try {
     await ElMessageBox.confirm(
-      t(CONFIRM_MODES[mode], { tag }),
+      t(CONFIRM_MODES[mode], { tag: target.tag }),
       t('authoring.publishConfirmTitle'),
       {
         type: 'warning',
@@ -583,7 +618,7 @@ async function confirmPublish(mode: PublishMode) {
   }
   startError.value = null
   try {
-    const started = await startPluginProjectPublish(props.projectId, mode)
+    const started = await startPluginProjectPublish(props.projectId, mode, target)
     if (!disposed) applyTask(started)
   } catch (error) {
     // The server gate stays authoritative; its reason shows in the step that was refused.

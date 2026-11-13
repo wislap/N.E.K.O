@@ -9,6 +9,8 @@ You do not need to clone the main repository or run a source checkout of the bac
 3. Edit in your own editor and click **Reload**. With hot reload enabled, a running project reloads after its source changes; source that cannot load keeps the running instance.
 4. Select the project in the plugin CLI build view to produce a `.neko-plugin` package. A stopped plugin can also be packaged.
 
+The Windows desktop distribution supports GitHub repository creation, local prechecks, and publication from the **Publish** tab. Install Git, the GitHub CLI (`gh`), and `uv`. Sign in with `gh auth login` to create the repository from the workbench. Commit and push the plugin source, then run the checks or start a GitHub release. The workbench prepares the matching Python tools on first use. GitHub Actions builds the official Release, and the Market verifies it. Use **Notify Market** to submit an existing qualifying Release.
+
 The project folder name must match the plugin ID and the entry package name, and the plugin ID must not be used by an installed plugin or another project. Existing dependency declarations and `vendor/` rules apply; dependencies are not installed automatically.
 
 **Remove from workbench** stops a running plugin and removes it from the plugin list; the source and runtime data are kept. Workbench projects cannot be uninstalled through the plugin page's **Delete**.

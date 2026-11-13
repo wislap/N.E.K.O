@@ -88,6 +88,9 @@ class PublishRequest(BaseModel):
     """Destination of one background publish run; the server enforces readiness."""
 
     mode: publish_tasks.PublishMode
+    head: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{40,64}$")
+    tag: str | None = Field(default=None, max_length=65)
+    repository: str | None = Field(default=None, max_length=256)
 
 
 class CreateRepoRequest(BaseModel):
@@ -160,6 +163,16 @@ async def precheck_plugin_project(project_id: str):
     return await _call(service.precheck_project(project_id))
 
 
+@router.get("/{project_id}/workflows")
+async def preview_project_workflows(project_id: str):
+    return await _call(service.update_project_workflows(project_id, apply=False))
+
+
+@mutation_router.post("/{project_id}/workflows")
+async def apply_project_workflows(project_id: str):
+    return await _call(service.update_project_workflows(project_id, apply=True))
+
+
 @router.get("/{project_id}/toolchain")
 async def plugin_project_toolchain(project_id: str):
     # Read-only and local: which of git, uv, gh are installed, the git identity
@@ -190,7 +203,10 @@ async def create_plugin_project_repo(project_id: str, body: CreateRepoRequest, r
 @mutation_router.post("/{project_id}/publish", status_code=202)
 async def start_plugin_project_publish(project_id: str, body: PublishRequest):
     # Background task running `neko-plugin publish`; poll publish-task for progress.
-    return await _call(publish_tasks.start_publish(project_id, body.mode))
+    return await _call(publish_tasks.start_publish(
+        project_id, body.mode, confirmed_head=body.head, confirmed_tag=body.tag,
+        confirmed_repository=body.repository,
+    ))
 
 
 @router.get("/{project_id}/publish-task")

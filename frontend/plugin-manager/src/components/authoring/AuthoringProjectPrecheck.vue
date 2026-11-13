@@ -9,13 +9,16 @@
       show-icon
     />
     <div class="authoring-precheck-actions">
-      <el-button type="primary" :icon="VideoPlay" :loading="running" @click="run">
+      <el-button type="primary" :icon="VideoPlay" :loading="running" :disabled="!!unavailable" @click="run">
         {{ t(running ? 'authoring.precheckRunning' : 'authoring.precheckRun') }}
       </el-button>
       <span class="authoring-muted authoring-small">
         {{ t('authoring.precheckCiNote') }}
       </span>
     </div>
+    <p v-if="unavailable || environment === 'setup'" class="authoring-muted">
+      {{ t(unavailable || 'authoring.checkEnvironmentSetup') }}
+    </p>
     <section v-if="report" class="authoring-precheck-env">
       <h4>{{ t('authoring.precheckEnv') }}</h4>
       <ul v-if="report.environment_issues.length">
@@ -50,6 +53,7 @@ import { useLocalizedError } from '@/composables/useLocalizedError'
 import { VideoPlay } from '@element-plus/icons-vue'
 import {
   precheckPluginProject,
+  type Toolchain,
   type PrecheckReport,
   type PrecheckStage,
 } from '@/api/pluginProjects'
@@ -60,8 +64,17 @@ type StageState = 'passed' | 'failed' | 'skipped'
 
 const STAGE_ORDER: StageName[] = ['lint', 'sync', 'release-check']
 
-const props = defineProps<{ projectId: string }>()
+const props = defineProps<{
+  projectId: string
+  environment?: Toolchain['check_environment']
+  uvInstalled?: boolean
+}>()
+const emit = defineEmits<{ finished: [] }>()
 const { t } = useI18n()
+const unavailable = computed(() => {
+  if (props.environment === 'unavailable') return 'authoring.checkEnvironmentUnavailable'
+  return props.uvInstalled === false ? 'authoring.checkEnvironmentNeedsUv' : ''
+})
 const describeError = useProjectErrorMessage()
 const running = ref(false)
 const report = ref<PrecheckReport | null>(null)
@@ -118,6 +131,7 @@ async function run() {
     requestFailure.set(error)
   } finally {
     running.value = false
+    emit('finished')
   }
 }
 </script>

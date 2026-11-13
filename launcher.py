@@ -29,6 +29,10 @@ if __name__ == "__main__":
     from multiprocessing import freeze_support as _freeze_support
 
     _freeze_support()
+    if sys.argv[1:2] == ["--neko-plugin-project-worker"]:
+        from plugin.neko_plugin_cli.project_worker import main as _project_worker
+
+        sys.exit(_project_worker(sys.argv[2:]))
     # Local development overrides live in the git-ignored project .env.  Load
     # them before any config module is imported so a normal manual launch uses
     # the same settings as every spawned backend process.

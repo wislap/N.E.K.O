@@ -14,10 +14,11 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from plugin.server.application.plugin_project_commands import cli_child_env
 from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_tool_environment import ToolEnvironmentError, tool_resources
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
@@ -47,8 +48,9 @@ class Toolchain(TypedDict):
     git: GitState
     uv: ToolState
     gh: GhState
-    # Checks, repository creation and publishing run the CLI from a N.E.K.O source checkout.
     source_checkout: bool
+    check_environment: Literal["source", "ready", "setup", "unavailable"]
+    check_commit: str | None
 
 
 def _run(*argv: str) -> str | None:
@@ -124,11 +126,23 @@ def read_toolchain(project_dir: Path | None = None) -> Toolchain:
         git = pool.submit(_git, project_dir if project_dir and project_dir.is_dir() else None)
         uv = pool.submit(_uv)
         gh = pool.submit(_gh)
+    source_root = source_repo_root()
+    check_environment: Literal["source", "ready", "setup", "unavailable"] = "source"
+    check_commit = None
+    if source_root is None:
+        try:
+            resources = tool_resources()
+            check_commit = resources.commit
+            check_environment = "ready" if resources.is_ready() else "setup"
+        except ToolEnvironmentError:
+            check_environment = "unavailable"
     return {
         "git": git.result(),
         "uv": uv.result(),
         "gh": gh.result(),
-        "source_checkout": source_repo_root() is not None,
+        "source_checkout": source_root is not None,
+        "check_environment": check_environment,
+        "check_commit": check_commit,
     }
 
 

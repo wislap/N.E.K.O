@@ -452,7 +452,7 @@ describe('publishFlow step 0 (toolchain)', () => {
       status: status(),
       submission: approved(),
       task: null,
-      toolchain: { ...ready(), source_checkout: false },
+      toolchain: { ...ready(), source_checkout: false, check_environment: 'setup' },
     })
     expect(flow.toolchain.tools.map((item) => item.id)).toEqual([
       'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
@@ -460,6 +460,19 @@ describe('publishFlow step 0 (toolchain)', () => {
     expect(flow.toolchain.state).toBe('done')
     expect(flow.currentStepId).toBe('release')
     expect(flow.blockers.github).toEqual([])
+  })
+
+  it('only requires the check environment for GitHub publishing', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), source_checkout: false, check_environment: 'unavailable' },
+    })
+    expect(flow.blockers.github).toContainEqual({
+      severity: 'hard', step: 'toolchain', reason: { key: 'checkEnvironmentUnavailable' },
+    })
+    expect(flow.blockers.market_notify).toEqual([])
   })
 
   it('becomes the current page and a hard blocker when a required tool is missing', () => {

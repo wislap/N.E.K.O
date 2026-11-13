@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
+
+from utils.file_utils import atomic_write_text
 
 from .templates.generator import (
     MARKET_ACTIONS_NEKO_REF,
@@ -52,6 +55,19 @@ class ActionFileChange:
     content: str
 
 
+def _standard_workflow_ref(content: str, spec: PluginSpec, relative_path: Path) -> str | None:
+    render = {
+        ".github/workflows/verify.yml": render_verify_workflow,
+        ".github/workflows/release.yml": render_release_workflow,
+    }.get(relative_path.as_posix())
+    match = re.search(r"^      neko-ref: (main|[a-f0-9]{40})$", content, re.MULTILINE)
+    if render is None or match is None:
+        return None
+    ref = match.group(1)
+    standard = render(replace(spec, workflow_ref=ref))
+    return ref if content in {standard, standard.removeprefix(MARKET_ACTIONS_MANAGED_HEADER)} else None
+
+
 def migrate_github_actions(
     spec: PluginSpec,
     target_dir: Path,
@@ -79,6 +95,13 @@ def migrate_github_actions(
             else:
                 if existing == content:
                     status = ActionFileStatus.CURRENT
+                elif _standard_workflow_ref(existing, spec, relative_path) is not None:
+                    status = (
+                        ActionFileStatus.CURRENT
+                        if spec.workflow_ref == MARKET_ACTIONS_NEKO_REF
+                        and existing.startswith(MARKET_ACTIONS_MANAGED_HEADER)
+                        else ActionFileStatus.UPGRADE
+                    )
                 elif existing == content.removeprefix(MARKET_ACTIONS_MANAGED_HEADER):
                     status = ActionFileStatus.UPGRADE
                 elif _is_known_legacy_template(relative_path, existing, spec):
@@ -99,7 +122,7 @@ def migrate_github_actions(
             continue
         path = target_dir / change.relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(change.content, encoding="utf-8", newline="\n")
+        atomic_write_text(path, change.content)
     return changes
 
 

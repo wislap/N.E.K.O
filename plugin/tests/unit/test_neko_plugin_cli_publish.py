@@ -400,6 +400,24 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json={
+                "status": "verifying", "candidate": None,
+                "publication_request": {"id": 12, "status": "verifying"},
+            }),
+            0,
+            "[MARKET] status=verifying request=12\n",
+            "Market accepted the notification",
+        ),
+        (
+            httpx.Response(202, json={
+                "status": "pending_review", "candidate": None,
+                "publication_request": {"id": 12, "status": "pending_review"},
+            }),
+            0,
+            "[MARKET] status=pending_review request=12\n",
+            "waiting for a Market reviewer",
+        ),
+        (
             httpx.Response(202, json=_market_review("rejected")),
             1,
             "[MARKET] status=rejected candidate=7\n",
@@ -880,7 +898,7 @@ def test_publish_defaults_to_github_then_market(
     )
     assert client.requests[1] == {
         "url": "https://market.project-neko.cn/api/v1/release-publications",
-        "json": {"release_url": release_url},
+        "json": {"release_url": release_url, "asset_name": "publish_demo.neko-plugin"},
     }
     output = capsys.readouterr().out
     assert "[OK] GitHub Release ready:" in output
@@ -1539,7 +1557,7 @@ def test_wait_for_release_waits_out_a_rate_limit_inside_the_deadline(
             headers={},
             timeout=60,
         )
-        == release_url
+        == publish_cmd.GitHubRelease(release_url, "publish_demo.neko-plugin")
     )
     assert sleeps == [11.0]
 

@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
@@ -374,18 +375,28 @@ def handle_create_repo(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
     try:
         plugin_dir = _resolve_existing_plugin_dir(args.plugin, args=args, defaults=defaults)
-        source = load_plugin_source(plugin_dir)
     except Exception as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
+    return create_github_repository(plugin_dir, owner=args.owner, private=args.private)
 
+
+def create_github_repository(
+    plugin_dir: Path, *, owner: str | None, private: bool,
+    on_created: Callable[[str], None] | None = None,
+) -> int:
+    try:
+        source = load_plugin_source(plugin_dir)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
     repo_name = _market_repo_name(source.plugin_id)
 
     existing_origin = _existing_origin_url(plugin_dir)
     if existing_origin is not None:
         repository = parse_github_repository_remote(existing_origin)
-        if repository and args.owner and repository.split("/", 1)[0].casefold() != args.owner.casefold():
-            print(f"[FAIL] origin belongs to {repository.split('/', 1)[0]}, not requested owner {args.owner}", file=sys.stderr)
+        if repository and owner and repository.split("/", 1)[0].casefold() != owner.casefold():
+            print(f"[FAIL] origin belongs to {repository.split('/', 1)[0]}, not requested owner {owner}", file=sys.stderr)
             return 1
         if repository and repository.rsplit("/", 1)[-1].casefold() == repo_name.casefold():
             print(
@@ -397,6 +408,8 @@ def handle_create_repo(args: argparse.Namespace) -> int:
                 )
             )
             _print_push_next_step(plugin_dir)
+            if on_created is not None:
+                on_created(f"https://github.com/{repository}")
             return 0
         print(
             "[FAIL] "
@@ -414,7 +427,7 @@ def handle_create_repo(args: argparse.Namespace) -> int:
         _print_manual_repo_steps(plugin_dir, repo_name=repo_name)
         return MANUAL_FALLBACK_EXIT
 
-    owner = args.owner or _gh_default_owner()
+    owner = owner or _gh_default_owner()
     if not owner:
         _print_manual_repo_steps(plugin_dir, repo_name=repo_name)
         return MANUAL_FALLBACK_EXIT
@@ -423,7 +436,7 @@ def handle_create_repo(args: argparse.Namespace) -> int:
     try:
         _initialize_git_repo(plugin_dir)
         try:
-            _gh_create_repository(plugin_dir, slug=slug, private=args.private)
+            _gh_create_repository(plugin_dir, slug=slug, private=private)
         except _RepositoryNameTaken:
             # A retry after a timed-out or half-failed create finds the
             # caller's own empty repository; wire it instead of failing.
@@ -466,6 +479,8 @@ def handle_create_repo(args: argparse.Namespace) -> int:
         )
     )
     _print_push_next_step(plugin_dir)
+    if on_created is not None:
+        on_created(f"https://github.com/{repository}")
     return 0
 
 

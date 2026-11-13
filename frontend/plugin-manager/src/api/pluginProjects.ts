@@ -112,7 +112,7 @@ export const precheckPluginProject = (projectId: string): Promise<PrecheckReport
     `/plugin-projects/${encodeURIComponent(projectId)}/precheck`,
     {},
     // The server budgets 600s for the CLI; the client must outlive it.
-    { ...config, timeout: 660_000 }
+    { ...config, timeout: 1_260_000 }
   )
 
 export interface PublishRepositoryState {
@@ -144,6 +144,7 @@ export interface PublishRemoteState {
   release: {
     state: 'published' | 'missing' | 'unknown'
     missing_assets: string[]
+    builder_commit?: string
     workflow: 'success' | 'failure' | 'running' | 'not_run' | 'missing' | 'unknown'
     /** Complete downloadable assets and a successful tag release workflow. */
     ready: boolean
@@ -199,13 +200,25 @@ export interface Toolchain {
   git: { installed: boolean; version: string | null; user_name: string | null; user_email: string | null }
   uv: { installed: boolean; version: string | null }
   gh: { installed: boolean; version: string | null; authenticated: boolean; login: string | null }
-  /** Checks, repository creation and publishing need a N.E.K.O source checkout. */
   source_checkout: boolean
+  check_environment?: 'source' | 'ready' | 'setup' | 'unavailable'
+  check_commit?: string | null
 }
 
 /** The publishing tools of the machine running the server, seen from the project folder. Local reads only. */
 export const getPluginToolchain = (projectId: string): Promise<Toolchain> =>
   get(`/plugin-projects/${encodeURIComponent(projectId)}/toolchain`, config)
+
+export interface ProjectWorkflowChange {
+  path: string
+  status: 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'
+}
+
+export const previewProjectWorkflows = (projectId: string): Promise<ProjectWorkflowChange[]> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/workflows`, config)
+
+export const applyProjectWorkflows = (projectId: string): Promise<ProjectWorkflowChange[]> =>
+  post(`/plugin-projects/${encodeURIComponent(projectId)}/workflows`, {}, config)
 
 /** `fresh` bypasses the server's GitHub cache (an explicit refresh); rate limits still apply. */
 export const getPluginProjectPublishStatus = (
@@ -253,6 +266,18 @@ export type MarketPublicationStatus =
   | 'approved'
   | 'superseded'
   | 'rejected'
+  | 'accepted'
+  | 'waiting_build'
+  | 'verifying'
+  | 'retry_wait'
+  | 'platform_attention'
+
+export function isMarketPublicationStatus(status: string): status is MarketPublicationStatus {
+  return [
+    'published', 'already_published', 'pending_review', 'approved', 'superseded', 'rejected',
+    'accepted', 'waiting_build', 'verifying', 'retry_wait', 'platform_attention',
+  ].includes(status)
+}
 
 export interface PublishTask {
   task_id: string
@@ -265,6 +290,7 @@ export interface PublishTask {
   market_status: MarketPublicationStatus | null
   /** The Market's release review candidate, when it answered with one. */
   market_candidate_id: number | null
+  market_request_id?: number | null
   /** Bounded tail of the CLI output. */
   log: string[]
   started_at: number | null
@@ -278,11 +304,12 @@ export const publishTaskActive = (task: PublishTask): boolean =>
 
 export const startPluginProjectPublish = (
   projectId: string,
-  mode: PublishMode
+  mode: PublishMode,
+  target?: { head: string | null; tag: string; repository: string | null }
 ): Promise<PublishTask> =>
   post(
     `/plugin-projects/${encodeURIComponent(projectId)}/publish`,
-    { mode },
+    { mode, ...target },
     { ...config, timeout: 60_000 }
   )
 

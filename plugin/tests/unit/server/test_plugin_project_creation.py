@@ -181,6 +181,42 @@ def request(parent: Path, **changes):
 
 
 @pytest.mark.asyncio
+async def test_workflow_preview_and_apply_preserve_custom_files(app, tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec, render_release_workflow
+    from plugin.server.application import plugin_projects
+
+    parent = tmp_path / "projects"
+    parent.mkdir()
+    async with client(app) as http:
+        created = await http.post("/plugin-projects/create", json=request(parent))
+        assert created.status_code == 201, created.text
+        data = created.json()
+        route = f"/plugin-projects/{data['project_id']}/workflows"
+        release = Path(data["project_dir"]) / ".github/workflows/release.yml"
+        original = release.read_text(encoding="utf-8")
+        commit = "1" * 40
+        monkeypatch.setattr(plugin_projects, "packaged_workflow_ref", lambda: commit)
+        preview = await http.get(route)
+        assert preview.status_code == 200, preview.text
+        assert {"path": ".github/workflows/release.yml", "status": "UPGRADE"} in preview.json()
+        assert release.read_text(encoding="utf-8") == original
+        result = await http.post(route)
+        assert result.status_code == 200, result.text
+        assert release.read_text(encoding="utf-8") == render_release_workflow(
+            PluginSpec(data["plugin_id"], workflow_ref=commit)
+        )
+
+        custom = "# custom release workflow\n"
+        release.write_text(custom, encoding="utf-8")
+        verify = release.with_name("verify.yml")
+        verify.unlink()
+        result = await http.post(route)
+        assert {"path": ".github/workflows/release.yml", "status": "CONFLICT"} in result.json()
+        assert release.read_text(encoding="utf-8") == custom
+        assert not verify.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("packaged", [False, True])
 @pytest.mark.parametrize("plugin_type", ["plugin", "adapter"])
 async def test_preview_and_creation_share_the_real_scaffold(

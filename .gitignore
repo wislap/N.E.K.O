@@ -176,6 +176,12 @@ build*
 !build_frontend.sh
 !build-desktop*.yml
 !scripts/build-desktop-release.ps1
+!scripts/build_plugin_tools.py
+!plugin/neko_plugin_cli/commands/build_cmd.py
+!plugin/neko_plugin_cli/core/build.py
+!plugin/neko_plugin_cli/core/build_rules.py
+!plugin/neko_plugin_cli/public/build.py
+!plugin/neko_plugin_cli/public/build_rules.py
 metadata.package.json
 version_info.txt
 

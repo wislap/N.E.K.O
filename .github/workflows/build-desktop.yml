@@ -831,6 +831,16 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Stage Windows plugin workbench tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .venv/Scripts/python.exe scripts/build_plugin_tools.py dist/Xiao8/plugin-tools
+
+      - name: Verify Windows plugin workbench tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .venv/Scripts/python.exe scripts/check_plugin_tools.py dist/Xiao8/projectneko_server.exe
+
       - name: Smoke test frozen Owner voice identity runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -1220,6 +1230,22 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Verify plugin workbench in Windows desktop artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $backend = Resolve-Path 'electron-app/dist/win-unpacked/resources/bin/projectneko_server.exe'
+          & $backend --neko-plugin-project-worker probe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $manifest = Get-Content -Raw (Join-Path (Split-Path $backend.Path) 'plugin-tools/manifest.json') | ConvertFrom-Json
+          if ($manifest.commit -ne '${{ github.sha }}') { throw 'Plugin tool version differs from the backend build' }
+          $manifest.sha256.PSObject.Properties | ForEach-Object {
+            $file = Join-Path (Split-Path $backend.Path) "plugin-tools/$($_.Name)"
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.Value) {
+              throw "Plugin tool resource failed integrity verification: $($_.Name)"
+            }
+          }
 
       # `builder_target_args` 只有 linux-arm64 非空。N.E.K.O.-PC 的 package.json 把
       # build.linux.target 三个 target 的 arch 写死成 ["x64"]，而 electron-builder 的

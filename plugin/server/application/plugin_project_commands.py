@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 import psutil
@@ -78,11 +80,43 @@ def cli_child_env() -> dict[str, str]:
     }
 
 
-def start_cli(argv: list[str], *, cwd: Path, merge_stderr: bool) -> subprocess.Popen[str]:
+def check_child_env() -> dict[str, str]:
+    """Keep tool/network settings while keeping host and publishing credentials out of tests."""
+    system = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+        "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+        "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+        "NEKO_PLUGIN_MARKET_SECURITY_CHECKS",
+        "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+        "UV", "UV_INDEX", "UV_DEFAULT_INDEX", "UV_CACHE_DIR",
+        "PYTHONUTF8", "PYTHONIOENCODING", "PYTHONUNBUFFERED",
+    }
+    return {
+        key: value for key, value in cli_child_env().items()
+        if key.upper() in system
+    }
+
+
+def project_worker_command(*args: str) -> list[str]:
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        return [sys.executable, "--neko-plugin-project-worker", *args]
+    return [sys.executable, "-m", "plugin.neko_plugin_cli.project_worker", *args]
+
+
+def project_worker_directory() -> Path:
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
+def start_cli(
+    argv: list[str], *, cwd: Path, merge_stderr: bool, env: Mapping[str, str] | None = None
+) -> subprocess.Popen[str]:
     return subprocess.Popen(
         argv,
         cwd=cwd,
-        env=cli_child_env(),
+        env=cli_child_env() if env is None else env,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -138,7 +172,8 @@ def terminate_process_tree(process: subprocess.Popen[str]) -> None:
 
 
 async def run_cli(
-    argv: list[str], *, cwd: Path, timeout: float, merge_stderr: bool = False
+    argv: list[str], *, cwd: Path, timeout: float, merge_stderr: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the CLI to completion.
 
@@ -146,7 +181,8 @@ async def run_cli(
     once the tree was killed after ``timeout``. Cancelling the caller kills
     the tree too, so a server shutdown leaves nothing running.
     """
-    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr)
+    options = {} if env is None else {"env": env}
+    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr, **options)
     communicate = asyncio.ensure_future(asyncio.to_thread(process.communicate))
     try:
         stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate), timeout)
@@ -158,6 +194,10 @@ async def run_cli(
             logger.warning("CLI pipes stayed open after terminate: pid={}", process.pid)
         raise subprocess.TimeoutExpired(argv, timeout) from None
     except asyncio.CancelledError:
-        terminate_process_tree(process)
+        await asyncio.to_thread(terminate_process_tree, process)
+        try:
+            await asyncio.wait_for(communicate, _TERMINATE_GRACE_SECONDS)
+        except TimeoutError:
+            logger.warning("Canceled CLI pipes stayed open: pid={}", process.pid)
         raise
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr or "")

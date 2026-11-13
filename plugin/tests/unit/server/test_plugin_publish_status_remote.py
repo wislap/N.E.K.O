@@ -111,7 +111,10 @@ def test_public_repository_with_passing_verify_and_complete_release(monkeypatch)
         'reachable': True,
         'visibility': 'public',
         'verify': 'success',
-        'release': {'state': 'published', 'missing_assets': [], 'workflow': 'success', 'ready': True},
+        'release': {
+            'state': 'published', 'missing_assets': [], 'workflow': 'success',
+            'ready': True, 'asset_name': ASSETS[0],
+        },
         'tag': 'at_head',
     }
     # Only the public GitHub API is ever contacted.
@@ -213,7 +216,14 @@ def test_release_assets_that_are_not_uploaded_or_empty_count_as_missing(monkeypa
     assert _read()['release'] == {
         'state': 'published',
         'missing_assets': [ASSETS[1], ASSETS[2]],
-        'workflow': 'success', 'ready': False}
+        'workflow': 'success', 'ready': False, 'asset_name': ASSETS[0]}
+
+
+def test_a_release_with_a_custom_package_name_is_ready(monkeypatch):
+    _serve(monkeypatch, {**FINAL, RELEASE: _release(*map(_asset, ("custom.neko-plugin", *ASSETS[1:])))})
+    release = _read()["release"]
+    assert release["ready"] is True
+    assert release["asset_name"] == "custom.neko-plugin"
 
 
 @pytest.mark.parametrize('entry', [LIMITED, (429, {}, None)])

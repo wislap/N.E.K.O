@@ -71,12 +71,14 @@ vi.mock('vue-router', () => ({
 // publish steps; only its Market login and network calls are replaced.
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
+  listMarketPublicationReceipts: vi.fn().mockResolvedValue([]),
   listMarketZones: vi.fn(),
   authenticated: false,
 }))
 vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketSubmissions: market.listMarketSubmissions,
+  listMarketPublicationReceipts: market.listMarketPublicationReceipts,
   listMarketZones: market.listMarketZones,
 }))
 vi.mock('@/composables/useMarketAuth', async () => {
@@ -342,6 +344,7 @@ async function settle() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  market.listMarketPublicationReceipts.mockResolvedValue([])
   api.route.query = {}
   vi.stubGlobal(
     'MutationObserver',
@@ -631,7 +634,9 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
     await click(en.publishConfirmTitle, { last: true })
     await settle()
-    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github_and_market')
+    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github_and_market', {
+      head: 'abc', tag: 'v0.2.0', repository: 'owner/hello_world',
+    })
     expect(steps()[3]!.querySelector('.authoring-publish-task')?.textContent).toContain(
       en.publishTaskQueued
     )
@@ -685,7 +690,9 @@ describe('authoring workbench backed by the server project list', () => {
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
     await click(en.publishConfirmTitle, { last: true })
     await settle()
-    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github')
+    expect(api.startPluginProjectPublish).toHaveBeenCalledWith('p1', 'github', {
+      head: 'abc', tag: 'v0.2.0', repository: 'owner/hello_world',
+    })
   })
 
   it('treats the full publish before approval as a hard blocker', async () => {

@@ -22,9 +22,7 @@ def _completed(returncode: int, stdout: str):
     return run
 
 
-def _patch(monkeypatch, *, returncode: int, stdout: str, root: Path | None = Path("/repo")):
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: root)
-    monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
+def _patch(monkeypatch, *, returncode: int, stdout: str):
     monkeypatch.setattr(repo_tasks, "run_cli", _completed(returncode, stdout))
 
 
@@ -36,7 +34,7 @@ def test_exit_zero_is_created_and_extracts_the_repository_url(monkeypatch):
     _patch(
         monkeypatch,
         returncode=0,
-        stdout="[OK] repository ready: https://github.com/octocat/n.e.k.o_plugin_demo / 已就绪",
+        stdout='[OK] repository ready\n{"repository_url": "https://github.com/octocat/n.e.k.o_plugin_demo"}',
     )
     result = _run(monkeypatch)
     assert result["status"] == "created"
@@ -61,23 +59,28 @@ def test_other_exit_codes_are_failed(monkeypatch):
     assert result["status"] == "failed"
 
 
-def test_a_packaged_build_without_a_checkout_is_refused(monkeypatch):
-    _patch(monkeypatch, returncode=0, stdout="", root=None)
-    with pytest.raises(ServerDomainError) as excinfo:
-        _run(monkeypatch)
-    assert excinfo.value.code == "REPO_CREATE_UNAVAILABLE"
+def test_packaged_backend_uses_the_bundled_repository_worker(monkeypatch, tmp_path):
+    executable = tmp_path / "projectneko_server.exe"
+    monkeypatch.setattr(commands.sys, "executable", str(executable))
+    monkeypatch.setattr(commands.sys, "frozen", True, raising=False)
+
+    async def run(argv, **kwargs):
+        assert argv[:3] == [str(executable), "--neko-plugin-project-worker", "create-repo"]
+        assert kwargs["cwd"] == tmp_path
+        return subprocess.CompletedProcess(argv, 3, "[MANUAL] Sign in first", "")
+
+    monkeypatch.setattr(repo_tasks, "run_cli", run)
+    assert _run(monkeypatch)["status"] == "manual"
 
 
-def test_a_timeout_is_a_failed_domain_error(monkeypatch):
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: Path("/repo"))
-    monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
+async def test_a_timeout_is_a_failed_domain_error(monkeypatch):
 
     async def _timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="create-repo", timeout=180)
 
     monkeypatch.setattr(repo_tasks, "run_cli", _timeout)
     with pytest.raises(ServerDomainError) as excinfo:
-        _run(monkeypatch)
+        await repo_tasks._run(Path("/plugins/demo"), private=False)
     assert excinfo.value.code == "REPO_CREATE_FAILED"
 
 
@@ -91,21 +94,19 @@ def test_private_flag_is_forwarded_to_the_cli(monkeypatch):
             argv, 0, "[OK] repository ready: https://github.com/o/n.e.k.o_plugin_demo", ""
         )
 
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: Path("/repo"))
-    monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
     monkeypatch.setattr(repo_tasks, "run_cli", _capture)
     _run(monkeypatch, private=True)
     assert "--private" in captured["argv"]
     assert "create-repo" in captured["argv"]
 
 
-def test_create_repo_is_refused_while_the_project_is_busy(monkeypatch):
+async def test_create_repo_is_refused_while_the_project_is_busy(monkeypatch):
     _patch(monkeypatch, returncode=0, stdout="")
     monkeypatch.setattr(repo_tasks, "_record_source_dir", lambda _id: Path("/plugins/demo"))
     commands.claim_project("p1", "publish")
     try:
         with pytest.raises(ServerDomainError) as excinfo:
-            asyncio.run(repo_tasks.create_repository("p1"))
+            await repo_tasks.create_repository("p1")
     finally:
         commands.release_project("p1")
     assert excinfo.value.code == "PLUGIN_OPERATION_BUSY"

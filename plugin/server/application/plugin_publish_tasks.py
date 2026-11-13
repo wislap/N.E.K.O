@@ -1,36 +1,38 @@
-"""Background publication tasks for authoring workbench projects.
-
-One task runs ``neko-plugin publish`` as a subprocess, exactly like
-``precheck`` runs the CI gates: the CLI stays the only code that pushes a
-tag or notifies the Market, and the workbench can never drift from it. The
-task registry is in memory — authoritative progress lives on GitHub, and the
-read-only publish status reconciles against it after a server restart.
-"""
+"""Background publication tasks for authoring workbench projects."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import subprocess
-import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, NamedTuple
 from urllib.parse import quote
 from uuid import uuid4
 
+from plugin import settings
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.repo_state import RepoState
 from plugin.server.application.plugin_project_commands import (
     claim_project,
+    project_worker_command,
+    project_worker_directory,
     release_project,
     start_cli,
     terminate_process_tree,
 )
 from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironmentError,
+    resolve_tool_environment,
+    tool_resources,
+)
 from plugin.server.application.plugin_publish_status import (
     LocalStatus,
     RemoteGithubState,
@@ -40,6 +42,8 @@ from plugin.server.application.plugin_publish_status import (
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
+from plugin.utils.asyncio_utils import await_cancellation_safe
+from utils.file_utils import atomic_write_json
 
 logger = get_logger("server.application.plugin_publish_tasks")
 
@@ -49,13 +53,7 @@ _LOG_LINES = 200
 _LOG_LINE_CHARS = 400
 _MAX_TASKS = 64
 _TERMINATE_GRACE_SECONDS = 15.0
-# Part of the server budget kept for sync, release checks, ruff and the tag
-# push before the CLI starts waiting for the GitHub Release.
-_PRE_RELEASE_RESERVE_SECONDS = 300.0
 _MIN_RELEASE_WAIT_SECONDS = 60.0
-_RELEASE_URL_PATTERN = re.compile(r"GitHub Release ready: (\S+)")
-# The CLI's one-line report of the Market's answer to the release notification.
-_MARKET_STATUS_PATTERN = re.compile(r"^\[MARKET\] status=([a-z_]+)(?: candidate=([0-9]+))?$")
 _RELEASE_WORKFLOW = ".github/workflows/release.yml"
 # Lines the CLI starts itself; anything else after ``[FAIL]`` continues it.
 _MARKER_PATTERN = re.compile(r"^\[[^\]]+\]")
@@ -72,6 +70,7 @@ class _Task:
     release_url: str = ""
     market_status: str | None = None
     market_candidate_id: int | None = None
+    market_request_id: int | None = None
     log: deque[str] = field(default_factory=lambda: deque(maxlen=_LOG_LINES))
     started_at: float | None = None
     updated_at: float = field(default_factory=time.time)
@@ -79,6 +78,7 @@ class _Task:
     cancel_requested: bool = False
     stop_requested: bool = False
     process: subprocess.Popen[str] | None = None
+    preparing: bool = False
 
 
 # Reentrant: snapshots are taken while the registry lock is already held.
@@ -100,6 +100,7 @@ def _snapshot(task: _Task) -> dict[str, object]:
             "release_url": task.release_url,
             "market_status": task.market_status,
             "market_candidate_id": task.market_candidate_id,
+            "market_request_id": task.market_request_id,
             "log": list(task.log),
             "started_at": task.started_at,
             "updated_at": task.updated_at,
@@ -164,13 +165,6 @@ def _release_blockers(local: LocalStatus) -> list[str]:
 
 def _local_gate(project_id: str, mode: PublishMode) -> _Gate:
     """Refuse to start unless the CLI's own local preconditions already hold."""
-    root = source_repo_root()
-    if root is None:
-        raise project_error(
-            Code.PUBLISH_UNAVAILABLE,
-            "Publishing needs a source checkout; it is unavailable in a packaged build.",
-            503,
-        )
     local = read_local_status(project_id)
     state = local.repository
     reasons: list[str] = []
@@ -187,7 +181,7 @@ def _local_gate(project_id: str, mode: PublishMode) -> _Gate:
         raise project_error(Code.PUBLISH_NOT_READY, "; ".join(reasons), 409)
     assert state.github_repository is not None  # the check above raised without it
     return _Gate(
-        root=root,
+        root=project_worker_directory(),
         source_dir=local.source_dir,
         plugin_id=local.plugin_id,
         repository=state.github_repository,
@@ -258,33 +252,38 @@ def _verified_release_url(gate: _Gate, remote: RemoteGithubState) -> str:
     return f"https://github.com/{gate.repository}/releases/tag/{quote(gate.tag, safe='')}"
 
 
-async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]:
+async def start_publish(
+    project_id: str, mode: PublishMode, *, confirmed_head: str | None = None,
+    confirmed_tag: str | None = None, confirmed_repository: str | None = None,
+) -> dict[str, object]:
+    source_root = source_repo_root()
     gate = await asyncio.to_thread(_local_gate, project_id, mode)
+    if (
+        (confirmed_head is not None and mode != "market_notify" and confirmed_head != gate.head)
+        or (confirmed_tag is not None and confirmed_tag != gate.tag)
+        or (confirmed_repository is not None and confirmed_repository.casefold() != gate.repository.casefold())
+    ):
+        raise project_error(Code.PUBLISH_NOT_READY, "The project changed. Refresh and confirm the release again.", 409)
+    if mode != "market_notify" and source_root is None:
+        try:
+            tool_resources()
+        except ToolEnvironmentError as exc:
+            raise project_error(Code.PUBLISH_UNAVAILABLE, str(exc), 503) from exc
     budget = env_seconds("NEKO_PLUGIN_PUBLISH_BUDGET", 1200.0)
-    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "publish"]
+    market_wait = env_seconds("NEKO_PLUGIN_MARKET_WAIT", 1800.0)
+    asset_name = None
     release_url = ""
     if mode == "market_notify":
         remote = await read_remote_github(
             gate.repository, gate.head, gate.tag, gate.plugin_id, fresh=True
         )
         release_url = _verified_release_url(gate, remote)
-        argv += ["market", release_url]
+        asset_name = remote["release"].get("asset_name")
     else:
         remote = await read_remote_github(gate.repository, gate.head, gate.tag, gate.plugin_id)
         reasons = _remote_release_blockers(gate, remote)
         if reasons:
             raise project_error(Code.PUBLISH_NOT_READY, "; ".join(reasons), 409)
-        if mode == "github":
-            argv += ["github"]
-        # The CLI's own wait must end before the server stops it.
-        release_wait = max(budget - _PRE_RELEASE_RESERVE_SECONDS, _MIN_RELEASE_WAIT_SECONDS)
-        argv += [str(gate.source_dir), "--timeout", f"{release_wait:.0f}"]
-    if mode != "github":
-        # The CLI retries while the Market verifies the release; the server
-        # budget covers that wait on top of the release wait.
-        market_wait = env_seconds("NEKO_PLUGIN_MARKET_WAIT", 1800.0)
-        argv += ["--market-wait", f"{market_wait:.0f}"]
-        budget += market_wait
 
     task = _Task(
         task_id=uuid4().hex, project_id=project_id, mode=mode, release_url=release_url
@@ -306,7 +305,8 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
         _latest[project_id] = task.task_id
         snapshot = _snapshot(task)
     worker = asyncio.create_task(
-        _run_task(task, argv, gate, budget), name=f"plugin-publish-{task.task_id}"
+        _publish(task, gate, source_root, budget, market_wait, asset_name),
+        name=f"plugin-publish-{task.task_id}",
     )
     _workers[task.task_id] = worker
     worker.add_done_callback(lambda _done, task_id=task.task_id: _workers.pop(task_id, None))
@@ -316,11 +316,43 @@ async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]
 def latest_publish_task(project_id: str) -> dict[str, object]:
     with _lock:
         task = _tasks.get(_latest.get(project_id, ""))
-        if task is None:
-            raise project_error(
-                Code.PUBLISH_TASK_NOT_FOUND, f"no publish task for project {project_id}", 404
+        if task is not None:
+            return _snapshot(task)
+    from plugin.server.infrastructure.authoring_project_store import list_records
+
+    if any(record.project_id == project_id for record in list_records()):
+        try:
+            saved = json.loads(_publication_path(project_id).read_bytes())
+            if saved.get("project_id") == project_id and saved.get("status") in _TERMINAL_STATUSES:
+                return saved
+        except (OSError, ValueError, AttributeError):
+            pass
+    raise project_error(Code.PUBLISH_TASK_NOT_FOUND, f"no publish task for project {project_id}", 404)
+
+
+def _publication_path(project_id: str) -> Path:
+    filename = sha256(project_id.encode("utf-8")).hexdigest() + ".json"
+    return settings.get_plugin_state_root().parent / ".neko-plugin-publications" / filename
+
+
+def _save_task(task: _Task, *, interrupted: bool = False) -> None:
+    if not task.release_url:
+        return
+    try:
+        snapshot = _snapshot(task)
+        # Retain the outcome across restarts without storing Git/CLI output.
+        snapshot["log"] = []
+        if snapshot["status"] == "failed":
+            snapshot["message"] = ""
+        if interrupted:
+            snapshot.update(
+                status="canceled",
+                message="GitHub Release is ready; refresh the Market status before retrying the notification.",
+                finished_at=time.time(),
             )
-        return _snapshot(task)
+        atomic_write_json(_publication_path(task.project_id), snapshot)
+    except OSError as exc:
+        logger.warning("Could not retain plugin publication status: {}", exc)
 
 
 async def cancel_publish(project_id: str, task_id: str) -> dict[str, object]:
@@ -331,9 +363,21 @@ async def cancel_publish(project_id: str, task_id: str) -> dict[str, object]:
         if task.status in _TERMINAL_STATUSES:
             return _snapshot(task)
         task.cancel_requested = True
+        worker = _workers.get(task_id)
+        preparing = task.preparing
+    if preparing and worker is not None:
+        worker.cancel()
     await asyncio.to_thread(_terminate, task)
     with _lock:
         return _snapshot(task)
+
+
+async def shutdown_publications() -> None:
+    workers = tuple(_workers.values())
+    for worker in workers:
+        worker.cancel()
+    if workers:
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 def _prune() -> None:
@@ -351,13 +395,16 @@ def _prune() -> None:
             _active.pop(task.project_id, None)
 
 
-def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
+def _stream(
+    task: _Task, argv: list[str], cwd: Path, env: dict[str, str] | None = None
+) -> tuple[int | None, str]:
     """Run the CLI to completion, collecting its output. Called in a thread."""
     with _lock:
         if task.cancel_requested or task.stop_requested:
             return None, ""
     try:
-        process = start_cli(argv, cwd=cwd, merge_stderr=True)
+        options = {} if env is None else {"env": env}
+        process = start_cli(argv, cwd=cwd, merge_stderr=True, **options)
     except OSError as exc:
         return None, f"publish command could not start: {exc}"
     with _lock:
@@ -365,20 +412,29 @@ def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
         if not stopped_before_registration:
             task.process = process
             task.status = "running"
-            task.started_at = time.time()
-            task.updated_at = task.started_at
+            task.started_at = task.started_at or time.time()
+            task.updated_at = time.time()
     if stopped_before_registration:
         terminate_process_tree(process)
         return None, ""
     assert process.stdout is not None
+    worker_output = ""
     while line := process.stdout.readline(_LOG_LINE_CHARS + 1):
         with _lock:
             task.log.append(line.rstrip("\n")[:_LOG_LINE_CHARS])
             task.updated_at = time.time()
+        if env is None and line.startswith(('{"release_url":', '{"publication":')):
+            worker_output = line
+            if not line.endswith("\n"):
+                worker_output += process.stdout.readline(4096 - len(line))
+                line = worker_output
         # Retain one bounded entry per line, discarding oversized tails in chunks.
         while line and not line.endswith("\n"):
             line = process.stdout.readline(_LOG_LINE_CHARS + 1)
-    return process.wait(), ""
+    returncode = process.wait()
+    with _lock:
+        task.process = None
+    return returncode, worker_output
 
 
 def _terminate(task: _Task) -> None:
@@ -416,28 +472,6 @@ def _failure_message(task: _Task, returncode: int | None) -> str:
     return message[:_LOG_LINE_CHARS]
 
 
-def _extract_release_url(task: _Task) -> str:
-    with _lock:
-        lines = list(task.log)
-    for line in reversed(lines):
-        match = _RELEASE_URL_PATTERN.search(line)
-        if match:
-            return match.group(1)
-    return ""
-
-
-def _extract_market_result(task: _Task) -> tuple[str | None, int | None]:
-    """The Market status and review candidate from the CLI's ``[MARKET]`` line."""
-    with _lock:
-        lines = list(task.log)
-    for line in reversed(lines):
-        match = _MARKET_STATUS_PATTERN.match(line.strip())
-        if match:
-            candidate = match.group(2)
-            return match.group(1), int(candidate) if candidate else None
-    return None, None
-
-
 async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
     message = f"publish timed out after {budget:.0f} seconds"
     if task.mode == "market_notify":
@@ -453,35 +487,112 @@ async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
     )
 
 
-async def _run_task(task: _Task, argv: list[str], gate: _Gate, budget: float) -> None:
-    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, gate.root))
-    returncode: int | None = None
-    spawn_error = ""
-    timeout_message = ""
+async def _run_stage(
+    task: _Task, argv: list[str], cwd: Path, budget: float, env: dict[str, str] | None = None
+) -> tuple[int | None, str]:
+    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, cwd, env))
     try:
-        returncode, spawn_error = await asyncio.wait_for(asyncio.shield(stream), budget)
-    except TimeoutError:
-        await asyncio.to_thread(_terminate, task)
-        try:
-            returncode, spawn_error = await asyncio.wait_for(
-                asyncio.shield(stream), _TERMINATE_GRACE_SECONDS
-            )
-        except TimeoutError:  # pragma: no cover - a killed process reaches EOF
-            logger.warning("publish stream did not end after terminate: task={}", task.task_id)
-        timeout_message = await _timeout_message(task, gate, budget)
-    except asyncio.CancelledError:
-        # Server shutdown must not orphan a child that may still push a tag.
-        with _lock:
-            task.cancel_requested = True
+        return await asyncio.wait_for(asyncio.shield(stream), budget)
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            with _lock:
+                task.cancel_requested = True
         await asyncio.to_thread(_terminate, task)
         try:
             await asyncio.wait_for(asyncio.shield(stream), _TERMINATE_GRACE_SECONDS)
         except TimeoutError:
-            logger.warning("canceled publish stream did not end: task={}", task.task_id)
+            logger.warning("publish stream did not end after terminate: task={}", task.task_id)
+        raise
+
+
+async def _publish(
+    task: _Task, gate: _Gate, source_root: Path | None, budget: float,
+    market_wait: float, asset_name: str | None,
+) -> None:
+    returncode = None
+    spawn_error = ""
+    timeout_message = ""
+    stage_budget = budget
+    try:
+        if task.mode != "market_notify":
+            with _lock:
+                if task.cancel_requested:
+                    return
+                task.status = "running"
+                task.started_at = task.updated_at = time.time()
+                task.log.append("Preparing the plugin check environment")
+                task.preparing = True
+            try:
+                environment = await resolve_tool_environment(source_root)
+            finally:
+                with _lock:
+                    task.preparing = False
+            release_deadline = time.monotonic() + budget
+            stage_budget = min(
+                env_seconds("NEKO_PLUGIN_PRECHECK_BUDGET", 600.0),
+                budget,
+            )
+            returncode, spawn_error = await _run_stage(
+                task, environment.command("publish", "github", str(gate.source_dir), "--check-only"),
+                environment.cwd, stage_budget, environment.env,
+            )
+            if returncode != 0 or task.cancel_requested:
+                return
+            spawn_error = ""
+            stage_budget = max(release_deadline - time.monotonic(), _MIN_RELEASE_WAIT_SECONDS)
+            release_wait = max(stage_budget - min(30, stage_budget / 2), 1)
+            assert gate.head is not None
+            returncode, output = await _run_stage(
+                task,
+                project_worker_command("github", str(gate.source_dir), gate.plugin_id,
+                                       gate.repository, gate.tag, gate.head, str(release_wait)),
+                gate.root, stage_budget,
+            )
+            if returncode != 0:
+                spawn_error = output
+                return
+            try:
+                release = json.loads(output)
+                with _lock:
+                    task.release_url = release["release_url"]
+                    asset_name = release["asset_name"]
+            except (ValueError, KeyError, TypeError):
+                spawn_error = "GitHub release worker returned no release result"
+                return
+        if task.mode != "github" and not task.cancel_requested:
+            await await_cancellation_safe(asyncio.create_task(
+                asyncio.to_thread(_save_task, task, interrupted=True)
+            ))
+            stage_budget = market_wait + 30
+            args = [
+                "market", task.release_url, str(market_wait), "--endpoint",
+                f"{settings.MARKET_API_URL.rstrip('/')}/api/v1/release-publications",
+            ]
+            if asset_name:
+                args.extend(("--asset-name", asset_name))
+            returncode, output = await _run_stage(task, project_worker_command(*args), gate.root, stage_budget)
+            if output.startswith('{"publication":'):
+                publication = json.loads(output)["publication"]
+                with _lock:
+                    task.market_status = publication["status"]
+                    task.market_candidate_id = publication["candidate_id"]
+                    task.market_request_id = publication["request_id"]
+            else:
+                spawn_error = output or ("Market worker returned no publication result" if returncode == 0 else "")
+    except TimeoutError:
+        timeout_message = await _timeout_message(task, gate, stage_budget)
+    except (ToolEnvironmentError, OSError, ValueError, KeyError, TypeError) as exc:
+        spawn_error = str(exc)
+    except asyncio.CancelledError:
+        task.cancel_requested = True
         raise
     finally:
-        _finalize(task, returncode, spawn_error, timeout_message)
-        release_project(task.project_id)
+        try:
+            await await_cancellation_safe(asyncio.create_task(asyncio.to_thread(
+                _finalize, task, returncode, spawn_error, timeout_message
+            )))
+        finally:
+            release_project(task.project_id)
 
 
 def _finalize(
@@ -504,11 +615,10 @@ def _finalize(
         else:
             task.status = "failed"
             task.message = _failure_message(task, returncode)
-        task.release_url = _extract_release_url(task) or task.release_url
-        # A rejected notification exits 1, so the status is read on failure too.
-        task.market_status, task.market_candidate_id = _extract_market_result(task)
         task.finished_at = time.time()
         task.updated_at = task.finished_at
+    _save_task(task)
+    with _lock:
         if _active.get(task.project_id) == task.task_id:
             _active.pop(task.project_id, None)
     logger.info(

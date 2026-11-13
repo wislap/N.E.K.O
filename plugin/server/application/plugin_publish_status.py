@@ -11,7 +11,7 @@ import asyncio
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal, NamedTuple, TypedDict
+from typing import Literal, NamedTuple, NotRequired, TypedDict
 from urllib.parse import quote
 
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
@@ -23,7 +23,7 @@ from plugin.server.infrastructure import authoring_project_store as store
 from plugin.utils.github_auth import github_headers
 from plugin.utils.github_release import (
     WorkflowState,
-    missing_release_assets,
+    release_assets,
     release_ready,
     select_release_run,
     workflow_run_state as _run_state,
@@ -54,6 +54,8 @@ class RemoteReleaseState(TypedDict):
     missing_assets: list[str]
     workflow: WorkflowState
     ready: bool
+    asset_name: NotRequired[str]
+    builder_commit: NotRequired[str]
 
 
 VerifyState = WorkflowState
@@ -215,8 +217,9 @@ async def _read(
                 "state": "missing", "missing_assets": [], "workflow": "unknown", "ready": False,
             }
             return
-        missing = missing_release_assets(_json_object(response), plugin_id)
+        asset_name, missing = release_assets(_json_object(response), plugin_id)
         workflow: WorkflowState = "unknown"
+        builder_commit = None
         # The existing Release belongs to its remote tag, even if local HEAD moved on.
         tag_commit = await tag_read
         if tag_commit:
@@ -224,16 +227,28 @@ async def _read(
                 f"/repos/{repository}/actions/workflows/release.yml/runs?head_sha={tag_commit}"
             )
             if response is not None:
-                workflow = (
-                    "missing" if response.status_code == 404
-                    else _run_state(select_release_run(_json_object(response), tag))
-                )
+                run = select_release_run(_json_object(response), tag)
+                workflow = "missing" if response.status_code == 404 else _run_state(run)
+                if run is not None:
+                    references = run.get("referenced_workflows") or []
+                    builder_commit = next((
+                        reference["sha"] for reference in references
+                        if isinstance(reference, dict)
+                        and str(reference.get("path", "")).startswith(
+                            "Project-N-E-K-O/N.E.K.O/.github/workflows/plugin-market-release.yml@"
+                        )
+                        and isinstance(reference.get("sha"), str)
+                    ), None)
         result["release"] = {
             "state": "published",
             "missing_assets": missing,
             "workflow": workflow,
             "ready": release_ready(missing, workflow),
         }
+        if asset_name is not None:
+            result["release"]["asset_name"] = asset_name
+        if builder_commit is not None:
+            result["release"]["builder_commit"] = builder_commit
 
     async def read_tag() -> str | None:
         response = await get(f"/repos/{repository}/git/ref/tags/{quote(tag, safe='')}")

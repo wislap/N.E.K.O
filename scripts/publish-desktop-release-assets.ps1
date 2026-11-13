@@ -82,8 +82,9 @@ function Assert-PortableManifestSignature {
     )
     $nodeScript = @'
 const fs = require('node:fs');
-const { verifyPortableManifestSignature } = require(process.argv[1]);
-verifyPortableManifestSignature(
+const verifier = require(process.argv[1]);
+const verify = verifier.verifyManifestSignature ?? verifier.verifyPortableManifestSignature;
+verify(
   fs.readFileSync(process.argv[2]),
   fs.readFileSync(process.argv[3]),
 );
@@ -129,10 +130,13 @@ if ([string]::IsNullOrWhiteSpace($adminToken)) {
 }
 if ([string]::IsNullOrWhiteSpace($ManifestVerifierPath)) {
     $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-    $ManifestVerifierPath = Join-Path $workspaceRoot 'N.E.K.O.-PC/src/main/portable-update.js'
+    $ManifestVerifierPath = Join-Path $workspaceRoot 'N.E.K.O.-Launcher/src/portable-manifest.js'
+    if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
+        $ManifestVerifierPath = Join-Path $workspaceRoot 'launcher/src/portable-manifest.js'
+    }
 }
 if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
-    throw "Manifest verifier not found at $ManifestVerifierPath. Checkout N.E.K.O.-PC as a sibling directory or pass -ManifestVerifierPath explicitly."
+    throw "Manifest verifier not found at $ManifestVerifierPath. Checkout N.E.K.O.-Launcher as a sibling directory or pass -ManifestVerifierPath explicitly."
 }
 $ManifestVerifierPath = (Resolve-Path -LiteralPath $ManifestVerifierPath).Path
 

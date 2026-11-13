@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +18,7 @@ import httpx
 from plugin.utils.github_auth import github_headers as _github_headers
 from plugin.utils.github_release import (
     missing_release_assets,
+    release_assets,
     release_ready,
     select_release_run,
     workflow_run_state,
@@ -47,6 +50,40 @@ _MARKET_NETWORK_RETRY_SECONDS = 5.0
 _MARKET_REVIEW_STATUSES = frozenset(
     {"pending_review", "approved", "superseded", "rejected"}
 )
+_MARKET_RECEIPT_STATUSES = _MARKET_REVIEW_STATUSES | {
+    "accepted", "waiting_build", "verifying", "retry_wait", "platform_attention"
+}
+
+
+@dataclass(frozen=True)
+class MarketPublication:
+    status: str
+    candidate_id: int | None
+    request_id: int | None
+    version: str | None
+
+
+def parse_market_publication(status_code: int, payload: dict) -> MarketPublication | None:
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return None
+    version = payload.get("version")
+    version_name = version.get("version") if isinstance(version, dict) else None
+    candidate = payload.get("candidate")
+    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
+    receipt = payload.get("publication_request")
+    request_id = receipt.get("id") if isinstance(receipt, dict) else None
+    candidate_id = candidate_id if type(candidate_id) is int and candidate_id > 0 else None
+    request_id = request_id if type(request_id) is int and request_id > 0 else None
+    if status_code == 202:
+        if (status in _MARKET_RECEIPT_STATUSES and request_id is not None) or (
+            status in _MARKET_REVIEW_STATUSES and candidate_id is not None
+        ):
+            return MarketPublication(status, candidate_id, request_id, None)
+    elif (status_code, status) in {(201, "published"), (200, "already_published")}:
+        if isinstance(version_name, str) and version_name:
+            return MarketPublication(status, candidate_id, request_id, version_name)
+    return None
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -128,6 +165,11 @@ def register(
         ),
     )
     parser.add_argument(
+        "--asset-name",
+        help="Select a package asset when notifying the Market about an existing GitHub Release",
+    )
+    parser.add_argument("--check-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
         "--market-wait",
         type=_finite_timeout,
         default=1800.0,
@@ -141,6 +183,18 @@ def register(
 
 
 def handle(args: argparse.Namespace) -> int:
+    if args.check_only:
+        try:
+            directory = resolve_plugin_dir_candidate(args.target or ".", defaults=args._defaults)
+            source = load_plugin_source(directory)
+            check_github_release(
+                directory, defaults=args._defaults, repository=_github_repository(directory),
+                tag=f"v{source.version}",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"[FAIL] {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.mode_or_plugin == "market":
         if not args.target:
             print(
@@ -153,7 +207,7 @@ def handle(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        return _notify_market(args.target, wait=args.market_wait)
+        return _notify_market(args.target, wait=args.market_wait, asset_name=args.asset_name)
 
     if args.mode_or_plugin == "github":
         plugin = args.target or "."
@@ -161,8 +215,8 @@ def handle(args: argparse.Namespace) -> int:
         if release_url is None:
             return 1
         print(
-            f"[OK] GitHub Release ready: {release_url} / "
-            f"GitHub Release 已就绪 / GitHub Release の準備完了"
+            f"[OK] GitHub Release ready: {release_url.url} / "
+            "GitHub Release 已就绪 / GitHub Release の準備完了"
         )
         return 0
 
@@ -184,13 +238,13 @@ def handle(args: argparse.Namespace) -> int:
     if release_url is None:
         return 1
     print(
-        f"[OK] GitHub Release ready: {release_url} / "
-        f"GitHub Release 已就绪 / GitHub Release の準備完了"
+        f"[OK] GitHub Release ready: {release_url.url} / "
+        "GitHub Release 已就绪 / GitHub Release の準備完了"
     )
-    return _notify_market(release_url, wait=args.market_wait)
+    return _notify_market(release_url.url, wait=args.market_wait, asset_name=release_url.asset_name)
 
 
-def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
+def _run_github_phase(args: argparse.Namespace, plugin: str) -> GitHubRelease | None:
     try:
         return _publish_github(
             plugin,
@@ -210,7 +264,11 @@ def _run_github_phase(args: argparse.Namespace, plugin: str) -> str | None:
         return None
 
 
-def _notify_market(release_url: str, *, wait: float) -> int:
+def _notify_market(
+    release_url: str, *, wait: float, asset_name: str | None = None,
+    on_publication: Callable[[MarketPublication], None] | None = None,
+    endpoint: str = _MARKET_PUBLICATION_URL,
+) -> int:
     """POST the release to the Market, retrying while it is still verifying.
 
     The Market answers 503 (scan queued or running) or 429 with Retry-After
@@ -219,12 +277,15 @@ def _notify_market(release_url: str, *, wait: float) -> int:
     """
     deadline = time.monotonic() + max(wait, 0)
     waiting_reason: str | None = None
+    body = {"release_url": release_url}
+    if asset_name is not None:
+        body["asset_name"] = asset_name
     with httpx.Client(timeout=30.0) as client:
         while True:
             try:
                 response = client.post(
-                    _MARKET_PUBLICATION_URL,
-                    json={"release_url": release_url},
+                    endpoint,
+                    json=body,
                 )
             except httpx.HTTPError as exc:
                 reason = f"{_tri('Market publication request failed', 'Market 发布请求失败', 'Market 公開リクエストに失敗')}: {exc}"
@@ -232,7 +293,7 @@ def _notify_market(release_url: str, *, wait: float) -> int:
             else:
                 payload = _response_object(response)
                 if response.status_code not in _MARKET_RETRY_STATUSES:
-                    return _report_market_response(response.status_code, payload)
+                    return _report_market_response(response.status_code, payload, on_publication=on_publication)
                 code = payload.get("code") or f"http_{response.status_code}"
                 reason = f"{code}: {payload.get('detail') or ''}".rstrip(": ")
                 delay = _market_retry_delay(response)
@@ -278,7 +339,10 @@ def _market_retry_delay(response: httpx.Response) -> float:
     return float(min(max(int(retry_after), 1), _MARKET_MAX_RETRY_SECONDS))
 
 
-def _report_market_response(status_code: int, payload: dict) -> int:
+def _report_market_response(
+    status_code: int, payload: dict, *,
+    on_publication: Callable[[MarketPublication], None] | None = None,
+) -> int:
     """Print the ``[MARKET] status=...`` line for a final Market answer."""
     if status_code not in {200, 201, 202}:
         code = payload.get("code") or f"http_{status_code}"
@@ -294,24 +358,8 @@ def _report_market_response(status_code: int, payload: dict) -> int:
         )
         return 1
 
-    status = payload.get("status")
-    version = payload.get("version")
-    version_name = version.get("version") if isinstance(version, dict) else None
-    candidate = payload.get("candidate")
-    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
-    if status_code == 202:
-        expected = (
-            status in _MARKET_REVIEW_STATUSES
-            and isinstance(candidate_id, int)
-            and not isinstance(candidate_id, bool)
-        )
-    else:
-        expected = (
-            (status_code, status) in {(201, "published"), (200, "already_published")}
-            and isinstance(version_name, str)
-            and bool(version_name)
-        )
-    if not expected:
+    publication = parse_market_publication(status_code, payload)
+    if publication is None:
         print(
             "[FAIL] "
             + _tri(
@@ -323,7 +371,13 @@ def _report_market_response(status_code: int, payload: dict) -> int:
         )
         return 1
 
-    print(f"[MARKET] status={status}" + (f" candidate={candidate_id}" if status_code == 202 else ""))
+    if on_publication is not None:
+        on_publication(publication)
+    status = publication.status
+    version_name = publication.version
+    candidate = f" candidate={publication.candidate_id}" if publication.candidate_id is not None else ""
+    receipt = f" request={publication.request_id}" if publication.request_id is not None else ""
+    print(f"[MARKET] status={status}{candidate}{receipt}")
     if status == "published":
         print(
             f"[OK] Market published v{version_name} / "
@@ -363,7 +417,7 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "Market のレビュアーはこの Release を承認済みです",
             )
         )
-    else:
+    elif status == "superseded":
         print(
             "[OK] "
             + _tri(
@@ -372,7 +426,15 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "このバージョンの新しい Release が Market の審査でこれを置き換えました",
             )
         )
+    else:
+        print(f"[OK] Market accepted the notification / Market 已受理通知 / Market が通知を受理しました ({status})")
     return 0
+
+
+@dataclass(frozen=True)
+class GitHubRelease:
+    url: str
+    asset_name: str
 
 
 def _publish_github(
@@ -380,14 +442,24 @@ def _publish_github(
     *,
     defaults: CliDefaults,
     timeout: float,
-) -> str:
+) -> GitHubRelease:
     plugin_dir = resolve_plugin_dir_candidate(plugin, defaults=defaults)
     source = load_plugin_source(plugin_dir)
     _ensure_clean_worktree(plugin_dir)
     _ensure_standard_release_workflow(plugin_dir, plugin_id=source.plugin_id)
     repository = _github_repository(plugin_dir)
     tag = f"v{source.version}"
+    head = _git(plugin_dir, "rev-parse", "HEAD")
+    check_github_release(plugin_dir, defaults=defaults, repository=repository, tag=tag)
+    return publish_github_release(
+        plugin_dir, plugin_id=source.plugin_id, repository=repository, tag=tag, head=head, timeout=timeout
+    )
 
+
+def check_github_release(
+    plugin_dir: Path, *, defaults: CliDefaults, repository: str, tag: str
+) -> None:
+    """Run the local checks in an interpreter that can execute plugin tests."""
     sync_args = argparse.Namespace(
         _defaults=defaults,
         plugin=str(plugin_dir),
@@ -431,22 +503,38 @@ def _publish_github(
                     "リリースチェックに合格しませんでした",
                 )
             )
-    _ensure_clean_worktree(plugin_dir)
-
-    head = _git(plugin_dir, "rev-parse", "HEAD")
-    _ensure_head_pushed(plugin_dir, head=head)
     _ensure_release_ruff_passes(plugin_dir)
+
+
+def publish_github_release(
+    plugin_dir: Path, *, plugin_id: str, repository: str, tag: str, head: str, timeout: float
+) -> GitHubRelease:
+    """Revalidate the checked source before writing the remote tag."""
+    source = load_plugin_source(plugin_dir)
+    _ensure_clean_worktree(plugin_dir)
+    _ensure_standard_release_workflow(plugin_dir, plugin_id=plugin_id)
+    if (
+        source.plugin_id != plugin_id
+        or f"v{source.version}" != tag
+        or _github_repository(plugin_dir).casefold() != repository.casefold()
+        or _git(plugin_dir, "rev-parse", "HEAD") != head
+    ):
+        raise RuntimeError("The plugin source, version or GitHub repository changed during release checks")
+    _ensure_head_pushed(plugin_dir, head=head)
     headers = _github_headers()
     _ensure_public_repository(repository, headers=headers)
     _ensure_remote_tag(plugin_dir, tag=tag, head=head)
-    return _wait_for_release(
+    release = _wait_for_release(
         repository,
-        plugin_id=source.plugin_id,
+        plugin_id=plugin_id,
         tag=tag,
         head=head,
         headers=headers,
         timeout=timeout,
     )
+    if _remote_tag_commit(plugin_dir, tag) != head:
+        raise RuntimeError(f"Remote tag {tag} changed while waiting for its Release")
+    return release
 
 
 def _ensure_standard_release_workflow(
@@ -898,7 +986,7 @@ def _wait_for_release(
     head: str,
     headers: dict[str, str],
     timeout: float,
-) -> str:
+) -> GitHubRelease:
     print(
         "[WAIT] "
         + _tri(
@@ -916,7 +1004,7 @@ def _wait_for_release(
     unready_assets = missing_release_assets({}, plugin_id)
     with httpx.Client(timeout=30.0) as client:
         while True:
-            assets_ready = False
+            asset_name = None
             response = _github_get(client, api_url, headers=headers, deadline=deadline)
             if response.status_code == 200:
                 payload = response.json()
@@ -937,8 +1025,7 @@ def _wait_for_release(
                             "GitHub Release レスポンスに html_url がありません",
                         )
                     )
-                unready_assets = missing_release_assets(payload, plugin_id)
-                assets_ready = not unready_assets
+                asset_name, unready_assets = release_assets(payload, plugin_id)
             elif response.status_code != 404:
                 raise RuntimeError(
                     _tri(
@@ -959,10 +1046,10 @@ def _wait_for_release(
             # The Market refuses a release whose workflow run has not
             # completed with success (release_fetcher.py), and uploading the
             # assets is not the run's last step.
-            if assets_ready and release_ready(unready_assets, workflow_run_state(run)):
-                return release_url
+            if asset_name and release_ready(unready_assets, workflow_run_state(run)):
+                return GitHubRelease(release_url, asset_name)
             if time.monotonic() >= deadline:
-                if assets_ready:
+                if asset_name and not unready_assets:
                     run_state = run.get("status") if run is not None else "not found"
                     raise RuntimeError(
                         _tri(

@@ -175,6 +175,19 @@ $backendPath = Get-BackendPath -BuildPlatform $buildPlatform
 if (-not (Test-Path -LiteralPath $backendPath -PathType Leaf)) {
     throw "Backend artifact is missing: $backendPath. Build the matching local Nuitka backend and place it in N.E.K.O.-PC/bin first."
 }
+if ($buildPlatform -eq 'windows') {
+    $toolManifest = Join-Path (Split-Path -Parent $backendPath) 'plugin-tools/manifest.json'
+    if (-not (Test-Path -LiteralPath $toolManifest -PathType Leaf)) {
+        throw 'Windows plugin tooling is missing. Run scripts/build_plugin_tools.py from the matching N.E.K.O. checkout.'
+    }
+    $toolResources = Get-Content -Raw -LiteralPath $toolManifest | ConvertFrom-Json
+    $toolResources.sha256.PSObject.Properties | ForEach-Object {
+        $resource = Join-Path (Split-Path -Parent $toolManifest) $_.Name
+        if ((Get-FileHash -LiteralPath $resource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.Value) {
+            throw "Windows plugin tooling failed integrity verification: $($_.Name)"
+        }
+    }
+}
 if (-not (Test-Path -LiteralPath (Join-Path $ElectronPath 'package.json') -PathType Leaf)) {
     throw "Electron project package.json is missing under $ElectronPath."
 }

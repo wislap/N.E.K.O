@@ -81,7 +81,7 @@ export const enPages: Record<PublishPageId, PageGuide> = {
           '"Uncommitted changes": some files changed but are not committed; do the three steps above. Files that must not be uploaded (temporary files, secrets) belong in .gitignore.',
           '"HEAD is not pushed": committed but not uploaded; run git push.',
           '"Branch has no upstream": the first upload needs git push -u origin {branch}.',
-          '"release.yml is not current": in the N.E.K.O source folder run uv run neko-plugin setup-repo "{dir}" --upgrade-github-actions, then commit and push.',
+          '"release.yml is not current": preview and apply workflow updates on this page, then commit and push the changes.',
           '"Repository is not public": on the repository page open Settings → Danger Zone at the bottom → Change visibility → Public.',
         ],
       },
