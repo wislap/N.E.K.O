@@ -2,7 +2,6 @@
 import sys
 import os
 import platform
-import subprocess
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PyInstaller.building.build_main import Tree
@@ -391,15 +390,9 @@ sys.path.insert(0, PROJECT_ROOT)
 from scripts.prepare_nuitka_plugins import write_generated_launcher
 
 generated_launcher = Path(workpath) / "build_packaged_launcher.py"
-try:
-    build_commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=10,
-    ).strip()
-except (OSError, subprocess.SubprocessError):
-    build_commit = None
 write_generated_launcher(
     Path(PROJECT_ROOT) / "launcher.py", generated_launcher,
-    excluded_modules=set(), build_commit=build_commit, include_project_worker=True,
+    excluded_modules=set(), include_project_worker=True,
 )
 
 a = Analysis(

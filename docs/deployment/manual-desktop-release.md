@@ -20,7 +20,7 @@ Windows, `projectneko_server` on macOS/Linux). The script packages that backend
 with the locally available Electron signing identity.
 
 Prepare the Nuitka launcher with
-`uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit` before
+`uv run python scripts/prepare_nuitka_plugins.py prepare --project-worker` before
 compiling it. From the same N.E.K.O. checkout, run
 `uv run python scripts/build_plugin_tools.py --backend <backend-executable>`
 using the same Python used for the Nuitka build. On macOS, pass the executable
@@ -31,14 +31,14 @@ For local PyInstaller builds, `specs/launcher.spec` generates the same worker
 entry point. Stage the tool resources beside the executable from that checkout.
 
 Before signing the Portable manifests, the release script checks the tool
-resources and the executable's build commit, then starts the backend extracted
-from the full Portable ZIP or tar.gz in a temporary profile. It loads the plugin
-manager and uses its HTTP endpoints to create a project, update workflows,
-create its repository, run precheck, and exercise all three publication modes.
-On Linux it also checks the resources and build commit inside the AppImage.
+manifest against the source commit and verifies the resource hashes. It then
+starts the backend extracted from the full Portable ZIP or tar.gz in a
+temporary profile. It loads the plugin
+manager and uses its HTTP endpoints to create a project and its repository,
+run local precheck, and publish through GitHub and Market.
+On Linux it also validates the tool resources inside the AppImage.
 Acceptance uses an isolated GitHub CLI fixture, a temporary Git repository,
-and local GitHub and Market test APIs. It cancels and retries a Market
-notification, then restarts the backend and reads the publication receipt.
+and local GitHub and Market test APIs.
 The build pins generated plugin workflows to the build commit when GitHub
 confirms that it is on the official main branch. Other builds use official
 `main` for their generated workflows.

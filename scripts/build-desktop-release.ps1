@@ -275,7 +275,7 @@ try {
 
     $archiveExtension = if ($buildPlatform -eq 'windows') { 'zip' } else { 'tar.gz' }
     $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_$($target.Key).$archiveExtension"
-    Invoke-Checked uv @checkPluginTools '--check-desktop-runtime' $archive
+    Invoke-Checked uv @checkPluginTools $archive
 
     if ($buildPlatform -eq 'linux') {
         $appImages = @(Get-ChildItem -LiteralPath (Join-Path $ElectronPath 'dist') -Filter '*.AppImage' -File)

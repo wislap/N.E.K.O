@@ -252,7 +252,7 @@ jobs:
           if [ -f ".venv/Scripts/python.exe" ]; then
             VENV_PYTHON=".venv/Scripts/python.exe"
           fi
-          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare --build-commit
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare --project-worker
 
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
@@ -1412,21 +1412,23 @@ jobs:
           [[ ${#archives[@]} -eq 1 ]] || { echo "Expected one full Portable archive for $PORTABLE_KEY"; exit 1; }
           uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools-smoke \
             python backend-source/scripts/check_plugin_tools.py "${archives[0]}" \
-              --expected-commit "$GITHUB_SHA" --check-desktop-runtime
+              --expected-commit "$GITHUB_SHA"
 
       - name: Verify plugin workbench in the Linux AppImage
         if: runner.os == 'Linux'
         shell: bash
         env:
-          APPIMAGE_CHECK: ${{ matrix.skip_portable_channel && '--check-desktop-runtime' || '--resources-only' }}
+          PORTABLE_CHANNEL_SKIPPED: ${{ matrix.skip_portable_channel || false }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           appimages=(electron-app/dist/*.AppImage)
           [[ ${#appimages[@]} -eq 1 ]] || { echo "Expected one Linux AppImage"; exit 1; }
+          args=(--expected-commit "$GITHUB_SHA")
+          if [[ "$PORTABLE_CHANNEL_SKIPPED" != "true" ]]; then args+=(--resources-only); fi
           uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools-smoke \
             python backend-source/scripts/check_plugin_tools.py "${appimages[0]}" \
-              --expected-commit "$GITHUB_SHA" "$APPIMAGE_CHECK"
+              "${args[@]}"
 
       - name: List build output
         working-directory: electron-app/dist

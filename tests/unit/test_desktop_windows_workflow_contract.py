@@ -355,13 +355,14 @@ def test_portable_archive_runs_the_desktop_runtime_check_before_release() -> Non
     acceptance_name = "Verify plugin workbench in the Portable archive"
     acceptance = steps[acceptance_name]
     assert acceptance["if"] == "matrix.skip_portable_channel != true"
-    assert "--check-desktop-runtime" in acceptance["run"]
+    assert "scripts/check_plugin_tools.py" in acceptance["run"]
+    assert "--resources-only" not in acceptance["run"]
     names = list(steps)
     assert names.index("Create macOS/Linux Portable directory update assets") < names.index(acceptance_name)
     assert names.index(acceptance_name) < names.index("Upload desktop artifact")
 
     script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
-    assert script.index("'--check-desktop-runtime'") < script.index(
+    assert script.index("Invoke-Checked uv @checkPluginTools $archive") < script.index(
         "Sign-PortableManifests -Directory $portableUpdateDirectory"
     )
 

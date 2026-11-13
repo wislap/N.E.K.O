@@ -140,7 +140,7 @@ jobs:
       - name: Prepare filtered built-in plugins for Nuitka
         shell: bash
         run: |
-          .venv/bin/python scripts/prepare_nuitka_plugins.py prepare --build-commit
+          .venv/bin/python scripts/prepare_nuitka_plugins.py prepare --project-worker
 
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files
@@ -663,7 +663,7 @@ jobs:
           [[ ${#appimages[@]} -eq 1 ]] || { echo "Expected one Linux AppImage"; exit 1; }
           uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools-smoke \
             python backend-source/scripts/check_plugin_tools.py "${appimages[0]}" \
-              --expected-commit "$GITHUB_SHA" --check-desktop-runtime
+              --expected-commit "$GITHUB_SHA"
 
       - name: List build output
         working-directory: electron-app/dist

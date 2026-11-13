@@ -11,11 +11,11 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 
 运行前，请在对应原生主机上构建同版本 Nuitka 后端，并将其放在相邻的 `N.E.K.O.-PC/bin` 目录。Windows 为 `projectneko_server.exe`，macOS/Linux 为 `projectneko_server`。脚本会用本机构建可用的 Electron 签名身份，将该后端一并打包。
 
-编译前运行 `uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit`，将 Git 提交写入后端。随后使用构建 Nuitka 的同一 Python 环境，从同一份 N.E.K.O. 源码执行 `uv run python scripts/build_plugin_tools.py --backend <后端可执行文件>`。macOS 传入 `projectneko_server.app/Contents/MacOS/projectneko_server`，并在签名之前生成工具资源。将后端复制到 N.E.K.O.-PC 时，同时保留该 `.app` 和外层的 `bin/projectneko_server` 启动脚本。
+编译前运行 `uv run python scripts/prepare_nuitka_plugins.py prepare --project-worker`，生成带插件工作进程入口的启动文件。随后使用构建 Nuitka 的同一 Python 环境，从同一份 N.E.K.O. 源码执行 `uv run python scripts/build_plugin_tools.py --backend <后端可执行文件>`。macOS 传入 `projectneko_server.app/Contents/MacOS/projectneko_server`，并在签名之前生成工具资源。将后端复制到 N.E.K.O.-PC 时，同时保留该 `.app` 和外层的 `bin/projectneko_server` 启动脚本。
 
 本地使用 PyInstaller 时，`specs/launcher.spec` 会生成同一个插件工作进程入口。使用同一份源码将工具资源放到后端可执行文件旁。
 
-为 Portable manifest 签名前，发布脚本会校验工具资源与后端提交，从完整的 Portable ZIP 或 tar.gz 解压后端，并在临时用户目录中启动。验收通过实际 HTTP 接口加载插件管理页面，检查项目创建、工作流更新、建仓、预检和三种发布模式。GitHub CLI、Git 仓库和 GitHub、Market 接口均使用隔离的测试环境。脚本会取消并重试 Market 通知，然后重启后端读取发布回执。Linux 还会校验 AppImage 内的资源及后端提交。GitHub 确认构建提交已进入官方 `main` 时，生成的插件工作流固定到该提交。其余构建生成的工作流引用官方 `main`。
+为 Portable manifest 签名前，发布脚本会核对工具清单中的源码提交和文件哈希。随后从完整的 Portable ZIP 或 tar.gz 解压后端，并在临时用户目录中启动。验收通过实际 HTTP 接口加载插件管理页面，检查项目创建、建仓、本地预检，以及发布 GitHub Release 后通知 Market 的流程。GitHub CLI、Git 仓库和 GitHub、Market 接口均使用隔离的测试环境。Linux 还会校验 AppImage 内的工具资源。GitHub 确认构建提交已进入官方 `main` 时，生成的插件工作流固定到该提交。其余构建生成的工作流引用官方 `main`。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `

@@ -14,6 +14,8 @@ from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
 
+_REPO_RESULT = '{"repository_url": "https://github.com/octocat/n.e.k.o_plugin_demo"}'
+
 
 def _completed(returncode: int, stdout: str):
     async def run(argv, **kwargs):
@@ -34,11 +36,22 @@ def test_exit_zero_is_created_and_extracts_the_repository_url(monkeypatch):
     _patch(
         monkeypatch,
         returncode=0,
-        stdout='[OK] repository ready\n{"repository_url": "https://github.com/octocat/n.e.k.o_plugin_demo"}',
+        stdout=f"[OK] repository ready\n{_REPO_RESULT}",
     )
     result = _run(monkeypatch)
     assert result["status"] == "created"
     assert result["repository_url"] == "https://github.com/octocat/n.e.k.o_plugin_demo"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["", "[OK] repository ready", '{"repository_url": ""}', '{"repository_url": null}', '{"repository_url": "invalid"}'],
+)
+async def test_exit_zero_without_a_repository_url_is_a_domain_error(monkeypatch, stdout):
+    _patch(monkeypatch, returncode=0, stdout=stdout)
+    with pytest.raises(ServerDomainError) as excinfo:
+        await repo_tasks._run(Path("/plugins/demo"), private=False)
+    assert excinfo.value.code == "REPO_CREATE_FAILED"
 
 
 def test_exit_three_is_manual_and_keeps_the_steps_in_the_log(monkeypatch):
@@ -91,7 +104,7 @@ def test_private_flag_is_forwarded_to_the_cli(monkeypatch):
         captured["argv"] = argv
         captured["merge_stderr"] = kwargs.get("merge_stderr")
         return subprocess.CompletedProcess(
-            argv, 0, "[OK] repository ready: https://github.com/o/n.e.k.o_plugin_demo", ""
+            argv, 0, _REPO_RESULT, ""
         )
 
     monkeypatch.setattr(repo_tasks, "run_cli", _capture)
@@ -113,7 +126,7 @@ async def test_create_repo_is_refused_while_the_project_is_busy(monkeypatch):
 
 
 def test_create_repo_releases_the_project_when_done(monkeypatch):
-    _patch(monkeypatch, returncode=0, stdout="")
+    _patch(monkeypatch, returncode=0, stdout=_REPO_RESULT)
     monkeypatch.setattr(repo_tasks, "_record_source_dir", lambda _id: Path("/plugins/demo"))
     assert asyncio.run(repo_tasks.create_repository("p1"))["status"] == "created"
     assert "p1" not in commands._busy

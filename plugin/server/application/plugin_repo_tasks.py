@@ -7,7 +7,7 @@ short-lived, so this runs it inline and returns a single structured outcome
 rather than registering a long-lived task like ``plugin_publish_tasks``.
 
 Outcomes mirror the CLI's exit codes:
-  - ``created``  -- the repository now exists and ``origin`` is wired (exit 0)
+  - ``created``  -- the worker exited successfully and returned the repository URL
   - ``manual``   -- ``gh`` is unavailable or not signed in; the log carries the
                     steps to do it by hand (exit 3)
   - ``failed``   -- anything else (name taken, foreign origin, git error)
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_remote
 from plugin.server.application.plugin_project_commands import (
     project_operation,
     project_worker_command,
@@ -78,11 +79,17 @@ async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
     output = completed.stdout or ""
     lines = output.splitlines()
     repository_url = ""
-    if completed.returncode == 0 and lines and lines[-1].startswith('{"repository_url":'):
+    if completed.returncode == 0:
         try:
-            repository_url = json.loads(lines.pop())["repository_url"]
+            if not lines or not lines[-1].startswith('{"repository_url":'):
+                raise ValueError("Repository URL is missing")
+            url = json.loads(lines.pop())["repository_url"]
+            repository = parse_github_repository_remote(url) if isinstance(url, str) else None
+            if not repository:
+                raise ValueError("Repository URL is missing or invalid")
+            repository_url = f"https://github.com/{repository}"
         except (ValueError, TypeError, KeyError) as exc:
-            raise project_error(Code.REPO_CREATE_FAILED, "Invalid repository worker result", 500) from exc
+            raise project_error(Code.REPO_CREATE_FAILED, "Repository worker did not return a valid URL", 500) from exc
     log = _clip("\n".join(lines))
     if completed.returncode == 0:
         status: RepoCreateStatus = "created"

@@ -168,8 +168,7 @@ def test_desktop_workflows_stage_and_check_plugin_tools(path: Path) -> None:
     assert list(backend).index(stage) < list(backend).index("Upload Python backend artifact")
     if path == CROSS_PLATFORM_WORKFLOW:
         assert list(backend).index(stage) < list(backend).index("Re-sign macOS backend after post-processing")
-    else:
-        assert "--build-commit" in backend["Prepare filtered built-in plugins for Nuitka"]["run"]
+    assert "--project-worker" in backend["Prepare filtered built-in plugins for Nuitka"]["run"]
 
     desktop = _steps(workflow, "build-electron")
     acceptance = "Verify plugin workbench in the Linux AppImage"

@@ -205,18 +205,17 @@ def write_generated_launcher(
     generated_launcher: Path,
     *,
     excluded_modules: set[str],
-    build_commit: str | None,
     include_project_worker: bool = False,
 ) -> None:
     source_text = source_launcher.read_text(encoding="utf-8-sig")
-    if build_commit is not None or include_project_worker:
+    if include_project_worker:
         marker = "    _freeze_support()\n"
         if source_text.count(marker) != 1:
             raise ValueError(f"Expected one freeze-support call in {source_launcher}")
         dispatch = (
             '    if sys.argv[1:2] == ["--neko-plugin-project-worker"]:\n'
             "        from plugin.neko_plugin_cli.project_worker import main as _project_worker\n"
-            f"        sys.exit(_project_worker(sys.argv[2:], build_commit={build_commit!r}))\n"
+            "        sys.exit(_project_worker(sys.argv[2:]))\n"
         )
         source_text = source_text.replace(marker, marker + dispatch, 1)
     directives = [
@@ -238,7 +237,7 @@ def prepare_plugins(
     stage_dir: Path,
     source_launcher: Path,
     generated_launcher: Path,
-    build_commit: str | None = None,
+    include_project_worker: bool = False,
 ) -> PrepareResult:
     project_root = project_root.resolve()
     plugins_root = (project_root / plugins_root).resolve() if not plugins_root.is_absolute() else plugins_root.resolve()
@@ -301,7 +300,7 @@ def prepare_plugins(
         source_launcher,
         generated_launcher,
         excluded_modules=excluded_modules,
-        build_commit=build_commit,
+        include_project_worker=include_project_worker,
     )
 
     manifest = {
@@ -376,7 +375,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--stage-dir", type=Path, default=DEFAULT_STAGE_DIR)
     prepare_parser.add_argument("--source-launcher", type=Path, default=Path("launcher.py"))
     prepare_parser.add_argument("--output-launcher", type=Path, default=DEFAULT_GENERATED_LAUNCHER)
-    prepare_parser.add_argument("--build-commit", action="store_true", help="Embed the current checkout's Git commit")
+    prepare_parser.add_argument("--project-worker", action="store_true", help="Include the plugin workbench worker")
 
     install_parser = subparsers.add_parser("install", help="install staged plugins into a Nuitka dist")
     install_parser.add_argument("--stage-dir", type=Path, default=DEFAULT_STAGE_DIR)
@@ -387,18 +386,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "prepare":
-        build_commit = None
-        if args.build_commit:
-            build_commit = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=args.project_root, text=True,
-            ).strip()
         result = prepare_plugins(
             project_root=args.project_root,
             plugins_root=args.plugins_root,
             stage_dir=args.stage_dir,
             source_launcher=args.source_launcher,
             generated_launcher=args.output_launcher,
-            build_commit=build_commit,
+            include_project_worker=args.project_worker,
         )
         print(
             f"Prepared {len(result.plugin_dirs)} built-in plugin directories with "

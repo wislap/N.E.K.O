@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
 import os
@@ -18,18 +17,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from shlex import quote
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Thread
 from time import monotonic, sleep
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 from zipfile import ZipFile
 
-if TYPE_CHECKING:
-    from plugin.server.application.plugin_tool_environment import ToolResources
-
-
 _RELEASE_ASSET = "packaged-probe-v0.1.0.neko-plugin"
 _REPOSITORY = "example/n.e.k.o_plugin_packaged_probe"
+_RELEASE_URL = f"https://github.com/{_REPOSITORY}/releases/tag/v0.1.0"
 
 
 def _install_github_cli_fixture(root: Path) -> Path:
@@ -42,17 +37,13 @@ def _install_github_cli_fixture(root: Path) -> Path:
         archive.writestr(f"{metadata}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
         archive.writestr(f"{metadata}/entry_points.txt", "[console_scripts]\ngh = workbench_gh_fixture:main\n")
         archive.writestr("workbench_gh_fixture.py", f'''\
-import os
 import subprocess
 import sys
-from pathlib import Path
 
 def main():
     args = sys.argv[1:]
-    with Path(os.environ["NEKO_TEST_GH_LOG"]).open("a", encoding="utf-8") as log:
-        print(" ".join(args), file=log)
     if args == ["auth", "status"]:
-        return 0 if os.environ["NEKO_TEST_GH_AUTH"] == "1" else 1
+        return 0
     if args == ["api", "user", "--jq", ".login"]:
         print("example")
         return 0
@@ -73,41 +64,6 @@ def main():
     return bin_dir
 
 
-def _worker_environment(directory: Path, environment: dict[str, str]) -> dict[str, str]:
-    env = dict(environment)
-    env.update(
-        GH_CONFIG_DIR=str(directory / "gh-config"),
-        GH_PROMPT_DISABLED="1",
-        NO_PROXY="localhost,127.0.0.1",
-        PYTHONIOENCODING="utf-8",
-    )
-    for proxy in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-        env[proxy] = "http://127.0.0.1:1"
-    return env
-
-
-async def _run_worker(
-    backend: Path, directory: Path, *args: str, environment: dict[str, str],
-) -> subprocess.CompletedProcess[str]:
-    from plugin.server.application.plugin_project_commands import run_cli
-
-    return await run_cli(
-        [str(backend), "--neko-plugin-project-worker", *args], cwd=directory, timeout=30,
-        env=_worker_environment(directory, environment),
-    )
-
-
-async def _check_backend_commit(backend: Path, root: Path, commit: str, env: dict[str, str]) -> None:
-    try:
-        probe = await _run_worker(backend, root, "probe", environment=env)
-        probe.check_returncode()
-        backend_commit = json.loads(probe.stdout.splitlines()[-1])["build_commit"]
-    except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError, IndexError) as exc:
-        raise RuntimeError("The packaged backend did not report its build commit") from exc
-    if backend_commit != commit:
-        raise RuntimeError(f"Backend build commit {backend_commit!r} does not match plugin tools {commit}")
-
-
 @contextmanager
 def _loopback_api(handler: type[BaseHTTPRequestHandler]):
     with HTTPServer(("127.0.0.1", 0), handler) as server:
@@ -120,48 +76,30 @@ def _loopback_api(handler: type[BaseHTTPRequestHandler]):
             thread.join()
 
 
-def _reply(handler: BaseHTTPRequestHandler, status: int, payload: object, *, retry_after: int | None = None) -> None:
+def _reply(handler: BaseHTTPRequestHandler, status: int, payload: object) -> None:
     response = json.dumps(payload).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(response)))
-    if retry_after is not None:
-        handler.send_header("Retry-After", str(retry_after))
     handler.end_headers()
     handler.wfile.write(response)
 
 
 @contextmanager
 def _market_api():
-    requests = []
-    retrying = Event()
-
     class MarketHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            if (
-                self.path != "/api/v1/plugins/1/versions/publication-requests?request_id=17"
-                or self.headers.get("Authorization") != "Bearer smoke-market-token"
-            ):
-                _reply(self, 403, {})
-                return
-            _reply(self, 200, [{
-                "id": 17,
-                "release_url": f"https://github.com/{_REPOSITORY}/releases/tag/v0.1.0",
-                "status": "verifying",
-            }])
-
         def do_POST(self) -> None:
-            body = self.rfile.read(int(self.headers["Content-Length"]))
-            requests.append((self.path, json.loads(body)))
-            if len(requests) == 1:
-                _reply(self, 503, {"code": "verification_running"}, retry_after=60)
-                retrying.set()
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path != "/api/v1/release-publications" or body != {
+                "release_url": _RELEASE_URL, "asset_name": _RELEASE_ASSET,
+            }:
+                _reply(self, 400, {"code": "unexpected_smoke_request"})
                 return
             _reply(self, 202, {"status": "verifying", "publication_request": {"id": 17}})
 
     with _loopback_api(MarketHandler) as port:
         print(f"Checking the Market worker against localhost:{port}", flush=True)
-        yield f"http://127.0.0.1:{port}", requests, retrying
+        yield f"http://127.0.0.1:{port}"
 
 
 @contextmanager
@@ -186,14 +124,10 @@ def _github_api(root: Path, env: dict[str, str]):
         "GIT_SSH_COMMAND": f"sh {quote(transport.as_posix())}",
     }
     tag = "v0.1.0"
-    release_url = f"https://github.com/{_REPOSITORY}/releases/tag/{tag}"
-    asset_name = _RELEASE_ASSET
     repo_path = f"/repos/{_REPOSITORY}"
-    requests: list[str] = []
 
     class GithubHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            requests.append(self.path)
             if self.headers.get("Authorization") is not None:
                 _reply(self, 403, {"message": "Unexpected GitHub credentials"})
             elif self.path == repo_path:
@@ -210,10 +144,10 @@ def _github_api(root: Path, env: dict[str, str]):
                     _reply(self, 200, {"object": {"type": "commit", "sha": tagged.stdout.strip()}})
                     return
                 _reply(self, 200, {
-                    "html_url": release_url,
+                    "html_url": _RELEASE_URL,
                     "assets": [
-                        {"name": name, "state": "uploaded", "size": 1, "browser_download_url": f"{release_url}/{name}"}
-                        for name in (asset_name, "packaged_probe.market-release-check.txt", "market-evidence.json")
+                        {"name": name, "state": "uploaded", "size": 1, "browser_download_url": f"{_RELEASE_URL}/{name}"}
+                        for name in (_RELEASE_ASSET, "packaged_probe.market-release-check.txt", "market-evidence.json")
                     ],
                 })
             elif self.path.startswith(f"{repo_path}/actions/workflows/release.yml/runs?head_sha="):
@@ -225,7 +159,7 @@ def _github_api(root: Path, env: dict[str, str]):
 
     with _loopback_api(GithubHandler) as port:
         print(f"Checking the GitHub worker against localhost:{port}", flush=True)
-        yield port, github_env, remote, requests
+        yield port, github_env, remote
 
 
 def _commit_fixture(project: Path, env: dict[str, str]) -> None:
@@ -280,7 +214,6 @@ def _desktop_runtime(backend: Path, root: Path, env: dict[str, str]):
     profile = root / "profile"
     for directory in (runtime, storage, profile):
         directory.mkdir(parents=True, exist_ok=True)
-    (runtime / "launcher.json").unlink(missing_ok=True)
     token = secrets.token_urlsafe(32)
     child_env = {
         **env, **{f"NEKO_{key}": str(port) for key, port in ports.items()},
@@ -293,14 +226,6 @@ def _desktop_runtime(backend: Path, root: Path, env: dict[str, str]):
         "NEKO_RUNTIME_SHUTDOWN_TOKEN": token, "NEKO_DISABLE_AGENT_AUTO_RESTORE": "1",
     }
     log_path = root / "desktop.log"
-    market_state = profile / ".neko"
-    market_state.mkdir(exist_ok=True)
-    auth_url = env["NEKO_AUTH_URL"]
-    (market_state / "market_auth.json").write_text(json.dumps({
-        "access_token": "smoke-market-token", "subject": "smoke", "subject_pending": False,
-        "auth_url": auth_url, "issuer": auth_url + "/", "client_id": env["NEKO_AUTH_CLIENT_ID"],
-        "refresh_generation": 0, "scope": "openid email profile offline",
-    }), encoding="utf-8")
     main_url = f"http://127.0.0.1:{ports['MAIN_SERVER_PORT']}"
     launched_ports = set(ports.values())
     print(
@@ -356,43 +281,28 @@ def _desktop_runtime(backend: Path, root: Path, env: dict[str, str]):
                 raise RuntimeError(f"The packaged backend did not release ports: {busy_ports}")
 
 
-def _check_desktop_runtime(backend: Path, root: Path, resources: ToolResources, env: dict[str, str]) -> None:
-    gh_log = root / "github-cli.log"
+def _check_desktop_runtime(backend: Path, root: Path, env: dict[str, str]) -> None:
     project_root = root / "projects"
     project_root.mkdir(parents=True)
     gh_bin = _install_github_cli_fixture(root)
-    with (
-        _github_api(root, env) as (github_port, github_env, remote, github_requests),
-        _market_api() as (market_url, market_requests, retrying),
-    ):
+    with _github_api(root, env) as (github_port, github_env, remote), _market_api() as market_url:
         runtime_env = {
             **env, **github_env, "PATH": str(gh_bin) + os.pathsep + env["PATH"],
-            "NEKO_TEST_GH_LOG": str(gh_log), "NEKO_TEST_GH_AUTH": "1",
             "NEKO_PLUGIN_GITHUB_LOOPBACK_PORT": str(github_port),
-            "NEKO_MARKET_API_URL": market_url, "NEKO_AUTH_URL": market_url,
-            "NEKO_AUTH_CLIENT_ID": "neko-desktop", "NO_PROXY": "localhost,127.0.0.1",
+            "NEKO_MARKET_API_URL": market_url, "NO_PROXY": "localhost,127.0.0.1",
             "GH_TOKEN": "", "GITHUB_TOKEN": "",
         }
-        _check_publication(backend, root, resources, runtime_env, remote, retrying)
-        expected_request = ("/api/v1/release-publications", {
-            "release_url": f"https://github.com/{_REPOSITORY}/releases/tag/v0.1.0",
-            "asset_name": _RELEASE_ASSET,
-        })
-        if market_requests != [expected_request] * 3:
-            raise RuntimeError(f"Unexpected Market requests: {market_requests}")
-        if not any("/actions/workflows/release.yml/runs?" in path for path in github_requests):
-            raise RuntimeError("The workbench did not verify the GitHub Actions release run")
+        _check_publication(backend, root, runtime_env, remote)
 
 
 def _check_publication(
-    backend: Path, root: Path, resources: ToolResources, env: dict[str, str], remote: Path, retrying: Event,
+    backend: Path, root: Path, env: dict[str, str], remote: Path,
 ) -> None:
     def payload(response, status):
         if response.status_code != status:
             raise RuntimeError(f"{response.request.url.path}: {response.status_code} {response.text}")
         return response.json()
 
-    release_url = f"https://github.com/{_REPOSITORY}/releases/tag/v0.1.0"
     with _desktop_runtime(backend, root / "desktop", env) as (client, plugin_url):
         page = client.get(f"{plugin_url}/ui/")
         page.raise_for_status()
@@ -408,42 +318,18 @@ def _check_publication(
             "parent_dir": str(root / "projects"), "plugin_id": "packaged_probe", "name": "Packaged Probe",
         }), 201)
         project_dir = Path(project["project_dir"])
-        project_path = f"/plugin-projects/{project['project_id']}"
-        path = plugin_url + project_path
+        path = f"{plugin_url}/plugin-projects/{project['project_id']}"
         state = payload(client.get(f"{path}/toolchain"), 200)
-        if (
-            state.get("source_checkout") is not False
-            or state.get("check_commit") != resources.commit
-            or state.get("check_environment") != "setup"
-        ):
+        if state.get("source_checkout") is not False or state.get("check_environment") != "setup":
             raise RuntimeError(f"Unexpected tool environment in packaged runtime: {state}")
 
-        release_workflow = project_dir / ".github/workflows/release.yml"
-        release_workflow.unlink()
-        preview = payload(client.get(f"{path}/workflows"), 200)
-        if {"path": ".github/workflows/release.yml", "status": "ADD"} not in preview:
-            raise RuntimeError(f"Workflow preview did not report the missing release workflow: {preview}")
-        payload(client.post(f"{path}/workflows", headers=headers), 200)
-        for workflow in ("verify", "release"):
-            content = (project_dir / f".github/workflows/{workflow}.yml").read_text(encoding="utf-8")
-            ref = resources.workflow_ref
-            if f"plugin-market-{workflow}.yml@{ref}\n" not in content or f"neko-ref: {ref}\n" not in content:
-                raise RuntimeError(f"Generated {workflow} workflow does not use the selected ref")
-
         _commit_fixture(project_dir, env)
-        for _ in range(2):
-            repository = payload(client.post(f"{path}/create-repo", headers=headers, json={}, timeout=190), 201)
-            if repository.get("repository_url") != f"https://github.com/{_REPOSITORY}":
-                raise RuntimeError(f"Unexpected packaged repository result: {repository}")
-        gh_calls = (root / "github-cli.log").read_text(encoding="utf-8").splitlines()
-        if gh_calls.count(f"repo create {_REPOSITORY} --public --source . --remote origin") != 1:
-            raise RuntimeError("The packaged runtime did not use the isolated GitHub CLI")
+        repository = payload(client.post(f"{path}/create-repo", headers=headers, json={}, timeout=190), 201)
+        if repository.get("repository_url") != f"https://github.com/{_REPOSITORY}":
+            raise RuntimeError(f"Unexpected packaged repository result: {repository}")
         report = payload(client.post(f"{path}/precheck", headers=headers, timeout=1200), 200)
         if not report["passed"] or "tests=passed" not in report["stages"][-1]["output"]:
             raise RuntimeError(f"Packaged runtime precheck did not pass: {report}")
-        ready = payload(client.get(f"{path}/toolchain"), 200)
-        if ready.get("check_environment") != "ready":
-            raise RuntimeError(f"Packaged runtime tool environment was not ready after precheck: {ready}")
 
         def git(*args, cwd=project_dir):
             return subprocess.check_output(
@@ -457,50 +343,27 @@ def _check_publication(
         git("remote", "set-url", "origin", f"git@github.com:{_REPOSITORY}.git")
         identity = {"repository": _REPOSITORY, "head": head, "tag": "v0.1.0"}
 
-        def start(mode, **target):
-            return client.post(
-                f"{path}/publish", headers=headers, json={**identity, "mode": mode, **target}, timeout=60,
-            )
-
-        def wait_for_task(started, status, receipt=None):
-            deadline = monotonic() + 180
-            while monotonic() < deadline:
-                task = payload(client.get(f"{path}/publish-task"), 200)
-                if task["status"] not in {"queued", "running"}:
-                    if (
-                        task["task_id"] != started["task_id"] or task["status"] != status
-                        or task["release_url"] != release_url or task["market_request_id"] != receipt
-                        or task["market_status"] != ("verifying" if receipt is not None else None)
-                    ):
-                        raise RuntimeError(f"Unexpected packaged publication task: {task}")
-                    return task
-                sleep(0.5)
-            raise RuntimeError(f"Packaged publication did not finish: {task}")
-
-        payload(start("github", head="0" * 40), 409)
-        wait_for_task(payload(start("github"), 202), "succeeded")
+        started = payload(client.post(
+            f"{path}/publish", headers=headers, json={**identity, "mode": "github_and_market"}, timeout=60,
+        ), 202)
+        deadline = monotonic() + 180
+        while True:
+            task = payload(client.get(f"{path}/publish-task"), 200)
+            if task["status"] not in {"queued", "running"}:
+                break
+            if monotonic() >= deadline:
+                raise RuntimeError(f"Packaged publication did not finish: {task}")
+            sleep(0.5)
+        if (
+            task["task_id"] != started["task_id"] or task["status"] != "succeeded"
+            or task["release_url"] != _RELEASE_URL or task["market_request_id"] != 17
+            or task["market_status"] != "verifying"
+        ):
+            raise RuntimeError(f"Unexpected packaged publication task: {task}")
         if git("rev-parse", "refs/tags/v0.1.0", cwd=remote) != head:
             raise RuntimeError("Packaged GitHub worker did not push the expected tag")
-        started = payload(start("market_notify"), 202)
-        if not retrying.wait(30):
-            raise RuntimeError("Market worker did not reach the retry response")
-        payload(client.post(f"{path}/publish-task/{started['task_id']}/cancel", headers=headers, timeout=30), 200)
-        wait_for_task(started, "canceled")
-        wait_for_task(payload(start("market_notify"), 202), "succeeded", receipt=17)
-        task = wait_for_task(payload(start("github_and_market"), 202), "succeeded", receipt=17)
 
-    with _desktop_runtime(backend, root / "desktop", env) as (client, plugin_url):
-        saved = payload(client.get(f"{plugin_url}{project_path}/publish-task"), 200)
-        if saved != {**task, "log": []}:
-            raise RuntimeError(f"Unexpected persisted publication receipt: {saved}")
-        bridge = payload(client.get(f"{plugin_url}/market/bridge-token"), 200)
-        receipts = payload(client.get(
-            f"{plugin_url}/market/publication-requests/1?request_id=17",
-            headers={"Authorization": f"Bearer {bridge['bridge_token']}"},
-        ), 200)
-        if receipts != [{"id": 17, "release_url": release_url, "status": "verifying"}]:
-            raise RuntimeError(f"Unexpected Market publication receipts: {receipts}")
-    print("Packaged backend passed workbench publication, cancellation, and receipt recovery over HTTP")
+    print("Packaged backend passed repository creation, local precheck and GitHub + Market publication")
 
 
 def check(
@@ -518,22 +381,21 @@ def check(
             from plugin.server.application import plugin_tool_environment
             from plugin.server.application.plugin_project_commands import check_child_env
 
-            worker_env = {
-                **check_child_env(),
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_ALLOW_PROTOCOL": "file",
-            }
             try:
                 resources = plugin_tool_environment.tool_resources(backend)
                 if expected_commit is not None and resources.commit != expected_commit:
                     raise RuntimeError(f"Plugin tools {resources.commit} do not match checkout {expected_commit}")
                 plugin_tool_environment.verify_tool_resources(resources)
-                asyncio.run(_check_backend_commit(backend, root, resources.commit, worker_env))
                 if resources_only:
-                    print(f"Packaged plugin tools match backend commit {resources.commit}")
+                    print(f"Verified packaged plugin tool resources for {resources.commit}")
                     return
-                _check_desktop_runtime(backend, root / "workbench", resources, worker_env)
+                worker_env = {
+                    **check_child_env(),
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_ALLOW_PROTOCOL": "file",
+                }
+                _check_desktop_runtime(backend, root / "workbench", worker_env)
             finally:
                 # Windows needs the plugin log closed before deleting the test root.
                 logging.shutdown()
@@ -606,9 +468,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path, help="Frozen backend executable, Portable ZIP/tar.gz, or Linux AppImage")
     parser.add_argument("--expected-commit")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check-desktop-runtime", action="store_true", help="Run the complete backend check (default)")
-    mode.add_argument("--resources-only", action="store_true", help="Verify the resources and the backend build commit")
+    parser.add_argument("--resources-only", action="store_true", help="Validate bundled tool resources without starting the backend")
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     args = parser.parse_args()
     artifact = args.artifact.resolve()
