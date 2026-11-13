@@ -1,3 +1,4 @@
+import json
 import os
 import tarfile
 from io import BytesIO
@@ -5,9 +6,32 @@ from zipfile import ZipFile
 
 import pytest
 
-from launcher_core import bootstrap
+from plugin.neko_plugin_cli import tool_resources
 from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
 from scripts import build_plugin_tools, check_plugin_tools
+
+
+@pytest.mark.parametrize(("status", "behind", "trusted"), [("ahead", 0, True), ("diverged", 9, False)])
+def test_workflow_ref_uses_only_commits_on_official_main(monkeypatch, status, behind, trusted):
+    commit = "a" * 40
+    comparison = {
+        "status": status, "behind_by": behind,
+        "base_commit": {"sha": commit}, "merge_base_commit": {"sha": commit if trusted else "b" * 40},
+    }
+    monkeypatch.setattr(build_plugin_tools, "urlopen", lambda url, timeout: BytesIO(json.dumps(comparison).encode()))
+    assert build_plugin_tools._workflow_ref(commit) == (commit if trusted else "main")
+
+
+def test_checks_keep_uv_configuration_and_isolate_host_tokens(monkeypatch):
+    from plugin.server.application.plugin_project_commands import check_child_env
+
+    config = {"UV_SYSTEM_CERTS": "1", "UV_OFFLINE": "1", "UV_CONFIG_FILE": "custom.toml"}
+    for key, value in config.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GH_TOKEN", "smoke-secret")
+    env = check_child_env()
+    assert {key: env.get(key) for key in config} == config
+    assert "GH_TOKEN" not in env
 
 
 def test_tool_build_failure_leaves_destination_available_for_retry(tmp_path, monkeypatch):
@@ -125,12 +149,10 @@ def test_packaged_desktop_path_preserves_existing_tool_precedence(tmp_path, monk
     user_bin = home / ".local" / "bin"
     user_bin.mkdir(parents=True)
     existing = str(tmp_path / "system" / "bin")
-    monkeypatch.setattr(bootstrap, "IS_FROZEN", True)
-    monkeypatch.setattr(bootstrap.sys, "platform", "linux")
-    monkeypatch.setattr(bootstrap.Path, "home", lambda: home)
+    monkeypatch.setattr(tool_resources.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(tool_resources.sys, "platform", "linux")
+    monkeypatch.setattr(tool_resources.Path, "home", lambda: home)
     monkeypatch.setenv("PATH", existing)
 
-    bootstrap._configure_desktop_tool_path()
-    bootstrap._configure_desktop_tool_path()
-
-    assert os.get_exec_path() == [existing, str(user_bin)]
+    assert tool_resources.workbench_tool_path().split(os.pathsep) == [existing, str(user_bin)]
+    assert os.get_exec_path() == [existing]

@@ -13,7 +13,9 @@ description: 在各原生主机上构建、签名并验证桌面资产，再由�
 
 编译前运行 `uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit`，将 Git 提交写入后端。随后使用构建 Nuitka 的同一 Python 环境，从同一份 N.E.K.O. 源码执行 `uv run python scripts/build_plugin_tools.py --backend <后端可执行文件>`。macOS 传入 `projectneko_server.app/Contents/MacOS/projectneko_server`，并在签名之前生成工具资源。将后端复制到 N.E.K.O.-PC 时，同时保留该 `.app` 和外层的 `bin/projectneko_server` 启动脚本。
 
-为 Portable manifest 签名前，发布脚本会校验工具资源与后端提交，从完整的 Portable ZIP 或 tar.gz 解压后端，在临时用户目录中启动，加载插件管理页面，并通过实际 HTTP 接口新建项目和预检。Linux 还会校验 AppImage 内的资源及后端提交。验收使用隔离的 GitHub CLI 测试程序、临时 Git 仓库和本机的 GitHub、Market 测试接口，检查建仓、三种发布模式、Market 通知取消与重试，以及清除内存中的任务后能否读取回执。
+本地使用 PyInstaller 时，`specs/launcher.spec` 会生成同一个插件工作进程入口。使用同一份源码将工具资源放到后端可执行文件旁。
+
+为 Portable manifest 签名前，发布脚本会校验工具资源与后端提交，从完整的 Portable ZIP 或 tar.gz 解压后端，并在临时用户目录中启动。验收通过实际 HTTP 接口加载插件管理页面，检查项目创建、工作流更新、建仓、预检和三种发布模式。GitHub CLI、Git 仓库和 GitHub、Market 接口均使用隔离的测试环境。脚本会取消并重试 Market 通知，然后重启后端读取发布回执。Linux 还会校验 AppImage 内的资源及后端提交。GitHub 确认构建提交已进入官方 `main` 时，生成的插件工作流固定到该提交。其余构建生成的工作流引用官方 `main`。
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `
@@ -47,6 +49,6 @@ $env:NEKO_UPDATE_ADMIN_TOKEN = '<secret>'
   -ServiceUrl 'https://update.project-neko.cn'
 ```
 
-此发布脚本仅支持稳定版。它默认复用相邻 `N.E.K.O.-Launcher/src/portable-manifest.js` 中受信任的 manifest 校验器；仅当 Launcher 仓库不在相邻位置时，才像上例一样向 `publish-desktop-release-assets.ps1` 传入 `-ManifestVerifierPath`。它直接上传已暂存的构建产物，不会从 GitHub 下载它们。上传前会校验暂存文件名与已发布 Release 完全一致，并确认每个 Portable manifest 都有对应 `.sig` 文件。不可变 OSS 对象绝不覆盖：只有对象 SHA-256 与暂存资产相同，才允许重复执行。
+此发布脚本仅支持稳定版。它默认查找相邻的 `N.E.K.O.-Launcher/src/portable-manifest.js`，也支持相邻的 `launcher` 仓库和原有的 `N.E.K.O.-PC/src/main/portable-update.js` 布局。使用自定义路径时，向 `publish-desktop-release-assets.ps1` 传入 `-ManifestVerifierPath`。脚本直接上传已暂存的构建产物。上传前会校验暂存文件名与已发布 Release 完全一致，并确认每个 Portable manifest 都有对应 `.sig` 文件。只有 OSS 对象的 SHA-256 与暂存资产相同，才允许重复执行。
 
 在登记 `aliyun` 镜像前，脚本会从 CDN 下载每一份资产，并与暂存资产比较 SHA-256。OSS 凭证、Endpoint 和 Bucket 名仅保存在本地 `ossutil` 配置中，绝不能写入 GitHub Actions、仓库变量或仓库文件。

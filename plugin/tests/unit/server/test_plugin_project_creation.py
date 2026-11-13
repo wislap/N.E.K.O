@@ -206,6 +206,12 @@ async def test_workflow_preview_and_apply_preserve_custom_files(app, tmp_path, m
             PluginSpec(data["plugin_id"], workflow_ref=commit)
         )
 
+        monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: None)
+        monkeypatch.setattr(plugin_projects, "packaged_workflow_ref", lambda: "main")
+        result = await http.post(route)
+        assert {"path": ".github/workflows/release.yml", "status": "UPGRADE"} in result.json()
+        assert release.read_text(encoding="utf-8") == original
+
         custom = "# custom release workflow\n"
         release.write_text(custom, encoding="utf-8")
         verify = release.with_name("verify.yml")
@@ -373,7 +379,7 @@ async def test_invalid_registered_project_keeps_its_id_reserved(app, tmp_path):
 
 @pytest.mark.asyncio
 async def test_missing_git_leaves_no_partial_project(app, tmp_path, monkeypatch):
-    monkeypatch.setattr(creator.shutil, "which", lambda name: None)
+    monkeypatch.setattr(creator.shutil, "which", lambda name, *, path: None)
     async with client(app) as http:
         result = await http.post("/plugin-projects/create", json=request(tmp_path))
     assert result.json()["detail"]["code"] == "GIT_NOT_FOUND"

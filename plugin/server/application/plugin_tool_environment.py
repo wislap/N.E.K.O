@@ -40,6 +40,7 @@ class ToolResources:
     root: Path
     key: str
     commit: str
+    workflow_ref: str
     python: str
     wheel: str
     hashes: dict[str, str]
@@ -64,12 +65,15 @@ class ToolResources:
 
 
 def tool_resources(backend: Path | None = None) -> ToolResources:
+    from plugin.neko_plugin_cli.templates.generator import MARKET_ACTIONS_NEKO_REF
+
     root = plugin_tool_resources_dir(backend or Path(sys.executable))
     try:
         contents = (root / "manifest.json").read_bytes()
         manifest = json.loads(contents)
         wheel = manifest["wheel"]
         commit = manifest["commit"]
+        workflow_ref = manifest.get("workflow_ref", MARKET_ACTIONS_NEKO_REF)
         python = manifest["python"]
         hashes = manifest["sha256"]
         if (
@@ -77,6 +81,7 @@ def tool_resources(backend: Path | None = None) -> ToolResources:
             or manifest["platform"] != sys.platform
             or manifest["architecture"] != platform.machine().lower()
             or not re.fullmatch(r"[a-f0-9]{40}", commit)
+            or workflow_ref not in (MARKET_ACTIONS_NEKO_REF, commit)
             or not re.fullmatch(r"3\.11\.\d+", python)
             or not re.fullmatch(r"[A-Za-z0-9_.-]+\.whl", wheel)
             or set(hashes) != {wheel, "requirements.txt", "pytest.ini"}
@@ -87,7 +92,7 @@ def tool_resources(backend: Path | None = None) -> ToolResources:
             raise ValueError("incomplete tooling resources")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ToolEnvironmentError("This N.E.K.O. package has no compatible plugin tooling resources") from exc
-    return ToolResources(root, hashlib.sha256(contents).hexdigest(), commit, python, wheel, hashes)
+    return ToolResources(root, hashlib.sha256(contents).hexdigest(), commit, workflow_ref, python, wheel, hashes)
 
 
 def packaged_workflow_ref() -> str:
@@ -96,7 +101,7 @@ def packaged_workflow_ref() -> str:
     if not (getattr(sys, "frozen", False) or "__compiled__" in globals()):
         return MARKET_ACTIONS_NEKO_REF
     try:
-        return tool_resources().commit
+        return tool_resources().workflow_ref
     except ToolEnvironmentError:
         return MARKET_ACTIONS_NEKO_REF
 
@@ -113,19 +118,19 @@ def verify_tool_resources(resources: ToolResources) -> None:
 
 
 async def _prepare(resources: ToolResources, env: dict[str, str]) -> None:
-    uv = shutil.which("uv")
-    if uv is None or shutil.which("uvx") is None:
+    uv = shutil.which("uv", path=env["PATH"])
+    if uv is None or shutil.which("uvx", path=env["PATH"]) is None:
         raise ToolEnvironmentError("Install uv and uvx to prepare the plugin tool environment")
     await asyncio.to_thread(verify_tool_resources, resources)
     root = resources.environment_root
     # uv must use a version-matched interpreter even on machines with another
     # Python installed. Keep its download and install state outside the bundle.
-    bootstrap_env = {key: value for key, value in env.items() if not key.startswith("UV_")}
+    bootstrap_env = dict(env)
     bootstrap_env["UV_PYTHON_INSTALL_DIR"] = str(root.parent / "python")
     commands = [
-        [uv, "venv", "--no-config", "--no-project", "--managed-python", "--clear",
+        [uv, "venv", "--no-project", "--managed-python", "--clear",
          "--python", resources.python, str(root)],
-        [uv, "pip", "sync", "--no-config", "--require-hashes", "--only-binary", ":all:",
+        [uv, "pip", "sync", "--require-hashes", "--only-binary", ":all:",
          "--python", str(resources.executable), str(resources.root / "requirements.txt")],
         [uv, "pip", "install", "--no-config", "--no-deps",
          "--python", str(resources.executable), str(resources.root / resources.wheel)],

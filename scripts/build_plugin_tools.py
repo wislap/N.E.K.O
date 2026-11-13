@@ -11,9 +11,34 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _workflow_ref(commit: str) -> str:
+    from plugin.neko_plugin_cli.templates.generator import (
+        MARKET_ACTIONS_NEKO_REF,
+        MARKET_ACTIONS_NEKO_REPOSITORY,
+    )
+
+    url = (
+        f"https://api.github.com/repos/{MARKET_ACTIONS_NEKO_REPOSITORY}"
+        f"/compare/{commit}...{MARKET_ACTIONS_NEKO_REF}?per_page=1"
+    )
+    try:
+        with urlopen(url, timeout=10) as response:
+            comparison = json.load(response)
+        if (
+            comparison["status"] in {"ahead", "identical"}
+            and comparison["behind_by"] == 0
+            and comparison["base_commit"]["sha"] == commit
+            and comparison["merge_base_commit"]["sha"] == commit
+        ):
+            return commit
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return MARKET_ACTIONS_NEKO_REF
 
 
 def stage(destination: Path) -> None:
@@ -52,6 +77,7 @@ def _build_resources(destination: Path) -> None:
     manifest = {
         "schema": 1,
         "commit": commit,
+        "workflow_ref": _workflow_ref(commit),
         "platform": sys.platform,
         "architecture": platform.machine().lower(),
         "python": platform.python_version(),
@@ -62,6 +88,7 @@ def _build_resources(destination: Path) -> None:
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(ROOT))
     parser = argparse.ArgumentParser(description=__doc__)
     destination = parser.add_mutually_exclusive_group(required=True)
     destination.add_argument("directory", nargs="?", type=Path, help="Tool resource directory")
@@ -70,7 +97,6 @@ if __name__ == "__main__":
     if args.backend:
         if not args.backend.is_file():
             parser.error(f"Backend executable not found: {args.backend}")
-        sys.path.insert(0, str(ROOT))
         from plugin.neko_plugin_cli.tool_resources import plugin_tool_resources_dir
 
         stage(plugin_tool_resources_dir(args.backend))

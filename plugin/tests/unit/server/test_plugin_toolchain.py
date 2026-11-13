@@ -8,7 +8,7 @@ from plugin.server.application import plugin_toolchain as toolchain
 
 
 def _fake_tools(monkeypatch, installed: set[str], outputs: dict[tuple[str, ...], str | None]):
-    monkeypatch.setattr(toolchain.shutil, "which", lambda name: f"/bin/{name}" if name in installed else None)
+    monkeypatch.setattr(toolchain.shutil, "which", lambda name, *, path: f"/bin/{name}" if name in installed else None)
     calls: list[tuple[str, ...]] = []
 
     def run(argv, **_kwargs):

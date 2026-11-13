@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 import httpx
 
+from plugin.utils.github_auth import GITHUB_API_URL as _GITHUB_API_URL
 from plugin.utils.github_auth import github_headers as _github_headers
 from plugin.utils.github_release import (
     missing_release_assets,
@@ -37,7 +38,6 @@ from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candida
 _MARKET_PUBLICATION_URL = (
     "https://market.project-neko.cn/api/v1/release-publications"
 )
-_GITHUB_API_URL = "https://api.github.com"
 _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 # Unauthenticated callers get 60 GitHub API requests per hour per IP.
 _RELEASE_POLL_SECONDS = 15.0

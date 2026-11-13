@@ -22,7 +22,6 @@ def main(argv: list[str] | None = None, *, build_commit: str | None = None) -> i
     github.add_argument("tag")
     github.add_argument("head")
     github.add_argument("timeout", type=float)
-    github.add_argument("--loopback-api", metavar="PORT", type=int, help=argparse.SUPPRESS)
     market = commands.add_parser("market")
     market.add_argument("url")
     market.add_argument("wait", type=float)
@@ -45,14 +44,11 @@ def main(argv: list[str] | None = None, *, build_commit: str | None = None) -> i
         from .commands import publish_cmd
 
         if args.operation == "github":
-            github_options = {}
-            if args.loopback_api is not None:
-                if not 1 <= args.loopback_api <= 65535:
-                    parser.error("loopback API port must be between 1 and 65535")
-                github_options["api_url"] = f"http://127.0.0.1:{args.loopback_api}"
+            from plugin.utils.github_auth import github_api_url
+
             release = publish_cmd.publish_github_release(
                 args.directory, plugin_id=args.plugin_id, repository=args.repository,
-                tag=args.tag, head=args.head, timeout=args.timeout, **github_options,
+                tag=args.tag, head=args.head, timeout=args.timeout, api_url=github_api_url(),
             )
             print(json.dumps({"release_url": release.url, "asset_name": release.asset_name}), flush=True)
             return 0

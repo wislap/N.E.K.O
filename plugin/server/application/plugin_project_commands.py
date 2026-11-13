@@ -20,6 +20,7 @@ from pathlib import Path
 import psutil
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.tool_resources import workbench_tool_path
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 
@@ -74,6 +75,7 @@ def cli_child_env() -> dict[str, str]:
     # UTF-8, whatever the Windows code page is.
     return {
         **os.environ,
+        "PATH": workbench_tool_path(),
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
@@ -90,6 +92,9 @@ def check_child_env() -> dict[str, str]:
         "NEKO_PLUGIN_MARKET_SECURITY_CHECKS",
         "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
         "UV", "UV_INDEX", "UV_DEFAULT_INDEX", "UV_CACHE_DIR",
+        "UV_CONFIG_FILE", "UV_OFFLINE", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS",
+        "UV_EXTRA_INDEX_URL", "UV_INDEX_URL", "UV_FIND_LINKS", "UV_NO_INDEX",
+        "UV_PYTHON_DOWNLOADS", "UV_PYTHON_INSTALL_MIRROR",
         "PYTHONUTF8", "PYTHONIOENCODING", "PYTHONUNBUFFERED",
     }
     return {

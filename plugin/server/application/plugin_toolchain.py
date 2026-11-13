@@ -76,7 +76,7 @@ def _version(output: str | None) -> str | None:
 
 
 def _git(project_dir: Path | None) -> GitState:
-    if shutil.which("git") is None:
+    if shutil.which("git", path=cli_child_env()["PATH"]) is None:
         return {"installed": False, "version": None, "user_name": None, "user_email": None}
     # The identity a commit in the plugin's own folder gets: its repository
     # config, then the global and system ones. Without a folder, global only;
@@ -96,13 +96,14 @@ def _git(project_dir: Path | None) -> GitState:
 
 def _uv() -> ToolState:
     # ``uvx`` ships with uv; the checks call it, so it is the one that must resolve.
-    if shutil.which("uv") is None or shutil.which("uvx") is None:
+    path = cli_child_env()["PATH"]
+    if shutil.which("uv", path=path) is None or shutil.which("uvx", path=path) is None:
         return {"installed": False, "version": None}
     return {"installed": True, "version": _version(_run("uv", "--version"))}
 
 
 def _gh() -> GhState:
-    if shutil.which("gh") is None:
+    if shutil.which("gh", path=cli_child_env()["PATH"]) is None:
         return {"installed": False, "version": None, "authenticated": False, "login": None}
     with ThreadPoolExecutor(max_workers=3) as pool:
         version = pool.submit(_run, "gh", "--version")

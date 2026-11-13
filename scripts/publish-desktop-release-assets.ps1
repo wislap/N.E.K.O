@@ -134,9 +134,12 @@ if ([string]::IsNullOrWhiteSpace($ManifestVerifierPath)) {
     if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
         $ManifestVerifierPath = Join-Path $workspaceRoot 'launcher/src/portable-manifest.js'
     }
+    if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
+        $ManifestVerifierPath = Join-Path $workspaceRoot 'N.E.K.O.-PC/src/main/portable-update.js'
+    }
 }
 if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
-    throw "Manifest verifier not found at $ManifestVerifierPath. Checkout N.E.K.O.-Launcher as a sibling directory or pass -ManifestVerifierPath explicitly."
+    throw "Manifest verifier not found at $ManifestVerifierPath. Checkout N.E.K.O.-Launcher or N.E.K.O.-PC as a sibling directory or pass -ManifestVerifierPath explicitly."
 }
 $ManifestVerifierPath = (Resolve-Path -LiteralPath $ManifestVerifierPath).Path
 

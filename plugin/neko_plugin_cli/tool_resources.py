@@ -1,6 +1,18 @@
-"""Locate the workbench tool resources in a packaged N.E.K.O. backend."""
+"""Locate the plugin tools used by the desktop workbench."""
 
+import os
+import sys
 from pathlib import Path
+
+
+def workbench_tool_path() -> str:
+    path = os.get_exec_path()
+    if (getattr(sys, "frozen", False) or "__compiled__" in globals()) and sys.platform in {"darwin", "linux"}:
+        directories = [str(Path.home() / ".local" / "bin")]
+        if sys.platform == "darwin":
+            directories.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+        path.extend(directory for directory in directories if directory not in path and Path(directory).is_dir())
+    return os.pathsep.join(path)
 
 
 def plugin_tool_resources_dir(backend: Path) -> Path:

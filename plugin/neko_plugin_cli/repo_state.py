@@ -8,6 +8,7 @@ the live remote with ``ls-remote``.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from plugin.utils.source_paths import VENDOR_SYNC_GLOBS
 
 from .commands._resolve import parse_github_repository_remote
+from .tool_resources import workbench_tool_path
 
 _GIT_TIMEOUT_SECONDS = 15
 # Enough paths to tell the user what to commit without flooding the panel.
@@ -63,6 +65,7 @@ def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
             errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
+            env={**os.environ, "PATH": workbench_tool_path()},
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -188,7 +191,7 @@ def strip_url_credentials(url: str) -> str:
 def read_repo_state(plugin_dir: Path, *, version: str) -> RepoState:
     """Describe the plugin directory's own git repository for release ``v<version>``."""
     tag = f"v{version}"
-    if shutil.which("git") is None:
+    if shutil.which("git", path=workbench_tool_path()) is None:
         return RepoState(git_available=False, is_repository=False, tag=tag)
     # Like ``publish``, the plugin directory must own its repository.
     if not (plugin_dir / ".git").exists():

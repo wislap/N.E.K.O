@@ -5,6 +5,19 @@ from __future__ import annotations
 import os
 import subprocess
 
+from plugin.neko_plugin_cli.tool_resources import workbench_tool_path
+
+
+GITHUB_API_URL = "https://api.github.com"
+
+
+def github_api_url() -> str:
+    """Use a local GitHub fixture when running desktop release acceptance."""
+    port = os.environ.get("NEKO_PLUGIN_GITHUB_LOOPBACK_PORT", "")
+    if port.isascii() and port.isdecimal() and len(port) <= 5 and 1 <= int(port) <= 65535:
+        return f"http://127.0.0.1:{int(port)}"
+    return GITHUB_API_URL
+
 
 def gh_auth_token() -> str | None:
     try:
@@ -15,6 +28,7 @@ def gh_auth_token() -> str | None:
             errors="replace",
             timeout=20,
             check=False,
+            env={**os.environ, "PATH": workbench_tool_path()},
         )
     except (OSError, subprocess.SubprocessError):
         return None

@@ -20,14 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import (
-    _configure_desktop_tool_path,
-    _ensure_utf8_filesystem_encoding,
-    _pin_project_root_first,
-)
-
-
-_BUILD_COMMIT = None
+from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
 
 
 if __name__ == "__main__":
@@ -36,10 +29,6 @@ if __name__ == "__main__":
     from multiprocessing import freeze_support as _freeze_support
 
     _freeze_support()
-    if sys.argv[1:2] == ["--neko-plugin-project-worker"]:
-        from plugin.neko_plugin_cli.project_worker import main as _project_worker
-
-        sys.exit(_project_worker(sys.argv[2:], build_commit=_BUILD_COMMIT))
     # Local development overrides live in the git-ignored project .env.  Load
     # them before any config module is imported so a normal manual launch uses
     # the same settings as every spawned backend process.
@@ -48,7 +37,6 @@ if __name__ == "__main__":
 
     _load_dotenv(_Path(__file__).resolve().with_name(".env"), override=False)
     _ensure_utf8_filesystem_encoding()
-    _configure_desktop_tool_path()
     if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _wake_freeze_support
         _wake_freeze_support()

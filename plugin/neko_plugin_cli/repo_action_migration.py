@@ -73,6 +73,7 @@ def migrate_github_actions(
     target_dir: Path,
     *,
     dry_run: bool = False,
+    update_workflow_ref: bool = False,
 ) -> list[ActionFileChange]:
     """Plan and apply conflict-free standard GitHub Actions file changes."""
     rendered = {
@@ -99,6 +100,7 @@ def migrate_github_actions(
                     status = (
                         ActionFileStatus.CURRENT
                         if spec.workflow_ref == MARKET_ACTIONS_NEKO_REF
+                        and not update_workflow_ref
                         and existing.startswith(MARKET_ACTIONS_MANAGED_HEADER)
                         else ActionFileStatus.UPGRADE
                     )

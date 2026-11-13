@@ -670,6 +670,7 @@ async def update_project_workflows(project_id: str, *, apply: bool) -> list[dict
                 PluginSpec(plugin_id=source.plugin_id, workflow_ref=packaged_workflow_ref()),
                 record.source_dir,
                 dry_run=not apply,
+                update_workflow_ref=source_repo_root() is None,
             )
         except (OSError, ValueError) as exc:
             raise project_error(Code.PROJECT_IO_FAILED, str(exc), 400) from exc

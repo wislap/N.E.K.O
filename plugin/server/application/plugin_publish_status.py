@@ -20,7 +20,7 @@ from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
 from plugin.server.infrastructure import authoring_project_store as store
-from plugin.utils.github_auth import github_headers
+from plugin.utils.github_auth import GITHUB_API_URL, github_api_url, github_headers
 from plugin.utils.github_release import (
     WorkflowState,
     release_assets,
@@ -30,7 +30,6 @@ from plugin.utils.github_release import (
 )
 from plugin.utils.http_imports import ensure_httpx
 
-_GITHUB_API = "https://api.github.com"
 _CACHE_SECONDS = 60.0
 # A verify still running or a release still uploading can change any moment;
 # keep it only long enough that opening the tab twice does not ask GitHub twice.
@@ -155,8 +154,9 @@ async def _read(
 ) -> RemoteGithubState:
     httpx = await ensure_httpx()
     client = _shared_client(httpx)
+    api_url = github_api_url()
     if headers is None:
-        headers = await asyncio.to_thread(github_headers)
+        headers = await asyncio.to_thread(github_headers) if api_url == GITHUB_API_URL else {}
     result = _unknown()
     definitive = True
 
@@ -165,7 +165,7 @@ async def _read(
         global _rate_limited_until
         global _rate_limit_credential
         try:
-            response = await client.get(f"{_GITHUB_API}{path}", headers=headers)
+            response = await client.get(f"{api_url}{path}", headers=headers)
         except httpx.HTTPError:
             result["reachable"] = False
             definitive = False
@@ -297,7 +297,7 @@ async def read_remote_github(
             return cached[1]
     headers = None
     if time.monotonic() < _rate_limited_until:
-        headers = await asyncio.to_thread(github_headers)
+        headers = await asyncio.to_thread(github_headers) if github_api_url() == GITHUB_API_URL else {}
         # Signing in must not keep waiting out the anonymous quota.
         if hash(headers.get("Authorization", "")) == _rate_limit_credential:
             return _unknown(rate_limited=True)

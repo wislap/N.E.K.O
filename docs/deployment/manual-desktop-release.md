@@ -27,21 +27,26 @@ using the same Python used for the Nuitka build. On macOS, pass the executable
 at `projectneko_server.app/Contents/MacOS/projectneko_server` and stage the tools
 before signing the backend bundle. Keep both the bundle and its outer
 `bin/projectneko_server` launcher when copying the backend to N.E.K.O.-PC.
+For local PyInstaller builds, `specs/launcher.spec` generates the same worker
+entry point. Stage the tool resources beside the executable from that checkout.
 
 Before signing the Portable manifests, the release script checks the tool
 resources and the executable's build commit, then starts the backend extracted
 from the full Portable ZIP or tar.gz in a temporary profile. It loads the plugin
-manager and uses its HTTP endpoints to create a project and run precheck.
+manager and uses its HTTP endpoints to create a project, update workflows,
+create its repository, run precheck, and exercise all three publication modes.
 On Linux it also checks the resources and build commit inside the AppImage.
-The acceptance test exercises
-repository setup and all three publication modes using an isolated
-GitHub CLI fixture, a temporary Git repository, and local GitHub and Market test
-APIs. It checks that a Market notification can be canceled and retried, and that
-the resulting receipt remains available after the in-memory task is cleared.
+Acceptance uses an isolated GitHub CLI fixture, a temporary Git repository,
+and local GitHub and Market test APIs. It cancels and retries a Market
+notification, then restarts the backend and reads the publication receipt.
+The build pins generated plugin workflows to the build commit when GitHub
+confirms that it is on the official main branch. Other builds use official
+`main` for their generated workflows.
 
 The publishing script also reuses the trusted manifest verifier from the sibling
-`N.E.K.O.-Launcher/src/portable-manifest.js` checkout. If the Launcher repository is stored
-elsewhere, pass its full path with `-ManifestVerifierPath`.
+`N.E.K.O.-Launcher/src/portable-manifest.js` checkout. It also supports the
+`launcher` checkout and the existing `N.E.K.O.-PC/src/main/portable-update.js`
+layout. For a custom layout, pass the full verifier path with `-ManifestVerifierPath`.
 
 ```powershell
 ./scripts/build-desktop-release.ps1 `

@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+
+from ..tool_resources import workbench_tool_path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -55,6 +57,7 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
             errors="replace",
             check=True,
             timeout=30,
+            env={**os.environ, "PATH": workbench_tool_path()},
         )
     except (OSError, subprocess.SubprocessError) as exc:
         detail = getattr(exc, "stderr", None) or str(exc)
@@ -70,7 +73,7 @@ def create_project(
     git_runner: Callable[..., None] = _run_git,
 ) -> list[Path]:
     files = prepare_project(spec, target_dir, repo_root=repo_root)
-    if shutil.which("git") is None:
+    if shutil.which("git", path=workbench_tool_path()) is None:
         raise ProjectCreationError(
             "GIT_NOT_FOUND", "Git is required to initialize the plugin repository"
         )

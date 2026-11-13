@@ -112,12 +112,12 @@ def test_generated_launcher_reports_the_embedded_commit(tmp_path: Path) -> None:
         build_commit=commit,
     )
     env = {**os.environ, "PYTHONPATH": str(root)}
-    for launcher, expected in ((prepared.generated_launcher, commit), (root / "launcher.py", None)):
-        result = subprocess.run(
-            [sys.executable, str(launcher), "--neko-plugin-project-worker", "probe"],
-            cwd=project_root, env=env, capture_output=True, text=True, check=True, timeout=30,
-        )
-        assert json.loads(result.stdout) == {"build_commit": expected}
+    result = subprocess.run(
+        [sys.executable, str(prepared.generated_launcher), "--neko-plugin-project-worker", "probe"],
+        cwd=project_root, env=env, capture_output=True, text=True, check=True, timeout=30,
+    )
+    assert json.loads(result.stdout) == {"build_commit": commit}
+    assert "--neko-plugin-project-worker" not in (root / "launcher.py").read_text(encoding="utf-8")
 
 
 def test_prepare_skips_plugin_directory_missing_plugin_toml(tmp_path: Path) -> None:
