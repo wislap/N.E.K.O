@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, build_commit: str | None = None) -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="operation", required=True)
     commands.add_parser("probe")
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     market.add_argument("--endpoint", required=True)
     args = parser.parse_args(argv)
     if args.operation == "probe":
-        print("plugin-project-worker-v1", flush=True)
+        print(json.dumps({"build_commit": build_commit}), flush=True)
         return 0
     import httpx
 

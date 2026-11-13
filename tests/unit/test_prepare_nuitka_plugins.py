@@ -98,6 +98,28 @@ def test_prepare_and_install_plugins_apply_neko_build_rules(tmp_path: Path) -> N
     assert not (destination / ".nuitka-stage.json").exists()
 
 
+def test_generated_launcher_reports_the_embedded_commit(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    project_root = tmp_path / "repo"
+    _write(project_root / "plugin/plugins/demo/plugin.toml", '[plugin]\nid = "demo"\n')
+    commit = "1" * 40
+    prepared = prepare_plugins(
+        project_root=project_root,
+        plugins_root=Path("plugin/plugins"),
+        stage_dir=Path("build/nuitka-plugins"),
+        source_launcher=root / "launcher.py",
+        generated_launcher=Path("build_nuitka_launcher.py"),
+        build_commit=commit,
+    )
+    env = {**os.environ, "PYTHONPATH": str(root)}
+    for launcher, expected in ((prepared.generated_launcher, commit), (root / "launcher.py", None)):
+        result = subprocess.run(
+            [sys.executable, str(launcher), "--neko-plugin-project-worker", "probe"],
+            cwd=project_root, env=env, capture_output=True, text=True, check=True, timeout=30,
+        )
+        assert json.loads(result.stdout) == {"build_commit": expected}
+
+
 def test_prepare_skips_plugin_directory_missing_plugin_toml(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     plugins_root = project_root / "plugin" / "plugins"

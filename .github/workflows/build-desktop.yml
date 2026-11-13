@@ -252,7 +252,7 @@ jobs:
           if [ -f ".venv/Scripts/python.exe" ]; then
             VENV_PYTHON=".venv/Scripts/python.exe"
           fi
-          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare
+          "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py prepare --build-commit
 
       # --- Generate runtime config files (not tracked in git) ---
       - name: Generate default config files

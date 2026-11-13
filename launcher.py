@@ -23,6 +23,9 @@ import sys
 from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
 
 
+_BUILD_COMMIT = None
+
+
 if __name__ == "__main__":
     # Frozen spawn workers must consume their private arguments before loading
     # dotenv, release modes, or the launcher runtime (which starts services).
@@ -32,7 +35,7 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--neko-plugin-project-worker"]:
         from plugin.neko_plugin_cli.project_worker import main as _project_worker
 
-        sys.exit(_project_worker(sys.argv[2:]))
+        sys.exit(_project_worker(sys.argv[2:], build_commit=_BUILD_COMMIT))
     # Local development overrides live in the git-ignored project .env.  Load
     # them before any config module is imported so a normal manual launch uses
     # the same settings as every spawned backend process.

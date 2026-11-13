@@ -19,8 +19,11 @@ it in the adjacent `N.E.K.O.-PC/bin` directory (`projectneko_server.exe` on
 Windows, `projectneko_server` on macOS/Linux). The script packages that backend
 with the locally available Electron signing identity.
 
-For Windows, run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
-from the same N.E.K.O. checkout used to build the backend.
+For Windows, prepare the Nuitka launcher with
+`uv run python scripts/prepare_nuitka_plugins.py prepare --build-commit` before
+compiling it. Run `uv run python scripts/build_plugin_tools.py <PC checkout>/bin/plugin-tools`
+from the same N.E.K.O. checkout. The release check compares the commit reported
+by the executable with the commit in the tooling manifest.
 Before signing, the release script extracts the generated Windows ZIP and checks
 the workbench HTTP endpoints for project creation, repository setup, plugin
 precheck, and all three publication modes. The acceptance test uses an isolated

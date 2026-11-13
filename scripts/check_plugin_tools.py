@@ -78,14 +78,26 @@ def _worker_environment(directory: Path, environment: dict[str, str]) -> dict[st
     return env
 
 
-def _run_worker(
+async def _run_worker(
     backend: Path, directory: Path, *args: str, environment: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(backend), "--neko-plugin-project-worker", *args], cwd=directory,
-        timeout=30, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    from plugin.server.application.plugin_project_commands import run_cli
+
+    return await run_cli(
+        [str(backend), "--neko-plugin-project-worker", *args], cwd=directory, timeout=30,
         env=_worker_environment(directory, environment),
     )
+
+
+async def _check_backend_commit(backend: Path, root: Path, commit: str, env: dict[str, str]) -> None:
+    try:
+        probe = await _run_worker(backend, root, "probe", environment=env)
+        probe.check_returncode()
+        backend_commit = json.loads(probe.stdout.strip())["build_commit"]
+    except (subprocess.SubprocessError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError("The packaged backend did not report its build commit") from exc
+    if backend_commit != commit:
+        raise RuntimeError(f"Backend build commit {backend_commit!r} does not match plugin tools {commit}")
 
 
 @contextmanager
@@ -273,8 +285,8 @@ async def _check_workbench_routes(
             with ZipFile(target / "packaged_probe.neko-plugin") as package:
                 if not any(name.endswith("/plugin.meta.json") for name in package.namelist()):
                     raise RuntimeError("Plugin tools did not generate packaged metadata")
-            stale = await asyncio.to_thread(
-                _run_worker, backend, root, "github", str(project), "packaged_probe",
+            stale = await _run_worker(
+                backend, root, "github", str(project), "packaged_probe",
                 repository.removeprefix("https://github.com/"), "v0.1.0", "0" * 40, "0", environment=env,
             )
             if stale.returncode != 1 or "changed during release checks" not in stale.stdout:
@@ -396,13 +408,13 @@ def check(backend: Path, expected_commit: str | None = None) -> None:
         }
         worker_env = {**check_child_env(), **git_env}
 
-        gh_bin = _install_github_cli_fixture(root)
-
         with patch.object(sys, "executable", str(backend)):
             resources = plugin_tool_environment.tool_resources()
             if expected_commit is not None and resources.commit != expected_commit:
-                raise RuntimeError("Plugin tool version differs from the backend build")
+                raise RuntimeError(f"Plugin tools {resources.commit} do not match checkout {expected_commit}")
         try:
+            asyncio.run(_check_backend_commit(backend, root, resources.commit, worker_env))
+            gh_bin = _install_github_cli_fixture(root)
             asyncio.run(_check_workbench_routes(backend, root, gh_bin, resources.commit, worker_env))
         finally:
             # The in-process routes open the plugin log under the test root.
