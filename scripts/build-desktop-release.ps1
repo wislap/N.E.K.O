@@ -219,6 +219,7 @@ $packagePath = Join-Path $ElectronPath 'package.json'
 $originalPackage = [System.IO.File]::ReadAllBytes($packagePath)
 $oldPortableBuild = $env:NEKO_PORTABLE_BUILD
 $oldSigningDiscovery = $env:CSC_IDENTITY_AUTO_DISCOVERY
+$oldPath = $env:PATH
 $previousDirectory = $null
 
 Push-Location $ElectronPath
@@ -226,6 +227,8 @@ try {
     if (-not $SkipNpmInstall) {
         Invoke-Checked npm 'ci'
     }
+    # build-electron-distribution.js invokes electron-builder by name, as npm run does.
+    $env:PATH = (Join-Path $ElectronPath 'node_modules/.bin') + [IO.Path]::PathSeparator + $oldPath
 
     $package = Get-Content -Raw -Encoding UTF8 -LiteralPath $packagePath | ConvertFrom-Json
     $package.version = $Version
@@ -336,6 +339,7 @@ finally {
     [System.IO.File]::WriteAllBytes($packagePath, $originalPackage)
     $env:NEKO_PORTABLE_BUILD = $oldPortableBuild
     $env:CSC_IDENTITY_AUTO_DISCOVERY = $oldSigningDiscovery
+    $env:PATH = $oldPath
     if ($previousDirectory) {
         Remove-Item -LiteralPath $previousDirectory -Recurse -Force -ErrorAction SilentlyContinue
     }
