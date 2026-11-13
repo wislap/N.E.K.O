@@ -176,11 +176,19 @@ if (-not (Test-Path -LiteralPath $backendPath -PathType Leaf)) {
     throw "Backend artifact is missing: $backendPath. Build the matching local Nuitka backend and place it in N.E.K.O.-PC/bin first."
 }
 if ($buildPlatform -eq 'windows') {
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        throw 'uv is required for the Windows plugin workbench acceptance check.'
+    }
+    $backendSource = Split-Path -Parent $PSScriptRoot
+    $sourceCommit = (Invoke-Checked git '-C' $backendSource 'rev-parse' 'HEAD').Trim()
     $toolManifest = Join-Path (Split-Path -Parent $backendPath) 'plugin-tools/manifest.json'
     if (-not (Test-Path -LiteralPath $toolManifest -PathType Leaf)) {
         throw 'Windows plugin tooling is missing. Run scripts/build_plugin_tools.py from the matching N.E.K.O. checkout.'
     }
     $toolResources = Get-Content -Raw -LiteralPath $toolManifest | ConvertFrom-Json
+    if ($toolResources.commit -ne $sourceCommit) {
+        throw 'Windows plugin tooling was built from a different N.E.K.O. commit.'
+    }
     $toolResources.sha256.PSObject.Properties | ForEach-Object {
         $resource = Join-Path (Split-Path -Parent $toolManifest) $_.Name
         if ((Get-FileHash -LiteralPath $resource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.Value) {
@@ -277,6 +285,13 @@ try {
         $updateArgs += @('--previous', $previousManifest)
     }
     Invoke-Checked node @updateArgs
+
+    if ($buildPlatform -eq 'windows') {
+        $archive = Join-Path $portableUpdateDirectory "N.E.K.O_${Version}_win.zip"
+        $checkArgs = @('run', '--project', $backendSource, '--locked', '--only-group', 'plugin-tools',
+            'python', (Join-Path $PSScriptRoot 'check_plugin_tools.py'), $archive, '--expected-commit', $sourceCommit)
+        Invoke-Checked uv @checkArgs
+    }
 
     if ($buildPlatform -eq 'linux') {
         $appImages = @(Get-ChildItem -LiteralPath (Join-Path $ElectronPath 'dist') -Filter '*.AppImage' -File)

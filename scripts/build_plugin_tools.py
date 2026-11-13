@@ -26,7 +26,7 @@ def stage(destination: Path) -> None:
     requirements = destination / "requirements.txt"
     subprocess.run(
         ["uv", "export", "--locked", "--only-group", "plugin-tools", "--no-emit-project",
-         "--output-file", str(requirements)],
+         "--no-header", "--output-file", str(requirements)],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
         check=True,

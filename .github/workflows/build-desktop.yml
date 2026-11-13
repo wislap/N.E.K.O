@@ -836,11 +836,6 @@ jobs:
         shell: pwsh
         run: .venv/Scripts/python.exe scripts/build_plugin_tools.py dist/Xiao8/plugin-tools
 
-      - name: Verify Windows plugin workbench tools
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .venv/Scripts/python.exe scripts/check_plugin_tools.py dist/Xiao8/projectneko_server.exe
-
       - name: Smoke test frozen Owner voice identity runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -1093,6 +1088,17 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron-app/package-lock.json
 
+      - name: Check out workbench acceptance tests
+        if: runner.os == 'Windows'
+        uses: actions/checkout@v4
+        with:
+          path: backend-source
+          persist-credentials: false
+
+      - name: Install uv for workbench acceptance
+        if: runner.os == 'Windows'
+        uses: astral-sh/setup-uv@v4
+
       - name: Download Python backend artifact
         uses: actions/download-artifact@v4
         with:
@@ -1231,22 +1237,6 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
-      - name: Verify plugin workbench in Windows desktop artifact
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $backend = Resolve-Path 'electron-app/dist/win-unpacked/resources/bin/projectneko_server.exe'
-          & $backend --neko-plugin-project-worker probe
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $manifest = Get-Content -Raw (Join-Path (Split-Path $backend.Path) 'plugin-tools/manifest.json') | ConvertFrom-Json
-          if ($manifest.commit -ne '${{ github.sha }}') { throw 'Plugin tool version differs from the backend build' }
-          $manifest.sha256.PSObject.Properties | ForEach-Object {
-            $file = Join-Path (Split-Path $backend.Path) "plugin-tools/$($_.Name)"
-            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $_.Value) {
-              throw "Plugin tool resource failed integrity verification: $($_.Name)"
-            }
-          }
-
       # `builder_target_args` 只有 linux-arm64 非空。N.E.K.O.-PC 的 package.json 把
       # build.linux.target 三个 target 的 arch 写死成 ["x64"]，而 electron-builder 的
       # computeArchToTargetNamesMap 只在 CLI 显式给了 target 名时才无视配置里的 arch：
@@ -1354,6 +1344,16 @@ jobs:
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
             ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
+
+      - name: Verify plugin workbench in the Windows desktop ZIP
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath electron-app/dist/portable-update -File -Filter '*_win.zip')
+          if ($archives.Count -ne 1) { throw 'Expected one full Windows desktop ZIP' }
+          uv run --project backend-source --locked --only-group plugin-tools `
+            python backend-source/scripts/check_plugin_tools.py $archives[0].FullName --expected-commit '${{ github.sha }}'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Create macOS/Linux Portable directory update assets
         if: runner.os != 'Windows' && matrix.skip_portable_channel != true
